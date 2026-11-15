@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 
 import httpx
@@ -22,10 +21,10 @@ def fmt_price(value: float) -> str:
 class TelegramNotifier:
     """Send signal-only alerts. Never logs request URLs, tokens, or response bodies."""
 
-    def __init__(self, client: httpx.AsyncClient, attempts: int = 3):
+    def __init__(self, client: httpx.AsyncClient, token: str = "", chat_id: str = "", attempts: int = 3):
         self.client = client
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        self.token = token.strip()
+        self.chat_id = chat_id.strip()
         self.attempts = max(1, min(int(attempts), 3))
         self.configured = bool(self.token and self.chat_id)
         self._missing_config_logged = False
