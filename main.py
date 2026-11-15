@@ -74,7 +74,8 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # 60 completed 15m candles require at least 180 completed 5m candles.
             full_history_refreshed = False
             if (len(rows) < 180 or not latest_ts or
-                    now_ms - (latest_ts + timeframe_milliseconds('5m')) > 30_000):
+                    now_ms - (latest_ts + timeframe_milliseconds('5m')) >
+                    timeframe_milliseconds('5m') + 30_000):
                 # A failed/undersized bootstrap needs a full indicator window;
                 # established caches use a small REST refresh to limit API traffic.
                 refresh_limit = 320 if len(rows) < 180 else 6
