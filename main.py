@@ -5,7 +5,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import httpx
@@ -183,6 +183,35 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             log.warning('scan failed symbol=%s pair=%s error=%s', display_symbol, pair, exc)
 
 
+async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
+    """Run safe retention cleanup on startup and nightly at 02:00 Asia/Kolkata."""
+    async def run_cleanup() -> None:
+        result = await candidate_store.cleanup(int(time.time() * 1000))
+        log.info(
+            "PostgreSQL nightly cleanup complete expired_candidates=%d deleted_terminal_candidates=%d",
+            result["expired"], result["deleted"],
+        )
+
+    # Startup cleanup catches up if the free web service slept through 02:00.
+    try:
+        await run_cleanup()
+    except Exception:
+        log.exception("PostgreSQL startup cleanup failed; will retry at the next nightly run")
+
+    while True:
+        now = datetime.now(timezone.utc)
+        next_run = now.replace(hour=20, minute=30, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (next_run - now).total_seconds()))
+        try:
+            await run_cleanup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("PostgreSQL nightly cleanup failed; scanner will continue")
+
+
 async def scanner_session() -> None:
     session_started_ms = int(time.time() * 1000)
     state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
@@ -193,6 +222,7 @@ async def scanner_session() -> None:
     # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
     candidate_store = await CandidateStore.connect(settings.database_url)
     state['database_connected'] = True
+    cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="postgres-nightly-cleanup")
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)
     notifier = TelegramNotifier(telegram_client, settings.telegram_bot_token, settings.telegram_chat_id)
@@ -287,6 +317,11 @@ async def scanner_session() -> None:
         state['running'] = False
         state['websocket_connected'] = False
         state['database_connected'] = False
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         await telegram_client.aclose()
         await candidate_store.close()
         await feed.close()
