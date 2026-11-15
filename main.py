@@ -58,6 +58,7 @@ state: dict[str, Any] = {
     "signals_sent": 0, "last_error": None, "running": False,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
+    "websocket_events_received": 0, "last_websocket_pair": None,
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -347,6 +348,8 @@ async def scanner() -> None:
             state['last_scan_seconds'] = round(time.monotonic() - started, 2)
             state['websocket_connected'] = feed.websocket_connected
             state['last_websocket_event'] = datetime.fromtimestamp(feed.last_ws_event, timezone.utc).isoformat() if feed.last_ws_event else None
+            state['websocket_events_received'] = feed.ws_events_received
+            state['last_websocket_pair'] = feed.last_ws_pair
             if unexpected:
                 state['last_error'] = '; '.join(unexpected[:3])
             log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
@@ -387,6 +390,8 @@ async def health():
             "service": "cryptobyance-signal-bot", "exchange": "CoinDCX Futures",
             "scanner_running": state["running"], "market_metadata_ready": state["market_metadata_ready"],
             "websocket_connected": state["websocket_connected"], "last_websocket_event": state["last_websocket_event"],
+            "websocket_events_received": state["websocket_events_received"],
+            "last_websocket_pair": state["last_websocket_pair"],
             "market_metadata_retry_at": state.get("market_metadata_retry_at"),
             "scans": state["scans"],
             "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
