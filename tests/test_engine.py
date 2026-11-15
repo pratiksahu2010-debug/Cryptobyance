@@ -29,5 +29,12 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(float(frame.iloc[0].close), 1.5)
         self.assertEqual(float(frame.iloc[0].volume), 10)
 
+    def test_ccxt_six_column_candle_parser(self):
+        raw = [[1700000000000, 1, 2, .5, 1.5, 10]]
+        frame = candles_to_frame(raw)
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(float(frame.iloc[0].close), 1.5)
+        self.assertEqual(float(frame.iloc[0].volume), 10)
+
 if __name__ == "__main__":
     unittest.main()
