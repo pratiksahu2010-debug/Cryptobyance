@@ -62,7 +62,7 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_credentials_are_reported_without_network_request(self):
         client = FakeClient([])
-        notifier = TelegramNotifier(client)
+        notifier = TelegramNotifier(client, "", "")
         with self.assertLogs("cryptobyance.telegram", level=logging.ERROR):
             self.assertFalse(await notifier.send(self._signal()))
         self.assertFalse(notifier.configured)
