@@ -68,7 +68,7 @@ state: dict[str, Any] = {
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 
-async def scan_symbol(feed, notifier, semaphore, candidate_store, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None) -> None:
+async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
     async with semaphore:
         try:
             rows = feed.rows(pair)
@@ -114,13 +114,17 @@ async def scan_symbol(feed, notifier, semaphore, candidate_store, display_symbol
                 return
             setup = evaluate_setup(df5, df15)
             if not setup:
-                await candidate_store.invalidate(display_symbol)
+                if candidate_store is not None:
+                    await candidate_store.invalidate(display_symbol)
                 last_seen_candle[display_symbol] = closed_ts
                 state['symbols_ok'] += 1
                 return
-            candidate_state, candidate_id = await candidate_store.observe(
-                display_symbol, setup['side'], closed_ts, setup['adx'], settings.adx_min
-            )
+            if candidate_store is not None:
+                candidate_state, candidate_id = await candidate_store.observe(
+                    display_symbol, setup['side'], closed_ts, setup['adx'], settings.adx_min
+                )
+            else:
+                candidate_state, candidate_id = ("READY", None) if setup["adx_satisfied"] else ("PENDING", None)
             if candidate_state == "PENDING":
                 last_seen_candle[display_symbol] = closed_ts
                 state['symbols_ok'] += 1
@@ -133,7 +137,7 @@ async def scan_symbol(feed, notifier, semaphore, candidate_store, display_symbol
             if previous and previous[0] == signal['side']:
                 candles_since = (closed_ts - previous[1]) // 300_000
                 if candles_since < COOLDOWN_CANDLES:
-                    await candidate_store.cancel(candidate_id)
+                    if candidate_store is not None:\n                        await candidate_store.cancel(candidate_id)
                     last_seen_candle[display_symbol] = closed_ts
                     state['symbols_ok'] += 1
                     return
@@ -142,7 +146,7 @@ async def scan_symbol(feed, notifier, semaphore, candidate_store, display_symbol
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
             delivery_started = time.monotonic()
             delivered = await notifier.send(signal)
-            await candidate_store.resolve(candidate_id, delivered)
+            if candidate_store is not None:\n                await candidate_store.resolve(candidate_id, delivered)
             delivery_seconds = round(time.monotonic() - delivery_started, 3)
             if delivered:
                 # Only mark the candle processed after Telegram confirms delivery.
@@ -246,7 +250,7 @@ async def scanner_session() -> None:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
             cycle_now_ms = int(time.time() * 1000)
-            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, candidate_store, symbol, pair, cycle_now_ms, first_scan_cutoff_ms) for symbol, pair in valid), return_exceptions=True)
+            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
             state['scans'] += 1
             state['last_scan'] = datetime.now(timezone.utc).isoformat()
