@@ -2,26 +2,63 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from main import (SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv,
-                  exchange_ban_retry_seconds)
+from coindcx_feed import (
+    aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
+)
+from main import SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv
 
-class EngineTests(unittest.TestCase):
-    def test_binance_ip_ban_retry_waits_until_expiry_plus_margin(self):
-        now_ms = 1_800_000_000_000
-        error = f"HTTP 418: IP banned until {now_ms + 90_000}"
-        self.assertEqual(exchange_ban_retry_seconds(error, now_ms, 5), 120)
 
-    def test_binance_ip_ban_retry_uses_fallback_for_other_or_expired_errors(self):
-        now_ms = 1_800_000_000_000
-        self.assertEqual(exchange_ban_retry_seconds("temporary network error", now_ms, 45), 45)
-        self.assertEqual(exchange_ban_retry_seconds(
-            f"IP banned until {now_ms - 1}", now_ms, 45
-        ), 45)
+class CoinDCXFeedTests(unittest.TestCase):
+    def test_configured_symbol_maps_to_coin_dcx_pair(self):
+        self.assertEqual(symbol_to_pair("BTC/USDT"), "B-BTC_USDT")
+        self.assertEqual(symbol_to_pair("1000BONK/USDT"), "B-1000BONK_USDT")
+
+    def test_active_instruments_response_normalization(self):
+        self.assertEqual(
+            parse_active_instruments(["B-BTC_USDT", "B-ETH_USDT"]),
+            {"B-BTC_USDT", "B-ETH_USDT"},
+        )
+        self.assertEqual(
+            parse_active_instruments({"data": [{"pair": "B-BTC_USDT"}]}),
+            {"B-BTC_USDT"},
+        )
+
+    def test_active_instruments_rejects_empty_or_invalid_payload(self):
+        with self.assertRaises(ValueError):
+            parse_active_instruments([])
+        with self.assertRaises(ValueError):
+            parse_active_instruments({"error": "bad response"})
+
+    def test_rest_and_socket_candle_timestamp_units(self):
+        rest = candle_to_row({"time": 1_800_000_000_000, "open": "1", "high": "2",
+                              "low": ".5", "close": "1.5", "volume": "10"})
+        socket = candle_to_row({"open_time": 1_800_000_000, "open": "1", "high": "2",
+                                "low": ".5", "close": "1.5", "volume": "10"})
+        self.assertEqual(rest, socket)
+
+    def test_15m_aggregation_requires_three_complete_contiguous_bars(self):
+        base = (1_800_000_000_000 // 300_000) * 300_000
+        rows = [
+            [base, 10, 12, 9, 11, 100],
+            [base + 300_000, 11, 13, 10, 12, 200],
+            [base + 600_000, 12, 14, 11, 13, 300],
+            [base + 900_000, 13, 15, 12, 14, 400],
+        ]
+        result = aggregate_5m_to_15m(rows, base + 1_800_000)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [base, 10.0, 14.0, 9.0, 13.0, 600.0])
+
+    def test_15m_aggregation_drops_incomplete_group(self):
+        base = (1_800_000_000_000 // 300_000) * 300_000
+        rows = [[base + i * 300_000, 10, 12, 9, 11, 10] for i in (0, 1, 3)]
+        self.assertEqual(aggregate_5m_to_15m(rows, base + 2_000_000), [])
 
     def test_universe_has_exactly_60_unique_symbols(self):
         self.assertEqual(len(SYMBOLS), 60)
         self.assertEqual(len(set(SYMBOLS)), 60)
 
+
+class EngineTests(unittest.TestCase):
     def test_indicators_produce_expected_columns(self):
         n = 400
         close = np.linspace(100, 150, n) + np.sin(np.arange(n) / 5)
@@ -36,16 +73,8 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.iloc[-1]["adx"]))
 
     def test_candle_parser(self):
-        raw = [[1700000000000, "1", "2", ".5", "1.5", "10",
-                1700000299999, "15", 5, "6", "9", "0"]]
+        raw = [[1700000000000, "1", "2", ".5", "1.5", "10"]]
         frame = candles_to_frame(raw)
-        self.assertEqual(float(frame.iloc[0].close), 1.5)
-        self.assertEqual(float(frame.iloc[0].volume), 10)
-
-    def test_ccxt_six_column_candle_parser(self):
-        raw = [[1700000000000, 1, 2, .5, 1.5, 10]]
-        frame = candles_to_frame(raw)
-        self.assertEqual(len(frame), 1)
         self.assertEqual(float(frame.iloc[0].close), 1.5)
         self.assertEqual(float(frame.iloc[0].volume), 10)
 
@@ -57,7 +86,6 @@ class EngineTests(unittest.TestCase):
             price = 100 + i
             raw.append([base + i * interval, price, price + 2, price - 1, price + 1, 10])
         raw = list(reversed(raw))
-        # Append the duplicate last so keep="last" is tested independently of sort order.
         raw.append([base + interval, 101, 103, 100, 102, 25])
         now_ms = base + 4 * interval + 2000
         frame = validate_ohlcv(raw, "5m", now_ms)
@@ -90,14 +118,10 @@ class EngineTests(unittest.TestCase):
     def _trend_frame(self, direction: int, interval_ms: int) -> pd.DataFrame:
         n = 400
         base = np.linspace(100, 200, n) if direction > 0 else np.linspace(200, 100, n)
-        close = base
         return pd.DataFrame({
             "timestamp": 1700000000000 + np.arange(n) * interval_ms,
-            "open": close - direction * .1,
-            "high": close + .5,
-            "low": close - .5,
-            "close": close,
-            "volume": np.full(n, 100.0),
+            "open": base - direction * .1, "high": base + .5,
+            "low": base - .5, "close": base, "volume": np.full(n, 100.0),
         })
 
     def test_strict_engine_emits_long_for_aligned_uptrend(self):
@@ -111,6 +135,7 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "SHORT")
         self.assertGreaterEqual(signal["adx"], 17)
+
 
 if __name__ == "__main__":
     unittest.main()
