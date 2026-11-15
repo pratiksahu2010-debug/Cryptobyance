@@ -248,3 +248,12 @@ class CandidateStore:
                    VALUES('primary',$1::jsonb,NOW())
                    ON CONFLICT(instance_key) DO UPDATE SET status=EXCLUDED.status,updated_at=NOW()""",
                 json.dumps(status, separators=(",", ":"), default=str))
+
+    async def load_runtime(self) -> dict | None:
+        """Read the last durable scanner checkpoint for restart diagnostics."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status::text AS status,updated_at FROM scanner_runtime WHERE instance_key='primary'")
+        if row is None:
+            return None
+        return {"status": json.loads(row["status"]), "updated_at": row["updated_at"].isoformat()}
