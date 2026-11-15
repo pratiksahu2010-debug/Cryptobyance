@@ -55,6 +55,7 @@ state: dict[str, Any] = {
     "started_at": time.time(), "scans": 0, "last_scan": None,
     "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "last_error": None, "running": False,
+    "active_symbols": 0, "unavailable_symbols": [],
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -247,7 +248,22 @@ async def scanner() -> None:
     client = httpx.AsyncClient()
     semaphore = asyncio.Semaphore(CONCURRENCY)
     try:
-        await exchange.load_markets()
+        # Retry transient exchange startup failures instead of silently leaving
+        # the web process healthy while the background scanner has died.
+        startup_attempt = 0
+        while True:
+            try:
+                await exchange.load_markets(reload=True)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                startup_attempt += 1
+                state["last_error"] = f"market metadata attempt {startup_attempt}: {exc}"
+                delay = min(300, 5 * (2 ** min(startup_attempt - 1, 6)))
+                log.exception("market metadata load failed; retrying in %ss", delay)
+                await asyncio.sleep(delay)
+
         # CCXT names USD-M perpetuals as BTC/USDT:USDT (not BTC/USDT).
         # Resolve our human-readable static list to the exact active swap symbol.
         resolved = {}
@@ -259,6 +275,8 @@ async def scanner() -> None:
         missing = sorted(set(SYMBOLS) - {configured for configured, _ in valid})
         log.info("market universe validated: configured=%d active=%d unavailable=%s",
                  len(SYMBOLS), len(valid), missing)
+        state["active_symbols"] = len(valid)
+        state["unavailable_symbols"] = missing
         if len(valid) != 60:
             log.warning("Universe has %d active markets, expected 60; unavailable contracts will be skipped", len(valid))
         while True:
@@ -312,7 +330,9 @@ async def root():
 async def health():
     return {"ok": True, "service": "cryptobyance-signal-bot",
             "scanner_running": state["running"], "scans": state["scans"],
-            "symbols_configured": len(SYMBOLS), "symbols_ok_last_scan": state["symbols_ok"],
+            "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
+            "symbols_unavailable": state["unavailable_symbols"],
+            "symbols_ok_last_scan": state["symbols_ok"],
             "symbols_failed_last_scan": state["symbols_failed"],
             "signals_sent": state["signals_sent"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
