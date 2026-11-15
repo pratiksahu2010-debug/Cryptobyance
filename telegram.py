@@ -37,16 +37,16 @@ class TelegramNotifier:
             signal["candle"] / 1000, timezone.utc
         ).strftime("%Y-%m-%d %H:%M UTC")
         return (
-            f"{emoji} <b>{signal['side']} SIGNAL</b>\\n"
-            f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\\n"
-            f"Entry: <code>{fmt_price(signal['entry'])}</code>\\n"
-            f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\\n"
-            f"Target: <code>{fmt_price(signal['target'])}</code>\\n"
-            f"Risk/Reward: 1:{signal['rr']:.2f}\\n\\n"
-            f"EMA 9/21: aligned\\nVWAP: correct side\\n"
-            f"RSI(14): {signal['rsi']:.1f}\\nADX(14): {signal['adx']:.1f}\\n"
-            f"15m context: {signal['context']}\\n"
-            f"5m candle close: {candle_time}\\n\\n"
+            f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
+            f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
+            f"Entry: <code>{fmt_price(signal['entry'])}</code>\n"
+            f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\n"
+            f"Target: <code>{fmt_price(signal['target'])}</code>\n"
+            f"Risk/Reward: 1:{signal['rr']:.2f}\n\n"
+            f"EMA 9/21: aligned\nVWAP: correct side\n"
+            f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
+            f"15m context: {signal['context']}\n"
+            f"5m candle close: {candle_time}\n\n"
             f"<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
