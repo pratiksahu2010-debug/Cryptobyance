@@ -56,11 +56,15 @@ class CandidateStore:
                        WHERE symbol=$1 AND status='PENDING' AND expires_after_candle_open_ms < $2""",
                     symbol, candle_ms)
                 row = await conn.fetchrow(
-                    """SELECT id,direction,expires_after_candle_open_ms FROM signal_candidates
+                    """SELECT id,direction,expires_after_candle_open_ms,last_checked_candle_open_ms FROM signal_candidates
                        WHERE symbol=$1 AND status='PENDING' FOR UPDATE""", symbol)
                 if row and row["direction"] != direction:
                     await conn.execute("UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1", row["id"])
                     row = None
+                if row and candle_ms <= row["last_checked_candle_open_ms"]:
+                    # A completed candle is evaluated once even if the scanner
+                    # repeats a cycle or the process is restarted mid-candle.
+                    return "PENDING", int(row["id"])
                 if row:
                     await conn.execute(
                         """UPDATE signal_candidates SET last_checked_candle_open_ms=$2,
