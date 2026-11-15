@@ -42,6 +42,7 @@ Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Pe
 ## Code architecture
 
 The runtime is split by responsibility:
+- `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
 - `main.py`: FastAPI lifecycle, scan orchestration, and health endpoints.
 - `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and 15m aggregation.
 - `strategy.py`: pure OHLCV validation, indicators, and the single LONG/SHORT decision rule.
