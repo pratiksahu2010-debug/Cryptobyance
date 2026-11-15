@@ -50,7 +50,7 @@ CONTEXT_TF = settings.context_timeframe
 state: dict[str, Any] = {
     "started_at": time.time(), "session_started_at": None, "scans": 0, "last_scan": None,
     "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
-    "signals_sent": 0, "last_error": None, "running": False,
+    "signals_sent": 0, "telegram_delivery_failures": 0, "last_telegram_success": None,\n    "last_error": None, "running": False,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
     "websocket_events_received": 0, "last_websocket_pair": None,
@@ -111,7 +111,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             if delivered:
                 last_alert[display_symbol] = (signal['side'], closed_ts)
                 state['signals_sent'] += 1
+                state['last_telegram_success'] = datetime.now(timezone.utc).isoformat()
                 log.info('SIGNAL SENT %s %s entry=%s ADX=%.1f RSI=%.1f', display_symbol, signal['side'], signal['entry'], signal['adx'], signal['rsi'])
+            else:
+                state['telegram_delivery_failures'] += 1
             state['symbols_ok'] += 1
         except Exception as exc:
             state['symbols_failed'] += 1
@@ -267,7 +270,7 @@ async def health():
             "symbols_ok_last_scan": state["symbols_ok"],
             "symbols_failed_last_scan": state["symbols_failed"],
             "data_validation_failures": state["data_validation_failures"],
-            "signals_sent": state["signals_sent"], "telegram_configured": state["telegram_configured"], "last_scan": state["last_scan"],
+            "signals_sent": state["signals_sent"], "telegram_delivery_failures": state["telegram_delivery_failures"],\n            "last_telegram_success": state["last_telegram_success"],\n            "telegram_configured": state["telegram_configured"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
             "session_started_at": state["session_started_at"],
             "uptime_seconds": int(time.time() - state["started_at"]),
