@@ -194,6 +194,45 @@ class EngineTests(unittest.TestCase):
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
+    def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = []
+        for i in range(200):
+            price = 100 + i * 0.1
+            rows.append([base + i * interval, price, price + 0.5, price - 0.5, price, 100])
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def rows(self, pair):
+                return rows
+
+        class FakeNotifier:
+            def __init__(self):
+                self.calls = 0
+
+            async def send(self, signal):
+                self.calls += 1
+                return True
+
+        signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
+                  "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
+                  "candle": rows[-1][0]}
+        last_seen_candle.pop("BTC/USDT", None)
+        notifier = FakeNotifier()
+        try:
+            with patch("main.evaluate_signal", return_value=signal):
+                asyncio.run(scan_symbol(
+                    FakeFeed(), notifier, asyncio.Semaphore(1), "BTC/USDT",
+                    "B-BTC_USDT", now_ms, session_started_ms=now_ms - 1_000,
+                ))
+            self.assertEqual(notifier.calls, 0)
+        finally:
+            last_seen_candle.pop("BTC/USDT", None)
+
     def test_strict_engine_emits_long_for_aligned_uptrend(self):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
         self.assertIsNotNone(signal)
