@@ -57,7 +57,7 @@ state: dict[str, Any] = {
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
     "websocket_events_received": 0, "last_websocket_pair": None,
-    "websocket_other_events": 0, "websocket_other_event_names": [],
+    "websocket_connect_errors": 0, "last_websocket_error": None, "websocket_disconnects": 0,
     "websocket_candle_fresh": False, "scanner_restarts": 0,
     "telegram_configured": False,
 }
@@ -212,8 +212,9 @@ async def scanner_session() -> None:
             state['websocket_events_received'] = feed.ws_events_received
             state['last_websocket_pair'] = feed.last_ws_pair
             state['websocket_candle_fresh'] = bool(feed.last_ws_event and time.time() - feed.last_ws_event <= 90)
-            state['websocket_other_events'] = feed.ws_other_events
-            state['websocket_other_event_names'] = feed.ws_other_event_names
+            state['websocket_connect_errors'] = feed.ws_connect_errors
+            state['last_websocket_error'] = feed.last_ws_error
+            state['websocket_disconnects'] = feed.ws_disconnects
             if unexpected:
                 state['last_error'] = '; '.join(unexpected[:3])
             elif state['symbols_failed'] == 0:
@@ -290,8 +291,9 @@ def build_health_payload() -> dict[str, Any]:
         "websocket_candle_fresh": state["websocket_candle_fresh"],
         "scanner_restarts": state["scanner_restarts"],
         "last_websocket_pair": state["last_websocket_pair"],
-        "websocket_other_events": state["websocket_other_events"],
-        "websocket_other_event_names": state["websocket_other_event_names"],
+        "websocket_connect_errors": state["websocket_connect_errors"],
+        "last_websocket_error": state["last_websocket_error"],
+        "websocket_disconnects": state["websocket_disconnects"],
         "market_metadata_retry_at": state.get("market_metadata_retry_at"),
         "scans": state["scans"],
         "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
