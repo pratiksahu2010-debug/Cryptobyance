@@ -326,7 +326,8 @@ async def scanner() -> None:
 
         async def bootstrap(symbol: str, pair: str):
             try:
-                await feed.fetch_history(pair, limit=320)
+                async with semaphore:
+                    await feed.fetch_history(pair, limit=320)
                 log.info('CoinDCX history ready symbol=%s pair=%s', symbol, pair)
             except Exception as exc:
                 state['last_error'] = f'history bootstrap {symbol}: {exc}'
