@@ -34,9 +34,14 @@ class CandidateStore:
     async def connect(cls, dsn: str):
         pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5,
                                          timeout=10, command_timeout=8)
-        async with pool.acquire() as conn:
-            await conn.execute(DDL)
-        return cls(pool)
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(DDL)
+            return cls(pool)
+        except BaseException:
+            # A failed migration/connection must not leak the pool on scanner retries.
+            await pool.close()
+            raise
 
     async def close(self):
         await self.pool.close()
