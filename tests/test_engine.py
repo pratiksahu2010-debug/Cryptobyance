@@ -296,7 +296,7 @@ class EngineTests(unittest.TestCase):
             state.clear()
             state.update(previous)
 
-    def test_health_is_true_after_fresh_complete_scan_cycle(self):
+    def test_health_is_false_when_cycle_completes_with_symbol_failures(self):
         import time
         previous = state.copy()
         try:
@@ -304,6 +304,20 @@ class EngineTests(unittest.TestCase):
                 running=True, market_metadata_ready=True, active_symbols=3,
                 last_scan_epoch=time.time(), last_cycle_symbols_ok=2,
                 last_cycle_symbols_failed=1,
+            )
+            self.assertFalse(build_health_payload()["ok"])
+        finally:
+            state.clear()
+            state.update(previous)
+
+    def test_health_is_true_after_fresh_successful_scan_cycle(self):
+        import time
+        previous = state.copy()
+        try:
+            state.update(
+                running=True, market_metadata_ready=True, active_symbols=3,
+                last_scan_epoch=time.time(), last_cycle_symbols_ok=3,
+                last_cycle_symbols_failed=0,
             )
             self.assertTrue(build_health_payload()["ok"])
         finally:
