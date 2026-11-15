@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -55,7 +56,7 @@ state: dict[str, Any] = {
     "started_at": time.time(), "scans": 0, "last_scan": None,
     "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "last_error": None, "running": False,
-    "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
+    "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0, "market_metadata_ready": False,
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -88,6 +89,18 @@ def timeframe_milliseconds(timeframe: str) -> int:
     if not timeframe.endswith("m") or not timeframe[:-1].isdigit() or int(timeframe[:-1]) <= 0:
         raise ValueError(f"unsupported timeframe for validation: {timeframe}")
     return int(timeframe[:-1]) * 60_000
+
+def exchange_ban_retry_seconds(error: object, now_ms: int | None = None, fallback_seconds: int = 5) -> int:
+    """Honor Binance's explicit IP-ban expiry instead of retrying every few minutes."""
+    match = re.search(r"banned until\\s+(\\d+)", str(error), flags=re.IGNORECASE)
+    if not match:
+        return max(1, int(fallback_seconds))
+    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    remaining_ms = int(match.group(1)) - now_ms
+    if remaining_ms <= 0:
+        return max(1, int(fallback_seconds))
+    # Add a 30-second safety margin so the first retry is not sent at expiry.
+    return max(int(fallback_seconds), (remaining_ms + 999) // 1000 + 30)
 
 def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.DataFrame:
     """Return sorted, unique, valid and fresh completed OHLCV candles."""
@@ -301,7 +314,9 @@ async def scanner() -> None:
         startup_attempt = 0
         while True:
             try:
-                await exchange.load_markets(reload=True)
+                await exchange.load_markets()
+                state["market_metadata_ready"] = True
+                state.pop("market_metadata_retry_at", None)
                 break
             except asyncio.CancelledError:
                 raise
@@ -309,7 +324,10 @@ async def scanner() -> None:
                 startup_attempt += 1
                 state["last_error"] = f"market metadata attempt {startup_attempt}: {exc}"
                 delay = min(300, 5 * (2 ** min(startup_attempt - 1, 6)))
-                log.exception("market metadata load failed; retrying in %ss", delay)
+                delay = exchange_ban_retry_seconds(exc, fallback_seconds=delay)
+                retry_at = datetime.fromtimestamp(time.time() + delay, timezone.utc).isoformat()
+                state["market_metadata_retry_at"] = retry_at
+                log.exception("market metadata load failed; retrying in %ss at %s", delay, retry_at)
                 await asyncio.sleep(delay)
 
         # CCXT names USD-M perpetuals as BTC/USDT:USDT (not BTC/USDT).
@@ -380,7 +398,9 @@ async def root():
 async def health():
     return {"ok": bool(state["running"] and state["active_symbols"] > 0),
             "service": "cryptobyance-signal-bot",
-            "scanner_running": state["running"], "scans": state["scans"],
+            "scanner_running": state["running"], "market_metadata_ready": state["market_metadata_ready"],
+            "market_metadata_retry_at": state.get("market_metadata_retry_at"),
+            "scans": state["scans"],
             "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
             "universe_complete": state["active_symbols"] == len(SYMBOLS),
             "symbols_unavailable": state["unavailable_symbols"],
