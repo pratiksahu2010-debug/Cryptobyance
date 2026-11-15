@@ -291,7 +291,7 @@ class EngineTests(unittest.TestCase):
             "low": base - .5, "close": base, "volume": np.full(n, 100.0),
         })
 
-    def test_failed_telegram_delivery_is_not_retried_for_same_candle(self):
+    def test_failed_telegram_delivery_retries_same_current_candle(self):
         import asyncio
 
         interval = 300_000
@@ -312,7 +312,7 @@ class EngineTests(unittest.TestCase):
 
             async def send(self, signal):
                 self.calls += 1
-                return False
+                return self.calls > 1
 
         signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
                   "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
@@ -321,6 +321,7 @@ class EngineTests(unittest.TestCase):
         last_seen_candle.pop("BTC/USDT", None)
         notifier = FakeNotifier()
         failures_before = state['telegram_delivery_failures']
+        sent_before = state['signals_sent']
         try:
             from unittest.mock import patch
             with patch("main.evaluate_signal", return_value=signal):
@@ -329,8 +330,10 @@ class EngineTests(unittest.TestCase):
                     await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
                     await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
                 asyncio.run(run_twice())
-            self.assertEqual(notifier.calls, 1)
+            self.assertEqual(notifier.calls, 2)
             self.assertEqual(state['telegram_delivery_failures'], failures_before + 1)
+            self.assertEqual(state['signals_sent'], sent_before + 1)
+            self.assertEqual(last_seen_candle["BTC/USDT"], int(rows[-1][0]))
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
