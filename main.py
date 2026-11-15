@@ -19,7 +19,9 @@ from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
 from strategy import evaluate_signal, timeframe_milliseconds, validate_ohlcv
 from telegram import TelegramNotifier
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+from config import settings
+
+LOG_LEVEL = settings.log_level
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cryptobyance")
 
@@ -40,13 +42,11 @@ SYMBOLS = [
 ]
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
-SCAN_SECONDS = max(20, int(os.getenv("SCAN_INTERVAL_SECONDS", "60")))
-CONCURRENCY = min(16, max(1, int(os.getenv("CONCURRENCY", "8"))))
-COOLDOWN_CANDLES = max(1, int(os.getenv("SIGNAL_COOLDOWN_CANDLES", "3")))
-TIMEFRAME = os.getenv("TIMEFRAME", "5m")
-CONTEXT_TF = os.getenv("CONTEXT_TIMEFRAME", "15m")
-if TIMEFRAME != "5m" or CONTEXT_TF != "15m":
-    raise ValueError("This strategy requires TIMEFRAME=5m and CONTEXT_TIMEFRAME=15m")
+SCAN_SECONDS = settings.scan_interval_seconds
+CONCURRENCY = settings.concurrency
+COOLDOWN_CANDLES = settings.signal_cooldown_candles
+TIMEFRAME = settings.timeframe
+CONTEXT_TF = settings.context_timeframe
 
 state: dict[str, Any] = {
     "started_at": time.time(), "session_started_at": None, "scans": 0, "last_scan": None,
