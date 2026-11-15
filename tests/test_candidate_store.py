@@ -89,6 +89,38 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FOR UPDATE SKIP LOCKED", conn.fetchrow_calls[0][0])
         self.assertIn("lease_until", conn.execute.await_args.args[0])
 
+    async def test_pending_candidate_gets_exactly_three_followup_candles(self):
+        first = 1_800_000
+        row = {"id": 17, "direction": "LONG",
+               "expires_after_candle_open_ms": first + 3 * 300_000,
+               "last_checked_candle_open_ms": first + 2 * 300_000}
+        conn = FakeConnection(fetchrows=[row])
+        store = CandidateStore(FakePool(conn))
+        state, candidate_id = await store.observe(
+            "BTC/USDT", "LONG", first + 3 * 300_000, 25.0, 25.0
+        )
+        self.assertEqual((state, candidate_id), ("TRIGGER", 17))
+        self.assertEqual(conn.execute.await_count, 2)  # expiry check and last-checked update
+
+    async def test_new_pending_candidate_expires_after_three_followup_bars(self):
+        first = 2_100_000
+        conn = FakeConnection(fetchrows=[None, {"id": 29}])
+        store = CandidateStore(FakePool(conn))
+        state, candidate_id = await store.observe(
+            "ETH/USDT", "SHORT", first, 18.0, 25.0
+        )
+        self.assertEqual((state, candidate_id), ("PENDING", 29))
+        insert_args = conn.fetchrow_calls[1][1]
+        self.assertEqual(insert_args[3], first + 3 * 300_000)
+
+    async def test_outbox_exhaustion_moves_alert_to_dead_letter(self):
+        conn = FakeConnection(fetchrows=[{"signal_id": 91}])
+        store = CandidateStore(FakePool(conn))
+        await store.retry_outbox(8, attempts=12, error_type="TelegramUnavailable")
+        self.assertEqual(conn.execute.await_count, 2)
+        self.assertIn("status='DEAD'", conn.execute.await_args_list[0].args[0])
+        self.assertIn("DELIVERY_FAILED", conn.execute.await_args_list[1].args[0])
+
     async def test_schema_has_durable_signal_outbox_cooldown_and_runtime(self):
         for table in ("signal_history", "telegram_outbox", "signal_cooldowns", "scanner_runtime", "schema_migrations"):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", DDL)
