@@ -137,7 +137,8 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             if previous and previous[0] == signal['side']:
                 candles_since = (closed_ts - previous[1]) // 300_000
                 if candles_since < COOLDOWN_CANDLES:
-                    if candidate_store is not None:\n                        await candidate_store.cancel(candidate_id)
+                    if candidate_store is not None:
+                        await candidate_store.cancel(candidate_id)
                     last_seen_candle[display_symbol] = closed_ts
                     state['symbols_ok'] += 1
                     return
@@ -146,7 +147,8 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
             delivery_started = time.monotonic()
             delivered = await notifier.send(signal)
-            if candidate_store is not None:\n                await candidate_store.resolve(candidate_id, delivered)
+            if candidate_store is not None:
+                await candidate_store.resolve(candidate_id, delivered)
             delivery_seconds = round(time.monotonic() - delivery_started, 3)
             if delivered:
                 # Only mark the candle processed after Telegram confirms delivery.
