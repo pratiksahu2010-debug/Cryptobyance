@@ -57,6 +57,10 @@ class Settings:
         if ema_fast >= ema_slow:
             raise ValueError("EMA_FAST must be smaller than EMA_SLOW")
 
+        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+        if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
+
         return cls(
             scan_interval_seconds=_integer("SCAN_INTERVAL_SECONDS", "60", 20, 600),
             concurrency=_integer("CONCURRENCY", "8", 1, 16),
@@ -70,7 +74,7 @@ class Settings:
             adx_period=_integer("ADX_PERIOD", "14", 2, 100),
             atr_stop_multiplier=_number("ATR_STOP_MULTIPLIER", "1.5", 0.000001),
             min_risk_reward=_number("MIN_RISK_REWARD", "1.5", 0.000001),
-            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            log_level=log_level,
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         )
