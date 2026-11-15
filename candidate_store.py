@@ -179,6 +179,14 @@ class CandidateStore:
                        ON CONFLICT(idempotency_key) DO NOTHING RETURNING id""",
                     key,symbol,direction,candle_ms,payload)
                 if row is None:
+                    # The same signal may already have been committed before a
+                    # process restart; complete the candidate transition without
+                    # creating another outbox message.
+                    if candidate_id is not None:
+                        await conn.execute(
+                            """UPDATE signal_candidates SET status='TRIGGERED',
+                               triggered_at=COALESCE(triggered_at,NOW()),updated_at=NOW()
+                               WHERE id=$1 AND status='PENDING'""", candidate_id)
                     return False
                 signal_id = int(row["id"])
                 await conn.execute(
