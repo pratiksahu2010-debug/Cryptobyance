@@ -65,6 +65,47 @@ class CoinDCXFeedTests(unittest.TestCase):
         finally:
             asyncio.run(feed.close())
 
+    def test_websocket_connect_subscribes_to_exact_futures_candle_channels(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        class FakeSocket:
+            def __init__(self):
+                self.emitted = []
+            async def emit(self, event, payload):
+                self.emitted.append((event, payload))
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT", "B-ETH_USDT"])
+        fake = FakeSocket()
+        feed.sio = fake
+        try:
+            asyncio.run(feed._on_connect())
+            self.assertTrue(feed.websocket_connected)
+            self.assertEqual(fake.emitted, [
+                ("join", {"channelName": "B-BTC_USDT_5m-futures"}),
+                ("join", {"channelName": "B-ETH_USDT_5m-futures"}),
+            ])
+        finally:
+            feed.websocket_connected = False
+            asyncio.run(feed.close())
+
+    def test_websocket_ignores_unconfigured_pairs(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        try:
+            payload = {"channel": "B-ETH_USDT_5m-futures", "data": [{
+                "pair": "B-ETH_USDT", "open_time": 1_800_000_000,
+                "open": "100", "high": "102", "low": "99",
+                "close": "101", "volume": "12",
+            }]}
+            asyncio.run(feed._on_candlestick(payload))
+            self.assertEqual(feed.ws_events_received, 0)
+            self.assertEqual(feed.rows("B-BTC_USDT"), [])
+        finally:
+            asyncio.run(feed.close())
+
     def test_socketio_v4_connection_uses_supported_connect_arguments(self):
         import asyncio
         from coindcx_feed import CoinDCXFuturesFeed, SOCKET_URL
