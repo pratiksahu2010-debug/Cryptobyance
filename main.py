@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -128,7 +127,7 @@ async def scanner_session() -> None:
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)
-    notifier = TelegramNotifier(telegram_client)
+    notifier = TelegramNotifier(telegram_client, settings.telegram_bot_token, settings.telegram_chat_id)
     state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
     try:
