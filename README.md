@@ -10,7 +10,7 @@ LONG requires all:
 - 5m EMA(9) > EMA(21)
 - 5m close > UTC-day cumulative VWAP
 - 5m RSI(14) > 50
-- 5m ADX(14) >= configured minimum (default 17)
+- 5m ADX(14) >= configured minimum (default 25)
 - 15m EMA(9) > EMA(21) and 15m close > EMA(21)
 
 SHORT is the exact inverse. ADX measures strength, not direction. No ORB, breakout, momentum, or secondary signal module is included. All conditions are mandatory. The engine evaluates completed candles only.
@@ -41,16 +41,19 @@ Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Pe
 
 ## Code architecture
 
+Pending ADX candidates are persisted in PostgreSQL. A setup that passes EMA/VWAP/RSI/15m direction gates but has ADX below 25 is retained for up to three subsequent completed 5m candles; it triggers only when ADX reaches 25 while the directional setup still holds. `DATABASE_URL` is required for the scanner to start; configure it with the Render internal database URL. The candidate store does not place trades.
+
 The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
 - `main.py`: FastAPI lifecycle, scan orchestration, and health endpoints.
 - `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and 15m aggregation.
 - `strategy.py`: pure OHLCV validation, indicators, and the single LONG/SHORT decision rule.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
+- `candidate_store.py`: PostgreSQL-backed pending-candidate lifecycle and expiry.
 
 The strategy module has no network or application-lifecycle dependencies. Telegram delivery retries rate limits, server errors, and transient network failures up to three attempts; permanent 4xx rejections are not retried. The scanner supervisor restarts a failed scanner session with bounded backoff. On startup/restart, candles that closed before the new scanner session began are ignored so old setups are not replayed as fresh alerts.
 
-Signal deduplication and same-direction cooldown state are currently in process memory. A process restart resets that state; durable cross-deploy deduplication would require a persistent store. No persistent store is added to this lightweight signal-only build.
+The pending-candidate lifecycle is persisted in PostgreSQL. Same-direction cooldown and final alert deduplication remain in process memory and reset on process restart.
 
 ## Run locally
 
@@ -61,7 +64,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env
+# Set TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and DATABASE_URL in .env
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
