@@ -4,29 +4,20 @@ This module has no exchange, network, Telegram, or application lifecycle code.
 """
 from __future__ import annotations
 
-import math
-import os
 import time
 
 import numpy as np
 import pandas as pd
 
-ADX_MIN = float(os.getenv("ADX_MIN", "17"))
-EMA_FAST = int(os.getenv("EMA_FAST", "9"))
-EMA_SLOW = int(os.getenv("EMA_SLOW", "21"))
-RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
-ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULTIPLIER", "1.5"))
-MIN_RR = float(os.getenv("MIN_RISK_REWARD", "1.5"))
+from config import settings
 
-if not math.isfinite(ADX_MIN) or not (0 < ADX_MIN <= 100):
-    raise ValueError("ADX_MIN must be between 0 and 100")
-if min(EMA_FAST, EMA_SLOW, RSI_PERIOD, ADX_PERIOD) <= 0:
-    raise ValueError("Indicator periods must be positive")
-if EMA_FAST >= EMA_SLOW:
-    raise ValueError("EMA_FAST must be smaller than EMA_SLOW")
-if not math.isfinite(ATR_STOP_MULT) or not math.isfinite(MIN_RR) or ATR_STOP_MULT <= 0 or MIN_RR <= 0:
-    raise ValueError("ATR stop multiplier and minimum risk/reward must be positive")
+ADX_MIN = settings.adx_min
+EMA_FAST = settings.ema_fast
+EMA_SLOW = settings.ema_slow
+RSI_PERIOD = settings.rsi_period
+ADX_PERIOD = settings.adx_period
+ATR_STOP_MULT = settings.atr_stop_multiplier
+MIN_RR = settings.min_risk_reward
 
 
 def candles_to_frame(raw: list) -> pd.DataFrame:
