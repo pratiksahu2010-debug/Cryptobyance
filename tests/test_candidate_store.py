@@ -121,6 +121,17 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("status='DEAD'", conn.execute.await_args_list[0].args[0])
         self.assertIn("DELIVERY_FAILED", conn.execute.await_args_list[1].args[0])
 
+    async def test_cleanup_expires_candidates_but_never_deletes_rows(self):
+        conn = FakeConnection()
+        conn.execute.return_value = "UPDATE 2"
+        store = CandidateStore(FakePool(conn))
+        result = await store.cleanup(now_ms=9_000_000)
+        self.assertEqual(result, {"expired": 2, "deleted": 0})
+        self.assertEqual(conn.execute.await_count, 1)
+        sql = conn.execute.await_args.args[0]
+        self.assertIn("SET status='EXPIRED'", sql)
+        self.assertNotIn("DELETE", sql.upper())
+
     async def test_schema_has_durable_signal_outbox_cooldown_and_runtime(self):
         for table in ("signal_history", "telegram_outbox", "signal_cooldowns", "scanner_runtime", "schema_migrations"):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", DDL)
