@@ -1,4 +1,3 @@
-import logging
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -29,13 +28,12 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
             "candle": 1_800_000_000_000,
         }
 
-    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "123:secret", "TELEGRAM_CHAT_ID": "456"})
     async def test_retries_rate_limit_then_succeeds(self):
         client = FakeClient([
             httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 2}}),
             httpx.Response(200, json={"ok": True}),
         ])
-        notifier = TelegramNotifier(client)
+        notifier = TelegramNotifier(client, "123:secret", "456")
         with patch("telegram.asyncio.sleep", new_callable=AsyncMock) as sleep:
             self.assertTrue(await notifier.send(self._signal()))
         self.assertEqual(client.calls, 2)
@@ -60,10 +58,9 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("cryptobyance.telegram", level=logging.ERROR) as captured:
             with patch("telegram.asyncio.sleep", new_callable=AsyncMock):
                 self.assertFalse(await notifier.send(self._signal()))
-        self.assertNotIn(token, captured.output.__str__())
+        self.assertNotIn(token, "\n".join(captured.output))
         self.assertEqual(client.calls, 3)
 
-    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""})
     async def test_missing_credentials_are_reported_without_network_request(self):
         client = FakeClient([])
         notifier = TelegramNotifier(client)
