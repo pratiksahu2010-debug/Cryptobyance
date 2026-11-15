@@ -41,7 +41,8 @@ SYMBOLS = [
 ]
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
-SCAN_SECONDS = settings.scan_interval_seconds
+# Cap scan interval at 20s for prompt post-close detection.
+SCAN_SECONDS = min(settings.scan_interval_seconds, 20)
 CONCURRENCY = settings.concurrency
 COOLDOWN_CANDLES = settings.signal_cooldown_candles
 TIMEFRAME = settings.timeframe
@@ -123,18 +124,35 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     state['symbols_ok'] += 1
                     return
             signal['symbol'] = display_symbol
+            signal['candle_close'] = five_minute_close
+            signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
+            delivery_started = time.monotonic()
             delivered = await notifier.send(signal)
+            delivery_seconds = round(time.monotonic() - delivery_started, 3)
             if delivered:
                 # Only mark the candle processed after Telegram confirms delivery.
-                # If delivery fails, the same still-current candle is retried on
-                # the next scan; a newer candle naturally supersedes this setup.
                 last_seen_candle[display_symbol] = closed_ts
                 last_alert[display_symbol] = (signal['side'], closed_ts)
                 state['signals_sent'] += 1
-                state['last_telegram_success'] = datetime.now(timezone.utc).isoformat()
-                log.info('SIGNAL SENT %s %s entry=%s ADX=%.1f RSI=%.1f', display_symbol, signal['side'], signal['entry'], signal['adx'], signal['rsi'])
+                accepted_at = datetime.now(timezone.utc)
+                state['last_telegram_success'] = accepted_at.isoformat()
+                signal_age = max(0.0, (accepted_at.timestamp() * 1000 - five_minute_close) / 1000)
+                log.info(
+                    'SIGNAL SENT symbol=%s side=%s candle_close=%s generated_at=%s telegram_accepted_at=%s '
+                    'signal_age_seconds=%.1f delivery_seconds=%.3f entry=%s ADX=%.1f RSI=%.1f',
+                    display_symbol, signal['side'],
+                    datetime.fromtimestamp(five_minute_close / 1000, timezone.utc).isoformat(),
+                    signal['signal_generated_at'], accepted_at.isoformat(),
+                    signal_age, delivery_seconds, signal['entry'], signal['adx'], signal['rsi'],
+                )
             else:
                 state['telegram_delivery_failures'] += 1
+                log.warning(
+                    'SIGNAL DELIVERY FAILED symbol=%s side=%s candle_close=%s generated_at=%s',
+                    display_symbol, signal['side'],
+                    datetime.fromtimestamp(five_minute_close / 1000, timezone.utc).isoformat(),
+                    signal['signal_generated_at'],
+                )
             state['symbols_ok'] += 1
         except Exception as exc:
             state['symbols_failed'] += 1
