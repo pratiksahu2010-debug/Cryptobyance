@@ -46,6 +46,33 @@ class CandidateStore:
     async def close(self):
         await self.pool.close()
 
+    async def cleanup(self, now_ms: int) -> dict[str, int]:
+        """Expire stale candidates and prune only old terminal non-signal rows.
+
+        PENDING rows are expired against the latest completed 5m candle open,
+        not wall-clock time, so the third eligible follow-up candle is not
+        removed before its close. TRIGGERED rows are retained as signal audit
+        history; active candidates are never deleted.
+        """
+        latest_completed_open_ms = ((now_ms // 300_000) - 1) * 300_000
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                expired_tag = await conn.execute(
+                    """UPDATE signal_candidates
+                       SET status='EXPIRED',updated_at=NOW()
+                       WHERE status='PENDING' AND expires_after_candle_open_ms < $1""",
+                    latest_completed_open_ms,
+                )
+                deleted_tag = await conn.execute(
+                    """DELETE FROM signal_candidates
+                       WHERE status IN ('EXPIRED','INVALID')
+                         AND updated_at < NOW() - INTERVAL '7 days'""",
+                )
+        return {
+            "expired": int(expired_tag.rsplit(" ", 1)[-1]),
+            "deleted": int(deleted_tag.rsplit(" ", 1)[-1]),
+        }
+
     async def invalidate(self, symbol: str):
         async with self.pool.acquire() as conn:
             await conn.execute(
