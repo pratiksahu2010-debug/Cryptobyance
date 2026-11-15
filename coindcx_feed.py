@@ -106,6 +106,7 @@ class CoinDCXFuturesFeed:
         self.last_ws_error: str | None = None
         self.ws_disconnects = 0
         self.ws_task: asyncio.Task | None = None
+        self._websocket_ready = asyncio.Event()
         self._closed = False
         self.sio.on("connect", self._on_connect)
         self.sio.on("disconnect", self._on_disconnect)
@@ -170,6 +171,7 @@ class CoinDCXFuturesFeed:
         log.info("CoinDCX futures websocket connected; subscribing to %d 5m channels", len(self.pairs))
         for pair in self.pairs:
             await self.sio.emit("join", {"channelName": f"{pair}_5m-futures"})
+        self._websocket_ready.set()
         log.info("CoinDCX futures websocket subscriptions sent=%d", len(self.pairs))
 
     async def _on_connect_error(self, response):
@@ -180,6 +182,7 @@ class CoinDCXFuturesFeed:
 
     async def _on_disconnect(self):
         self.websocket_connected = False
+        self._websocket_ready.clear()
         self.ws_disconnects += 1
         log.warning("CoinDCX futures websocket disconnected")
 
@@ -228,6 +231,14 @@ class CoinDCXFuturesFeed:
     def start_websocket(self) -> None:
         if self.ws_task is None or self.ws_task.done():
             self.ws_task = asyncio.create_task(self.run_websocket(), name="coindcx-futures-websocket")
+
+    async def wait_until_connected(self, timeout: float = 20.0) -> bool:
+        """Wait for connection and all candle-channel subscriptions, but never indefinitely."""
+        try:
+            await asyncio.wait_for(self._websocket_ready.wait(), timeout=max(0.0, timeout))
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def close(self) -> None:
         self._closed = True
