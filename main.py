@@ -266,6 +266,8 @@ def build_health_payload() -> dict[str, Any]:
     healthy = bool(
         state["running"] and state["market_metadata_ready"]
         and state["active_symbols"] > 0 and cycle_complete and scan_fresh
+        and state["last_cycle_symbols_failed"] == 0
+        and state["last_cycle_symbols_ok"] == state["active_symbols"]
     )
     return {
         "ok": healthy,
