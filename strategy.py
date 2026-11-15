@@ -63,6 +63,8 @@ def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.D
         raise ValueError(f"inconsistent high in {timeframe} OHLCV")
     if (df["low"] > df[["open", "close", "high"]].min(axis=1)).any():
         raise ValueError(f"inconsistent low in {timeframe} OHLCV")
+    if (not np.equal(df["timestamp"].to_numpy(dtype=float), np.floor(df["timestamp"].to_numpy(dtype=float))).all()):
+        raise ValueError(f"fractional timestamp in {timeframe} OHLCV")
     timestamps = df["timestamp"].astype("int64")
     if (timestamps % interval_ms != 0).any():
         raise ValueError(f"misaligned timestamp in {timeframe} OHLCV")
