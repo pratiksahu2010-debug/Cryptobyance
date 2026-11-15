@@ -5,7 +5,8 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv, scan_symbol, last_seen_candle
+from main import SYMBOLS, scan_symbol, last_seen_candle
+from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
 
 
 class CoinDCXFeedTests(unittest.TestCase):
