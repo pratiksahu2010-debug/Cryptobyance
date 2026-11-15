@@ -156,5 +156,6 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
         "side": side, "entry": entry, "stop": stop, "target": target,
         "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
         "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
+        "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": "15m bullish" if side == "LONG" else "15m bearish",
     }
