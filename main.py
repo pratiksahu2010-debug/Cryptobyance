@@ -14,10 +14,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
-from strategy import (
-    ADX_MIN, ATR_STOP_MULT, MIN_RR, candles_to_frame, evaluate_signal,
-    indicators, timeframe_milliseconds, validate_ohlcv,
-)
+from strategy import evaluate_signal, timeframe_milliseconds, validate_ohlcv
 from telegram import TelegramNotifier
 
 load_dotenv()
@@ -43,10 +40,12 @@ SYMBOLS = [
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
 SCAN_SECONDS = max(20, int(os.getenv("SCAN_INTERVAL_SECONDS", "60")))
-CONCURRENCY = max(1, int(os.getenv("CONCURRENCY", "8")))
+CONCURRENCY = min(16, max(1, int(os.getenv("CONCURRENCY", "8"))))
 COOLDOWN_CANDLES = max(1, int(os.getenv("SIGNAL_COOLDOWN_CANDLES", "3")))
 TIMEFRAME = os.getenv("TIMEFRAME", "5m")
 CONTEXT_TF = os.getenv("CONTEXT_TIMEFRAME", "15m")
+if TIMEFRAME != "5m" or CONTEXT_TF != "15m":
+    raise ValueError("This strategy requires TIMEFRAME=5m and CONTEXT_TIMEFRAME=15m")
 
 state: dict[str, Any] = {
     "started_at": time.time(), "scans": 0, "last_scan": None,
@@ -61,7 +60,6 @@ state: dict[str, Any] = {
 # based on candle open-time, so a restart cannot emit an old candle's signal.
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
-telegram_missing_logged = False
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int) -> None:
     async with semaphore:
@@ -116,7 +114,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             log.warning('scan failed symbol=%s pair=%s error=%s', display_symbol, pair, exc)
 
 
-async def scanner() -> None:
+async def scanner_session() -> None:
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)\n    notifier = TelegramNotifier(telegram_client)\n    state['telegram_configured'] = notifier.configured
@@ -176,6 +174,7 @@ async def scanner() -> None:
             state['last_websocket_event'] = datetime.fromtimestamp(feed.last_ws_event, timezone.utc).isoformat() if feed.last_ws_event else None
             state['websocket_events_received'] = feed.ws_events_received
             state['last_websocket_pair'] = feed.last_ws_pair
+            state['websocket_candle_fresh'] = bool(feed.last_ws_event and time.time() - feed.last_ws_event <= 90)
             state['websocket_other_events'] = feed.ws_other_events
             state['websocket_other_event_names'] = feed.ws_other_event_names
             if unexpected:
@@ -193,6 +192,29 @@ async def scanner() -> None:
         state['websocket_connected'] = False
         await telegram_client.aclose()
         await feed.close()
+
+async def scanner() -> None:
+    """Supervise scanner sessions so one unexpected failure does not end scanning."""
+    failures = 0
+    while True:
+        try:
+            await scanner_session()
+            failures = 0
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failures += 1
+            state["running"] = False
+            state["scanner_restarts"] += 1
+            state["last_error"] = f"scanner restart: {type(exc).__name__}"
+            delay = min(60, 2 ** min(failures, 6))
+            log.error(
+                "Scanner session failed; restarting attempt=%d delay=%ss error_type=%s",
+                failures, delay, type(exc).__name__,
+            )
+            await asyncio.sleep(delay)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -219,6 +241,8 @@ async def health():
             "scanner_running": state["running"], "market_metadata_ready": state["market_metadata_ready"],
             "websocket_connected": state["websocket_connected"], "last_websocket_event": state["last_websocket_event"],
             "websocket_events_received": state["websocket_events_received"],
+            "websocket_candle_fresh": state["websocket_candle_fresh"],
+            "scanner_restarts": state["scanner_restarts"],
             "last_websocket_pair": state["last_websocket_pair"],
             "websocket_other_events": state["websocket_other_events"],
             "websocket_other_event_names": state["websocket_other_event_names"],
