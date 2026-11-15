@@ -330,7 +330,7 @@ async def scanner() -> None:
             log.warning("Universe has %d active markets, expected 60; unavailable contracts will be skipped", len(valid))
         while True:
             started = time.monotonic()
-            state.update(running=True, symbols_ok=0, symbols_failed=0)
+            state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
             cycle_now_ms = int(time.time() * 1000)
             results = await asyncio.gather(
                 *(scan_symbol(exchange, client, semaphore, configured, market_symbol, cycle_now_ms)
