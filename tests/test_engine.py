@@ -5,7 +5,7 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, scan_symbol, last_seen_candle, state
+from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload
 from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
 
 
@@ -248,6 +248,34 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(notifier.calls, 0)
         finally:
             last_seen_candle.pop("BTC/USDT", None)
+
+    def test_health_is_false_until_every_active_symbol_is_accounted_for(self):
+        import time
+        previous = state.copy()
+        try:
+            state.update(
+                running=True, market_metadata_ready=True, active_symbols=3,
+                last_scan_epoch=time.time(), last_cycle_symbols_ok=2,
+                last_cycle_symbols_failed=0,
+            )
+            self.assertFalse(build_health_payload()["ok"])
+        finally:
+            state.clear()
+            state.update(previous)
+
+    def test_health_is_true_after_fresh_complete_scan_cycle(self):
+        import time
+        previous = state.copy()
+        try:
+            state.update(
+                running=True, market_metadata_ready=True, active_symbols=3,
+                last_scan_epoch=time.time(), last_cycle_symbols_ok=2,
+                last_cycle_symbols_failed=1,
+            )
+            self.assertTrue(build_health_payload()["ok"])
+        finally:
+            state.clear()
+            state.update(previous)
 
     def test_strict_engine_emits_long_for_aligned_uptrend(self):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
