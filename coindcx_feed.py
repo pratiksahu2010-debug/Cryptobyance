@@ -100,6 +100,8 @@ class CoinDCXFuturesFeed:
         self.bars: dict[str, dict[int, list]] = {pair: {} for pair in self.pairs}
         self.websocket_connected = False
         self.last_ws_event: float | None = None
+        self.ws_events_received = 0
+        self.last_ws_pair: str | None = None
         self.ws_task: asyncio.Task | None = None
         self._closed = False
         self.sio.on("connect", self._on_connect)
@@ -189,6 +191,10 @@ class CoinDCXFuturesFeed:
                 row = candle_to_row(item)
                 self._merge_rows(pair, [row])
                 self.last_ws_event = time.time()
+                self.ws_events_received += 1
+                self.last_ws_pair = pair
+                if self.ws_events_received == 1:
+                    log.info("CoinDCX first futures candle event received pair=%s timestamp=%s", pair, row[0])
         except Exception:
             log.exception("Could not parse CoinDCX futures candlestick event")
 
