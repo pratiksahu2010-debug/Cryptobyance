@@ -81,6 +81,14 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 rows = feed.rows(pair)
             df5 = validate_ohlcv(rows, '5m', now_ms)
             rows15 = aggregate_5m_to_15m(rows, now_ms)
+            # A cache can contain 180+ 5m rows but still have fewer than 60
+            # usable 15m bars because of historical gaps or alignment. Retry a
+            # full history fetch once before declaring the symbol unhealthy.
+            if len(rows15) < 60 and len(rows) >= 180 and refresh_limit != 320:
+                await feed.fetch_history(pair, limit=320)
+                rows = feed.rows(pair)
+                df5 = validate_ohlcv(rows, '5m', now_ms)
+                rows15 = aggregate_5m_to_15m(rows, now_ms)
             df15 = validate_ohlcv(rows15, '15m', now_ms)
             if len(df5) < 60 or len(df15) < 60:
                 raise ValueError(f'insufficient completed candles: 5m={len(df5)}, 15m={len(df15)}')
