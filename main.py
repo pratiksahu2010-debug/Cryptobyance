@@ -124,10 +124,11 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     return
             signal['symbol'] = display_symbol
             delivered = await notifier.send(signal)
-            # Record this candle even if delivery is unavailable. This prevents
-            # retrying the same signal on every scan cycle and flooding logs.
-            last_seen_candle[display_symbol] = closed_ts
             if delivered:
+                # Only mark the candle processed after Telegram confirms delivery.
+                # If delivery fails, the same still-current candle is retried on
+                # the next scan; a newer candle naturally supersedes this setup.
+                last_seen_candle[display_symbol] = closed_ts
                 last_alert[display_symbol] = (signal['side'], closed_ts)
                 state['signals_sent'] += 1
                 state['last_telegram_success'] = datetime.now(timezone.utc).isoformat()
