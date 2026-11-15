@@ -176,11 +176,13 @@ async def scanner_session() -> None:
 
         await asyncio.gather(*(bootstrap(symbol, pair) for symbol, pair in valid))
         feed.start_websocket()
+        # Ignore any setup that formed while the initial history bootstrap was running.
+        first_scan_cutoff_ms = int(time.time() * 1000)
         while True:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
             cycle_now_ms = int(time.time() * 1000)
-            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, session_started_ms) for symbol, pair in valid), return_exceptions=True)
+            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
             state['scans'] += 1
             state['last_scan'] = datetime.now(timezone.utc).isoformat()
