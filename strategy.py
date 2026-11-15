@@ -4,6 +4,7 @@ This module has no exchange, network, Telegram, or application lifecycle code.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 
@@ -18,13 +19,13 @@ ADX_PERIOD = int(os.getenv("ADX_PERIOD", "14"))
 ATR_STOP_MULT = float(os.getenv("ATR_STOP_MULTIPLIER", "1.5"))
 MIN_RR = float(os.getenv("MIN_RISK_REWARD", "1.5"))
 
-if not (0 < ADX_MIN <= 100):
+if not math.isfinite(ADX_MIN) or not (0 < ADX_MIN <= 100):
     raise ValueError("ADX_MIN must be between 0 and 100")
 if min(EMA_FAST, EMA_SLOW, RSI_PERIOD, ADX_PERIOD) <= 0:
     raise ValueError("Indicator periods must be positive")
 if EMA_FAST >= EMA_SLOW:
     raise ValueError("EMA_FAST must be smaller than EMA_SLOW")
-if ATR_STOP_MULT <= 0 or MIN_RR <= 0:
+if not math.isfinite(ATR_STOP_MULT) or not math.isfinite(MIN_RR) or ATR_STOP_MULT <= 0 or MIN_RR <= 0:
     raise ValueError("ATR stop multiplier and minimum risk/reward must be positive")
 
 
