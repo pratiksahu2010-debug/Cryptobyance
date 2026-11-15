@@ -146,12 +146,15 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
     entry = float(c.close)
     # ATR-based protective stop; target is 1.5R by default. This is trade
     # planning metadata only; the bot never submits exchange orders.
-    risk = max(float(c.atr) * ATR_STOP_MULT, entry * 0.001)
+    atr_value = float(c.atr)
+    if not np.isfinite(atr_value) or atr_value <= 0:
+        return None
+    risk = atr_value * ATR_STOP_MULT
     stop = entry - risk if side == "LONG" else entry + risk
     target = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
     return {
         "side": side, "entry": entry, "stop": stop, "target": target,
         "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
-        "vwap": float(c.vwap), "candle": int(c.timestamp),
+        "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
         "context": "15m bullish" if side == "LONG" else "15m bearish",
     }
