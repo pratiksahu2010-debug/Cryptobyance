@@ -59,8 +59,8 @@ state: dict[str, Any] = {
     "websocket_candle_fresh": False, "scanner_restarts": 0,
     "telegram_configured": False,
 }
-# In-process deduplication. Free Render restarts reset this; the cooldown is also
-# based on candle open-time, so a restart cannot emit an old candle's signal.
+# In-process deduplication only. Startup cutoff prevents replaying candles that
+# closed before the current scanner session began; state is not durable across restarts.
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 
@@ -270,7 +270,8 @@ async def health():
             "data_validation_failures": state["data_validation_failures"],
             "signals_sent": state["signals_sent"], "telegram_configured": state["telegram_configured"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
-            "session_started_at": state["session_started_at"],\n            "uptime_seconds": int(time.time() - state["started_at"]),
+            "session_started_at": state["session_started_at"],
+            "uptime_seconds": int(time.time() - state["started_at"]),
             "last_error": state["last_error"]}
 
 @app.get("/ping")
