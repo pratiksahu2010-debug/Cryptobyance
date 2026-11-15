@@ -55,7 +55,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         signal = {"symbol": "ETH/USDT", "side": "SHORT", "candle": 2_100_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
         self.assertFalse(await store.enqueue_signal(signal, None, 3))
-        self.assertEqual(conn.execute.await_count, 0)
+        self.assertEqual(conn.execute.await_count, 1)  # per-symbol advisory transaction lock only
 
     async def test_same_direction_cooldown_is_durable(self):
         conn = FakeConnection(fetchrows=[{
@@ -65,8 +65,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         signal = {"symbol": "SOL/USDT", "side": "LONG", "candle": 3_300_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
         self.assertFalse(await store.enqueue_signal(signal, candidate_id=12, cooldown_candles=3))
-        self.assertEqual(conn.execute.await_count, 1)
-        self.assertIn("INVALID", conn.execute.await_args.args[0])
+        self.assertEqual(conn.execute.await_count, 2)  # advisory lock plus candidate invalidation
+        self.assertIn("INVALID", conn.execute.await_args_list[-1].args[0])
 
     async def test_opposite_direction_is_not_blocked_by_same_direction_cooldown(self):
         conn = FakeConnection(fetchrows=[
