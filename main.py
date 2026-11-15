@@ -65,6 +65,7 @@ state: dict[str, Any] = {
 # based on candle open-time, so a restart cannot emit an old candle's signal.
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
+telegram_missing_logged = False
 
 def candles_to_frame(raw: list) -> pd.DataFrame:
     # CoinDCX futures REST and socket candles are normalized to six OHLCV fields.
@@ -206,10 +207,14 @@ def fmt_price(value: float) -> str:
     return f"{value:.8f}".rstrip("0").rstrip(".")
 
 async def send_telegram(client: httpx.AsyncClient, signal: dict) -> bool:
+    global telegram_missing_logged
     token, chat_id = os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
-        log.error("Telegram credentials missing; signal not delivered")
+        if not telegram_missing_logged:
+            log.error("Telegram credentials missing; signals cannot be delivered until both variables are configured")
+            telegram_missing_logged = True
         return False
+    telegram_missing_logged = False
     emoji = "🟢" if signal["side"] == "LONG" else "🔴"
     text = (
         f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
@@ -277,9 +282,11 @@ async def scan_symbol(feed, client, semaphore, display_symbol: str, pair: str, n
                     return
             signal['symbol'] = display_symbol
             delivered = await send_telegram(client, signal)
+            # Record this candle even if delivery is unavailable. This prevents
+            # retrying the same signal on every scan cycle and flooding logs.
+            last_seen_candle[display_symbol] = closed_ts
             if delivered:
                 last_alert[display_symbol] = (signal['side'], closed_ts)
-                last_seen_candle[display_symbol] = closed_ts
                 state['signals_sent'] += 1
                 log.info('SIGNAL SENT %s %s entry=%s ADX=%.1f RSI=%.1f', display_symbol, signal['side'], signal['entry'], signal['adx'], signal['rsi'])
             state['symbols_ok'] += 1
