@@ -1,10 +1,10 @@
-# CryptoByance — single-engine LONG/SHORT signal bot
+# CryptoByance — CoinDCX Futures LONG/SHORT signal bot
 
-A Python signal-only scanner for 60 statically configured Binance USDⓈ-M USDT perpetual markets. It sends Telegram alerts; it never places, modifies, or cancels orders.
+A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX USDT-margined perpetual futures. It sends Telegram alerts and never places, modifies, or cancels orders.
 
-## Strategy (one engine only)
+## Strategy — one engine only
 
-**5-minute closed candle entry + 15-minute closed-candle context**
+**5-minute closed-candle entry + 15-minute closed-candle context**
 
 LONG requires all:
 - 5m EMA(9) > EMA(21)
@@ -13,17 +13,31 @@ LONG requires all:
 - 5m ADX(14) >= configured minimum (default 17)
 - 15m EMA(9) > EMA(21) and 15m close > EMA(21)
 
-SHORT is the exact inverse: EMA9 < EMA21, close < VWAP, RSI < 50, ADX >= 17, and bearish 15m EMA/context.
-
-ADX measures strength, not direction. No separate ORB, breakout, momentum, or secondary signal module is included. All conditions are mandatory. The engine evaluates completed candles only, so it does not repaint or alert on a still-forming bar.
+SHORT is the exact inverse. ADX measures strength, not direction. No ORB, breakout, momentum, or secondary signal module is included. All conditions are mandatory. The engine evaluates completed candles only.
 
 ATR(14) is used only to calculate the informational stop distance (1.5 ATR by default); it is not an entry filter. Target is 1.5R by default. These are planning levels, not exchange orders or guaranteed fills.
 
-## 60-symbol universe
+## Universe
 
+The bot retains the original 60 configured symbols:
 BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, LINK, DOT, TRX, LTC, BCH, NEAR, APT, ARB, OP, SUI, SEI, INJ, ATOM, ETC, FIL, ICP, AAVE, UNI, TIA, JUP, WIF, PEPE, FLOKI, SHIB, RUNE, FTM, GALA, SAND, MANA, AXS, EGLD, ALGO, VET, THETA, EOS, XLM, HBAR, MKR, CRV, LDO, DYDX, 1000BONK, 1000PEPE, ORDI, STX, IMX, GRT, QNT, ENS, KAS, PENDLE, ONDO.
 
-The exchange market list is validated at startup. Binance may delist, rename, or restrict a contract; unavailable symbols are logged and excluded rather than silently substituted.
+At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_USDT`) with CoinDCX's live active USDT futures instruments. Missing contracts are reported in logs and `/health`; the bot does not silently substitute a similarly named contract (for example a 1000x token contract).
+
+## CoinDCX market data
+
+- Active futures instruments: public CoinDCX active-instruments endpoint.
+- Historical 5m candles: public CoinDCX futures candlestick REST endpoint.
+- Live updates: public CoinDCX futures Socket.IO 5m candlestick channels.
+- 15m context: built from three contiguous, completed 5m candles to keep context aligned with the trigger timeframe.
+- Reconnects: Socket.IO reconnection with bounded retry delay.
+- Recovery: REST history is refreshed for symbols whose candle cache is missing or stale.
+- Public market data only. No CoinDCX API key or secret is required.
+- The application contains no order placement, position, or trading-permission code.
+
+## Telegram
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include entry, informational stop/target, RR, RSI, ADX, and candle close time.
 
 ## Run locally
 
@@ -38,28 +52,17 @@ cp .env.example .env
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Create a Telegram bot with BotFather, send it a message, and obtain the chat ID. Only a Telegram bot token and chat ID are required. Binance public market data does not require API credentials.
-
 ## Render deployment
 
-1. Push this repository to GitHub.
-2. In Render choose **New → Blueprint**, select this repository, and apply `render.yaml`.
-3. Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the service environment.
-4. Deploy, then inspect `/health` and logs. A healthy HTTP process does not prove that Telegram delivery works; verify a test delivery and observe scan-cycle logs.
+The existing Render web service remains attached to this repository's `main` branch. Keep one Uvicorn worker because the scanner and websocket cache are in-process. Set the two Telegram environment variables in Render. Auto-deploy will pick up commits to `main`.
 
-### Free-plan limitation — important
+Check:
+- `/health`: market metadata ready, active/unavailable symbols, websocket status, last websocket event, scan counters and errors.
+- `/ping`: lightweight keepalive.
+- Render logs: look for CoinDCX instrument validation, per-symbol history bootstrap, websocket subscription, and completed scan-cycle messages.
 
-Render Free web services spin down after 15 minutes without inbound traffic, and local filesystem data is ephemeral. While asleep, the scanner does not run and signals can be missed. A free instance can also restart at any time. Use an external uptime monitor to request `/ping` every 5 minutes if you want to reduce idle spin-down, but this is a best-effort workaround, not a reliability guarantee. For continuous unattended alerts, use an always-on paid service. See Render's current free-instance limitations: https://render.com/docs/free
+Render Free instances can spin down and restart; scanning is not continuous while the service sleeps. A periodic request to `/ping` can reduce idle spin-down but cannot guarantee uninterrupted signals. Use an always-on instance for continuous monitoring.
 
-## Operational safeguards
+## Performance validation
 
-- One process / one scanner task; do not increase Render worker count.
-- Bounded concurrent REST polling, CCXT rate limiting, request timeout, per-symbol exception isolation.
-- One evaluation per newly closed 5m candle, with same-direction cooldown.
-- Health endpoint exposes cycle count, scan duration, successful/failed symbol counts, last error, and sent signal count.
-- No exchange API keys and no order-placement code.
-- In-memory cooldown/deduplication resets on restart. Do not interpret it as durable trade history.
-
-## Performance validation before relying on it
-
-No indicator recipe guarantees a 60% win rate. Backtest this exact rule set on out-of-sample data with fees, funding, spread and realistic slippage. Track win rate, profit factor, expectancy, max drawdown, average R, signal count and results by symbol/regime. Avoid tuning on the same period used for final evaluation. Forward-test alerts before risking capital.
+No indicator recipe guarantees a particular win rate. Backtest this exact rule set out of sample with fees, funding, spread and realistic slippage. Forward-test alerts before risking capital.
