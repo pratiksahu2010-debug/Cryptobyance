@@ -53,10 +53,10 @@ class TelegramNotifier:
             f"EMA 9/21: aligned\nVWAP: correct side\n"
             f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
             f"15m context: {signal['context']}\n"
-            f"5m candle close: {candle_time}\\n"
-            + (f"Signal generated: {generated_at}\\n" if generated_at else "")
-            + "\\n"
-            f"<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
+            f"5m candle close: {candle_time}\n"
+            + (f"Signal generated: {generated_at}\n" if generated_at else "")
+            + "\n"
+            + "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
     async def send(self, signal: dict) -> bool:
