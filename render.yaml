@@ -22,6 +22,8 @@ services:
       - key: CONTEXT_TIMEFRAME
         value: 15m
       - key: ADX_MIN
-        value: "17"
+        value: "25"
+      - key: DATABASE_URL
+        sync: false
       - key: SIGNAL_COOLDOWN_CANDLES
         value: "3"
