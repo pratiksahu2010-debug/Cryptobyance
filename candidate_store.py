@@ -163,8 +163,8 @@ class CandidateStore:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 cooldown = await conn.fetchrow(
-                    "SELECT last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1 FOR UPDATE", symbol)
-                if cooldown and candle_ms - int(cooldown["last_candle_open_ms"]) < cooldown_candles * 300_000:
+                    "SELECT last_direction,last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1 FOR UPDATE", symbol)
+                if cooldown and cooldown["last_direction"] == direction and candle_ms - int(cooldown["last_candle_open_ms"]) < cooldown_candles * 300_000:
                     if candidate_id is not None:
                         await conn.execute(
                             "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
