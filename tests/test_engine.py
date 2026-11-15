@@ -47,6 +47,23 @@ class CoinDCXFeedTests(unittest.TestCase):
                                 "low": ".5", "close": "1.5", "volume": "10"})
         self.assertEqual(rest, socket)
 
+    def test_futures_socket_candle_event_is_parsed_and_counted(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        try:
+            payload = {"channel": "B-BTC_USDT_5m-futures", "data": [{
+                "pair": "B-BTC_USDT", "open_time": 1_800_000_000,
+                "open": "100", "high": "102", "low": "99",
+                "close": "101", "volume": "12",
+            }]}
+            asyncio.run(feed._on_candlestick(payload))
+            self.assertEqual(feed.ws_events_received, 1)
+            self.assertEqual(feed.last_ws_pair, "B-BTC_USDT")
+            self.assertEqual(len(feed.rows("B-BTC_USDT")), 1)
+        finally:
+            asyncio.run(feed.close())
+
     def test_15m_aggregation_requires_three_complete_contiguous_bars(self):
         base = (1_800_000_000_000 // 300_000) * 300_000
         rows = [
