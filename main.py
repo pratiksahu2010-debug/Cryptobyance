@@ -61,7 +61,7 @@ state: dict[str, Any] = {
     "websocket_events_received": 0, "last_websocket_pair": None,
     "websocket_connect_errors": 0, "last_websocket_error": None, "websocket_disconnects": 0,
     "websocket_candle_fresh": False, "scanner_restarts": 0,
-    "telegram_configured": False,
+    "telegram_configured": False, "database_connected": False,
 }
 # In-process deduplication only. Startup cutoff prevents replaying candles that
 # closed before the current scanner session began; state is not durable across restarts.
@@ -187,11 +187,14 @@ async def scanner_session() -> None:
     session_started_ms = int(time.time() * 1000)
     state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
+    if not settings.database_url:
+        raise RuntimeError('DATABASE_URL is required for persistent signal candidates; set the Render internal PostgreSQL URL')
+    # Connect persistence before allocating network clients so a missing or
+    # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
+    candidate_store = await CandidateStore.connect(settings.database_url)
+    state['database_connected'] = True
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)
-    if not settings.database_url:
-        raise RuntimeError('DATABASE_URL is required for persistent signal candidates')
-    candidate_store = await CandidateStore.connect(settings.database_url)
     notifier = TelegramNotifier(telegram_client, settings.telegram_bot_token, settings.telegram_chat_id)
     state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
@@ -283,6 +286,7 @@ async def scanner_session() -> None:
     finally:
         state['running'] = False
         state['websocket_connected'] = False
+        state['database_connected'] = False
         await telegram_client.aclose()
         await candidate_store.close()
         await feed.close()
@@ -301,11 +305,14 @@ async def scanner() -> None:
             failures += 1
             state["running"] = False
             state["scanner_restarts"] += 1
-            state["last_error"] = f"scanner restart: {type(exc).__name__}"
+            detail = str(exc)
+            if settings.database_url:
+                detail = detail.replace(settings.database_url, "[redacted database URL]")
+            state["last_error"] = f"scanner restart: {type(exc).__name__}: {detail}"
             delay = min(60, 2 ** min(failures, 6))
             log.error(
-                "Scanner session failed; restarting attempt=%d delay=%ss error_type=%s",
-                failures, delay, type(exc).__name__,
+                "Scanner session failed; restarting attempt=%d delay=%ss error_type=%s detail=%s",
+                failures, delay, type(exc).__name__, detail,
             )
             await asyncio.sleep(delay)
 
@@ -359,7 +366,7 @@ def build_health_payload() -> dict[str, Any]:
         "signals_sent": state["signals_sent"],
         "telegram_delivery_failures": state["telegram_delivery_failures"],
         "last_telegram_success": state["last_telegram_success"],
-        "telegram_configured": state["telegram_configured"],
+        "telegram_configured": state["telegram_configured"], "database_connected": state["database_connected"],
         "last_scan": state["last_scan"], "last_scan_age_seconds": scan_age,
         "last_scan_seconds": state["last_scan_seconds"],
         "session_started_at": state["session_started_at"],
