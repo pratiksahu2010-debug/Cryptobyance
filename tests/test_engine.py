@@ -5,7 +5,7 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv
+from main import SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv, scan_symbol, last_seen_candle
 
 
 class CoinDCXFeedTests(unittest.TestCase):
@@ -151,6 +151,39 @@ class EngineTests(unittest.TestCase):
             "open": base - direction * .1, "high": base + .5,
             "low": base - .5, "close": base, "volume": np.full(n, 100.0),
         })
+
+    def test_failed_telegram_delivery_is_not_retried_for_same_candle(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = []
+        for i in range(200):
+            price = 100 + i * 0.1
+            rows.append([base + i * interval, price, price + 0.5, price - 0.5, price, 100])
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def rows(self, pair):
+                return rows
+
+        signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
+                  "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
+                  "candle": rows[-1][0]}
+
+        last_seen_candle.pop("BTC/USDT", None)
+        try:
+            with patch("main.evaluate_signal", return_value=signal), \\
+                 patch("main.send_telegram", new_callable=AsyncMock, return_value=False) as send:
+                async def run_twice():
+                    semaphore = asyncio.Semaphore(1)
+                    await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                    await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                asyncio.run(run_twice())
+                send.assert_awaited_once()
+        finally:
+            last_seen_candle.pop("BTC/USDT", None)
 
     def test_strict_engine_emits_long_for_aligned_uptrend(self):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
