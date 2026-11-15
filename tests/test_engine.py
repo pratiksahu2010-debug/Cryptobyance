@@ -287,7 +287,7 @@ class EngineTests(unittest.TestCase):
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
-    def test_stale_cache_uses_incremental_rest_refresh_and_keeps_full_history(self):
+    def test_recent_cache_does_not_trigger_unnecessary_rest_refresh(self):
         import asyncio
         from unittest.mock import patch
 
