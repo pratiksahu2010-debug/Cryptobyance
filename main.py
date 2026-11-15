@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 load_dotenv()
 
@@ -320,6 +320,7 @@ async def health():
     return build_health_payload()
 
 
-@app.get("/ping")
-async def ping():
-    return {"ok": True}
+@app.get("/ping", status_code=204, response_class=Response)
+async def ping() -> Response:
+    """Silent platform keepalive: no response body or diagnostic payload."""
+    return Response(status_code=204)
