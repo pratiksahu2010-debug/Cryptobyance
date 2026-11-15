@@ -315,6 +315,7 @@ async def scanner() -> None:
                 await asyncio.sleep(delay)
 
         valid = [(symbol, pair) for symbol, pair in pairs.items() if pair in active]
+        feed.configure_active_pairs([pair for _, pair in valid])
         missing = sorted(set(SYMBOLS) - {symbol for symbol, _ in valid})
         log.info('CoinDCX futures universe validated: configured=%d active=%d unavailable=%s', len(SYMBOLS), len(valid), missing)
         state['active_symbols'] = len(valid)
