@@ -96,7 +96,7 @@ def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.D
     df = candles_to_frame(raw)
     if df.empty:
         raise ValueError(f"empty {timeframe} OHLCV response")
-    df = df.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+    df = df.sort_values("timestamp", kind="stable").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
     numeric = ["timestamp", "open", "high", "low", "close", "volume"]
     if not np.isfinite(df[numeric].to_numpy(dtype=float)).all():
         raise ValueError(f"non-finite values in {timeframe} OHLCV")
@@ -378,9 +378,11 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": "cryptobyance-signal-bot",
+    return {"ok": bool(state["running"] and state["active_symbols"] > 0),
+            "service": "cryptobyance-signal-bot",
             "scanner_running": state["running"], "scans": state["scans"],
             "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
+            "universe_complete": state["active_symbols"] == len(SYMBOLS),
             "symbols_unavailable": state["unavailable_symbols"],
             "symbols_ok_last_scan": state["symbols_ok"],
             "symbols_failed_last_scan": state["symbols_failed"],
