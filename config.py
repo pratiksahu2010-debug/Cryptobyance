@@ -44,6 +44,7 @@ class Settings:
     log_level: str
     telegram_bot_token: str = field(repr=False)
     telegram_chat_id: str = field(repr=False)
+    database_url: str = field(repr=False)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -77,6 +78,7 @@ class Settings:
             log_level=log_level,
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+            database_url=os.getenv("DATABASE_URL", "").strip(),
         )
 
 
