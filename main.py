@@ -133,46 +133,20 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['symbols_ok'] += 1
                 return
             signal = {k: v for k, v in setup.items() if k != "adx_satisfied"}
-            previous = last_alert.get(display_symbol)
-            if previous and previous[0] == signal['side']:
-                candles_since = (closed_ts - previous[1]) // 300_000
-                if candles_since < COOLDOWN_CANDLES:
-                    if candidate_store is not None:
-                        await candidate_store.cancel(candidate_id)
-                    last_seen_candle[display_symbol] = closed_ts
-                    state['symbols_ok'] += 1
-                    return
             signal['symbol'] = display_symbol
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
-            delivery_started = time.monotonic()
-            delivered = await notifier.send(signal)
-            if candidate_store is not None:
-                await candidate_store.resolve(candidate_id, delivered)
-            delivery_seconds = round(time.monotonic() - delivery_started, 3)
-            if delivered:
-                # Only mark the candle processed after Telegram confirms delivery.
-                last_seen_candle[display_symbol] = closed_ts
-                last_alert[display_symbol] = (signal['side'], closed_ts)
-                state['signals_sent'] += 1
-                accepted_at = datetime.now(timezone.utc)
-                state['last_telegram_success'] = accepted_at.isoformat()
-                signal_age = max(0.0, (accepted_at.timestamp() * 1000 - five_minute_close) / 1000)
+            # Signal history, durable same-direction cooldown, candidate transition
+            # and Telegram outbox insertion commit in one PostgreSQL transaction.
+            queued = await candidate_store.enqueue_signal(signal, candidate_id, COOLDOWN_CANDLES)
+            last_seen_candle[display_symbol] = closed_ts
+            if queued:
+                state['signals_queued'] = state.get('signals_queued', 0) + 1
                 log.info(
-                    'SIGNAL SENT symbol=%s side=%s candle_close=%s generated_at=%s telegram_accepted_at=%s '
-                    'signal_age_seconds=%.1f delivery_seconds=%.3f entry=%s ADX=%.1f RSI=%.1f',
+                    'SIGNAL QUEUED symbol=%s side=%s candle_close=%s entry=%s ADX=%.1f RSI=%.1f',
                     display_symbol, signal['side'],
                     datetime.fromtimestamp(five_minute_close / 1000, timezone.utc).isoformat(),
-                    signal['signal_generated_at'], accepted_at.isoformat(),
-                    signal_age, delivery_seconds, signal['entry'], signal['adx'], signal['rsi'],
-                )
-            else:
-                state['telegram_delivery_failures'] += 1
-                log.warning(
-                    'SIGNAL DELIVERY FAILED symbol=%s side=%s candle_close=%s generated_at=%s',
-                    display_symbol, signal['side'],
-                    datetime.fromtimestamp(five_minute_close / 1000, timezone.utc).isoformat(),
-                    signal['signal_generated_at'],
+                    signal['entry'], signal['adx'], signal['rsi'],
                 )
             state['symbols_ok'] += 1
         except Exception as exc:
@@ -181,6 +155,32 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['data_validation_failures'] += 1
             state['last_error'] = f'{display_symbol}: {type(exc).__name__}: {exc}'
             log.warning('scan failed symbol=%s pair=%s error=%s', display_symbol, pair, exc)
+
+
+async def telegram_outbox_loop(candidate_store: CandidateStore, notifier: TelegramNotifier) -> None:
+    """Deliver durable queued alerts; expired leases are reclaimed after process restarts."""
+    while True:
+        try:
+            item = await candidate_store.claim_outbox()
+            if item is None:
+                await asyncio.sleep(1.0)
+                continue
+            delivered = await notifier.send(item["payload"])
+            if delivered:
+                await candidate_store.finish_outbox(item["id"])
+                state["signals_sent"] += 1
+                state["last_telegram_success"] = datetime.now(timezone.utc).isoformat()
+                log.info("TELEGRAM OUTBOX SENT id=%s attempt=%d", item["id"], item["attempts"])
+            else:
+                await candidate_store.retry_outbox(item["id"], item["attempts"], "TelegramRejectedOrUnavailable")
+                state["telegram_delivery_failures"] += 1
+                log.warning("TELEGRAM OUTBOX RETRY id=%s attempt=%d", item["id"], item["attempts"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            state["last_error"] = f"telegram outbox: {type(exc).__name__}"
+            log.error("Telegram outbox worker error_type=%s", type(exc).__name__)
+            await asyncio.sleep(3.0)
 
 
 async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
@@ -228,6 +228,7 @@ async def scanner_session() -> None:
     state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
     cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="postgres-nightly-cleanup")
+    outbox_task = asyncio.create_task(telegram_outbox_loop(candidate_store, notifier), name="telegram-outbox")
     try:
         startup_attempt = 0
         while True:
@@ -305,6 +306,20 @@ async def scanner_session() -> None:
                 state['last_error'] = '; '.join(unexpected[:3])
             elif state['symbols_failed'] == 0:
                 state['last_error'] = None
+            try:
+                await candidate_store.persist_runtime({
+                    "scanner_running": state["running"], "scans": state["scans"],
+                    "last_scan": state["last_scan"], "symbols_ok": state["last_cycle_symbols_ok"],
+                    "symbols_failed": state["last_cycle_symbols_failed"],
+                    "websocket_connected": feed.websocket_connected,
+                    "websocket_events_received": feed.ws_events_received,
+                    "signals_queued": state.get("signals_queued", 0),
+                    "signals_queued": state.get("signals_queued", 0),
+        "signals_sent": state["signals_sent"],
+                    "last_error": state["last_error"],
+                })
+            except Exception as exc:
+                log.error("Scanner runtime checkpoint failed error_type=%s", type(exc).__name__)
             log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
             await asyncio.sleep(max(1, SCAN_SECONDS - (time.monotonic() - started)))
     except asyncio.CancelledError:
@@ -318,10 +333,12 @@ async def scanner_session() -> None:
         state['websocket_connected'] = False
         state['database_connected'] = False
         cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        outbox_task.cancel()
+        for background_task in (cleanup_task, outbox_task):
+            try:
+                await background_task
+            except asyncio.CancelledError:
+                pass
         await telegram_client.aclose()
         await candidate_store.close()
         await feed.close()
