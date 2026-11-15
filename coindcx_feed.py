@@ -102,14 +102,15 @@ class CoinDCXFuturesFeed:
         self.last_ws_event: float | None = None
         self.ws_events_received = 0
         self.last_ws_pair: str | None = None
-        self.ws_other_events = 0
-        self.ws_other_event_names: list[str] = []
+        self.ws_connect_errors = 0
+        self.last_ws_error: str | None = None
+        self.ws_disconnects = 0
         self.ws_task: asyncio.Task | None = None
         self._closed = False
         self.sio.on("connect", self._on_connect)
         self.sio.on("disconnect", self._on_disconnect)
         self.sio.on("candlestick", self._on_candlestick)
-        self.sio.on("*", self._on_other_event)
+        self.sio.on("connect_error", self._on_connect_error)
 
     def configure_active_pairs(self, active_pairs: list[str]) -> None:
         """Subscribe and cache only contracts confirmed active by CoinDCX."""
@@ -171,17 +172,15 @@ class CoinDCXFuturesFeed:
             await self.sio.emit("join", {"channelName": f"{pair}_5m-futures"})
         log.info("CoinDCX futures websocket subscriptions sent=%d", len(self.pairs))
 
-    async def _on_other_event(self, event, response):
-        """Record non-candle server events so a connected-but-idle feed is diagnosable."""
-        self.ws_other_events += 1
-        if event not in self.ws_other_event_names and len(self.ws_other_event_names) < 12:
-            self.ws_other_event_names.append(str(event))
-        if self.ws_other_events <= 5:
-            keys = sorted(response.keys()) if isinstance(response, dict) else []
-            log.info("CoinDCX websocket non-candle event=%s payload_keys=%s", event, keys)
+    async def _on_connect_error(self, response):
+        """Record Socket.IO handshake failures using the v4-compatible event API."""
+        self.ws_connect_errors += 1
+        self.last_ws_error = str(response)[:300]
+        log.warning("CoinDCX websocket connect error: %s", self.last_ws_error)
 
     async def _on_disconnect(self):
         self.websocket_connected = False
+        self.ws_disconnects += 1
         log.warning("CoinDCX futures websocket disconnected")
 
     async def _on_candlestick(self, response):
@@ -215,7 +214,7 @@ class CoinDCXFuturesFeed:
         while not self._closed:
             try:
                 if not self.sio.connected:
-                    await self.sio.connect(SOCKET_URL, transports=["websocket"], wait_timeout=20)
+                    await self.sio.connect(SOCKET_URL, transports=["websocket"])
                 await self.sio.wait()
                 delay = 2
             except asyncio.CancelledError:
