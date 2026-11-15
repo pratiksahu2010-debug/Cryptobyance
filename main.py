@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 load_dotenv()
 
@@ -194,7 +194,16 @@ async def scanner_session() -> None:
 
         await asyncio.gather(*(bootstrap(symbol, pair) for symbol, pair in valid))
         feed.start_websocket()
-        # Ignore any setup that formed while the initial history bootstrap was running.
+        # Wait for the websocket handshake and all subscriptions before the first
+        # scan. The wait is bounded: REST history remains the fallback if the socket
+        # is unavailable, so a websocket outage cannot stall the scanner forever.
+        websocket_ready = await feed.wait_until_connected(timeout=20.0)
+        state["websocket_connected"] = feed.websocket_connected
+        if websocket_ready:
+            log.info("CoinDCX websocket ready; all %d candle channels subscribed", len(valid))
+        else:
+            log.warning("CoinDCX websocket not ready within 20s; starting scan with REST history fallback")
+        # Ignore any setup that formed while history bootstrap/socket startup ran.
         first_scan_cutoff_ms = int(time.time() * 1000)
         while True:
             started = time.monotonic()
@@ -322,4 +331,5 @@ async def health():
 
 @app.get("/ping")
 async def ping():
-    return {"ok": True}
+    """Empty, lightweight keepalive response."""
+    return Response(content="", status_code=200, media_type="text/plain")
