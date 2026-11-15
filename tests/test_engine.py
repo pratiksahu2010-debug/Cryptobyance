@@ -2,7 +2,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from main import (SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv,\n                  exchange_ban_retry_seconds)
+from main import (SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv,
+                  exchange_ban_retry_seconds)
 
 class EngineTests(unittest.TestCase):
     def test_binance_ip_ban_retry_waits_until_expiry_plus_margin(self):
