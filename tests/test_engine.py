@@ -241,6 +241,21 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(signal["side"], "LONG")
         self.assertGreaterEqual(signal["adx"], 17)
 
+    def test_signal_stop_and_target_preserve_configured_risk_reward(self):
+        signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        risk = signal["entry"] - signal["stop"]
+        reward = signal["target"] - signal["entry"]
+        self.assertAlmostEqual(reward / risk, 1.5, places=8)
+
+    def test_15m_opposing_context_blocks_long_signal(self):
+        signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(-1, 900000))
+        self.assertIsNone(signal)
+
+    def test_15m_opposing_context_blocks_short_signal(self):
+        signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNone(signal)
+
     def test_strict_engine_emits_short_for_aligned_downtrend(self):
         signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
         self.assertIsNotNone(signal)
