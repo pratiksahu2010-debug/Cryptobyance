@@ -116,46 +116,42 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     x["vwap"] = pv.groupby(utc_day).cumsum() / x.volume.groupby(utc_day).cumsum().replace(0, np.nan)
     return x
 
-def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
-    """Single strict-threshold engine. Uses only fully closed candles."""
+def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
+    """Evaluate all directional gates while exposing ADX as a separate pending gate."""
     if len(df5) < 60 or len(df15) < 60:
         return None
-    # scan_symbol validates and removes forming candles before evaluation.
-    a = indicators(df5.copy())
-    b = indicators(df15.copy())
+    a, b = indicators(df5.copy()), indicators(df15.copy())
     if len(a) < 35 or len(b) < 35:
         return None
     c, p = a.iloc[-1], b.iloc[-1]
-    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr,
-              p.ema9, p.ema21, p.close]
+    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, p.ema9, p.ema21, p.close]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
-
-    long_ok = (
-        c.ema9 > c.ema21 and c.close > c.vwap and c.rsi > 50
-        and c.adx >= ADX_MIN and p.ema9 > p.ema21 and p.close > p.ema21
-    )
-    short_ok = (
-        c.ema9 < c.ema21 and c.close < c.vwap and c.rsi < 50
-        and c.adx >= ADX_MIN and p.ema9 < p.ema21 and p.close < p.ema21
-    )
+    long_ok = c.ema9 > c.ema21 and c.close > c.vwap and c.rsi > 50 and p.ema9 > p.ema21 and p.close > p.ema21
+    short_ok = c.ema9 < c.ema21 and c.close < c.vwap and c.rsi < 50 and p.ema9 < p.ema21 and p.close < p.ema21
     if not (long_ok or short_ok):
         return None
-
     side = "LONG" if long_ok else "SHORT"
-    entry = float(c.close)
-    # ATR-based protective stop; target is 1.5R by default. This is trade
-    # planning metadata only; the bot never submits exchange orders.
-    atr_value = float(c.atr)
+    entry, atr_value = float(c.close), float(c.atr)
     if not np.isfinite(atr_value) or atr_value <= 0:
         return None
     risk = atr_value * ATR_STOP_MULT
-    stop = entry - risk if side == "LONG" else entry + risk
-    target = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
     return {
-        "side": side, "entry": entry, "stop": stop, "target": target,
+        "side": side, "entry": entry,
+        "stop": entry - risk if side == "LONG" else entry + risk,
+        "target": entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR,
         "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
         "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": "15m bullish" if side == "LONG" else "15m bearish",
+        "adx_satisfied": float(c.adx) >= ADX_MIN,
     }
+
+
+def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
+    """Strict signal evaluator; all original gates remain mandatory."""
+    setup = evaluate_setup(df5, df15)
+    if setup is None or not setup["adx_satisfied"]:
+        return None
+    setup.pop("adx_satisfied", None)
+    return setup
