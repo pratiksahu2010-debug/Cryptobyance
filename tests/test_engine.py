@@ -6,7 +6,7 @@ from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
 from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload, ping
-from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
+from strategy import candles_to_frame, indicators, evaluate_signal, evaluate_setup, validate_ohlcv
 from telegram import TelegramNotifier
 
 
@@ -325,7 +325,7 @@ class EngineTests(unittest.TestCase):
         sent_before = state['signals_sent']
         try:
             from unittest.mock import patch
-            with patch("main.evaluate_signal", return_value=signal):
+            with patch("main.evaluate_setup", return_value={**signal, "adx_satisfied": True}):
                 async def run_twice():
                     semaphore = asyncio.Semaphore(1)
                     await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
@@ -366,7 +366,7 @@ class EngineTests(unittest.TestCase):
                 return True
 
         feed = FakeFeed()
-        with patch("main.evaluate_signal", return_value=None):
+        with patch("main.evaluate_setup", return_value=None):
             asyncio.run(scan_symbol(
                 feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
                 "B-BTC_USDT", now_ms,
