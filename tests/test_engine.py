@@ -5,7 +5,7 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload
+from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload, ping
 from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
 
 
@@ -80,7 +80,10 @@ class CoinDCXFeedTests(unittest.TestCase):
         fake = FakeSocket()
         feed.sio = fake
         try:
-            asyncio.run(feed._on_connect())
+            async def connect_and_confirm_ready():
+                await feed._on_connect()
+                return await feed.wait_until_connected(timeout=0.01)
+            self.assertTrue(asyncio.run(connect_and_confirm_ready()))
             self.assertTrue(feed.websocket_connected)
             self.assertEqual(fake.emitted, [
                 ("join", {"channelName": "B-BTC_USDT_5m-futures"}),
@@ -162,6 +165,12 @@ class CoinDCXFeedTests(unittest.TestCase):
     def test_universe_has_exactly_60_unique_symbols(self):
         self.assertEqual(len(SYMBOLS), 60)
         self.assertEqual(len(set(SYMBOLS)), 60)
+
+    def test_ping_returns_empty_success_response(self):
+        import asyncio
+        response = asyncio.run(ping())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b"")
 
 
 class EngineTests(unittest.TestCase):
