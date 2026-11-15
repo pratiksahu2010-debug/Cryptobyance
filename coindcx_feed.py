@@ -102,11 +102,14 @@ class CoinDCXFuturesFeed:
         self.last_ws_event: float | None = None
         self.ws_events_received = 0
         self.last_ws_pair: str | None = None
+        self.ws_other_events = 0
+        self.ws_other_event_names: list[str] = []
         self.ws_task: asyncio.Task | None = None
         self._closed = False
         self.sio.on("connect", self._on_connect)
         self.sio.on("disconnect", self._on_disconnect)
         self.sio.on("candlestick", self._on_candlestick)
+        self.sio.on("*", self._on_other_event)
 
     def configure_active_pairs(self, active_pairs: list[str]) -> None:
         """Subscribe and cache only contracts confirmed active by CoinDCX."""
@@ -167,6 +170,15 @@ class CoinDCXFuturesFeed:
         for pair in self.pairs:
             await self.sio.emit("join", {"channelName": f"{pair}_5m-futures"})
         log.info("CoinDCX futures websocket subscriptions sent=%d", len(self.pairs))
+
+    async def _on_other_event(self, event, response):
+        """Record non-candle server events so a connected-but-idle feed is diagnosable."""
+        self.ws_other_events += 1
+        if event not in self.ws_other_event_names and len(self.ws_other_event_names) < 12:
+            self.ws_other_event_names.append(str(event))
+        if self.ws_other_events <= 5:
+            keys = sorted(response.keys()) if isinstance(response, dict) else []
+            log.info("CoinDCX websocket non-candle event=%s payload_keys=%s", event, keys)
 
     async def _on_disconnect(self):
         self.websocket_connected = False
