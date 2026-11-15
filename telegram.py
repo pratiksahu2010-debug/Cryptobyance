@@ -37,9 +37,12 @@ class TelegramNotifier:
     @staticmethod
     def format_message(signal: dict) -> str:
         emoji = "🟢" if signal["side"] == "LONG" else "🔴"
+        # Exchange timestamps identify candle OPEN; show the true close time.
+        candle_close_ms = signal.get("candle_close", signal["candle"] + 300_000)
         candle_time = datetime.fromtimestamp(
-            signal["candle"] / 1000, timezone.utc
-        ).strftime("%Y-%m-%d %H:%M UTC")
+            candle_close_ms / 1000, timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+        generated_at = signal.get("signal_generated_at")
         return (
             f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
             f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
@@ -50,7 +53,9 @@ class TelegramNotifier:
             f"EMA 9/21: aligned\nVWAP: correct side\n"
             f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
             f"15m context: {signal['context']}\n"
-            f"5m candle close: {candle_time}\n\n"
+            f"5m candle close: {candle_time}\\n"
+            + (f"Signal generated: {generated_at}\\n" if generated_at else "")
+            + "\\n"
             f"<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
