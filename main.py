@@ -13,11 +13,12 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+load_dotenv()
+
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
 from strategy import evaluate_signal, timeframe_milliseconds, validate_ohlcv
 from telegram import TelegramNotifier
 
-load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cryptobyance")
