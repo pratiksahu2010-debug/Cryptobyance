@@ -45,15 +45,28 @@ Pending ADX candidates are persisted in PostgreSQL. A setup that passes EMA/VWAP
 
 The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
-- `main.py`: FastAPI lifecycle, scan orchestration, and health endpoints.
+- `main.py`: FastAPI lifecycle, scan orchestration, outbox delivery worker, cleanup schedule and health endpoints.
 - `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and 15m aggregation.
 - `strategy.py`: pure OHLCV validation, indicators, and the single LONG/SHORT decision rule.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
-- `candidate_store.py`: PostgreSQL-backed pending-candidate lifecycle and expiry.
+- `candidate_store.py`: PostgreSQL schema, pending-candidate lifecycle, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
 
-The strategy module has no network or application-lifecycle dependencies. Telegram delivery retries rate limits, server errors, and transient network failures up to three attempts; permanent 4xx rejections are not retried. The scanner supervisor restarts a failed scanner session with bounded backoff. On startup/restart, candles that closed before the new scanner session began are ignored so old setups are not replayed as fresh alerts.
+### PostgreSQL persistence design
 
-The pending-candidate lifecycle is persisted in PostgreSQL. Same-direction cooldown and final alert deduplication remain in process memory and reset on process restart.
+PostgreSQL is the durable source of truth for bot workflow state:
+- `signal_candidates`: pending ADX candidates, evaluated-candle checkpoint and three-follow-up-candle expiry.
+- `signal_history`: one durable record per symbol/direction/5m candle, protected by a unique idempotency key.
+- `telegram_outbox`: queued alert payloads, attempt count, retry time, delivery lease and terminal status. A worker claims rows with `FOR UPDATE SKIP LOCKED`; expired leases are recovered after restarts.
+- `signal_cooldowns`: same-direction cooldown survives service restarts. Per-symbol transaction advisory locks serialize concurrent signal creation.
+- `scanner_runtime`: last completed scan and WebSocket health checkpoint, loaded at startup for diagnostics.
+
+Signal history, candidate transition, cooldown update and outbox insertion commit in one database transaction. Telegram delivery is retried from the outbox after temporary failures. Delivery is **at-least-once**: a rare network failure after Telegram accepts a message but before PostgreSQL records the acknowledgement can still result in a duplicate Telegram message. The database idempotency key prevents duplicate signal/outbox creation; it cannot make Telegram's external API exactly-once.
+
+The WebSocket candle cache and indicator calculations stay in memory; the bot does not write every tick to PostgreSQL. REST history repopulates the candle cache after a restart. This avoids excessive database writes while preserving candidates, signals, cooldowns and alert-delivery work.
+
+The strategy module has no network or application-lifecycle dependencies. Telegram's own sender retries rate limits, server errors and transient network failures up to three attempts; the durable outbox retries failed delivery cycles with backoff and marks an alert DEAD after 12 cycles for manual review. The scanner supervisor restarts a failed scanner session with bounded backoff. On startup/restart, candles that closed before the new scanner session began are ignored so old setups are not replayed as fresh alerts.
+
+A safe cleanup runs on startup and nightly at 02:00 India time. It expires candidates after their evaluation window and deletes only EXPIRED/INVALID candidate rows older than seven days. It preserves pending candidates, triggered candidate records, signal history, cooldowns and Telegram delivery records. Scanner runtime has one upserted checkpoint row; logs remain in Render's logging service rather than being copied into PostgreSQL.
 
 ## Run locally
 
