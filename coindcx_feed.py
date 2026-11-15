@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import time
 from collections import defaultdict
 from typing import Any
@@ -187,19 +188,38 @@ class CoinDCXFuturesFeed:
         log.warning("CoinDCX futures websocket disconnected")
 
     async def _on_candlestick(self, response):
+        """Decode Socket.IO candle events, including CoinDCX's nested JSON envelope."""
         try:
+            if isinstance(response, str):
+                response = json.loads(response)
             if not isinstance(response, dict):
                 return
-            channel = str(response.get("channel", ""))
+
+            channel = str(response.get("channel") or response.get("channelName") or "")
             data = response.get("data", [])
+
+            # CoinDCX futures Socket.IO sends data as a JSON-encoded envelope:
+            # {"event":"candlestick","data":"{\"data\":[{...}],...}"}.
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                channel = str(data.get("channel") or data.get("channelName") or channel)
+                nested = data.get("data", data)
+                if isinstance(nested, str):
+                    nested = json.loads(nested)
+                if isinstance(nested, dict) and isinstance(nested.get("data"), (list, dict)):
+                    nested = nested["data"]
+                data = nested
             if isinstance(data, dict):
                 data = [data]
             if not isinstance(data, list):
                 return
+
+            channel_pair = channel.removesuffix("_5m-futures")
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                pair = str(item.get("pair") or channel.removesuffix("_5m-futures"))
+                pair = str(item.get("pair") or channel_pair)
                 if pair not in self.bars:
                     continue
                 row = candle_to_row(item)
@@ -209,8 +229,10 @@ class CoinDCXFuturesFeed:
                 self.last_ws_pair = pair
                 if self.ws_events_received == 1:
                     log.info("CoinDCX first futures candle event received pair=%s timestamp=%s", pair, row[0])
+        except (TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
+            log.warning("Ignoring malformed CoinDCX futures candlestick event: %s", str(exc)[:200])
         except Exception:
-            log.exception("Could not parse CoinDCX futures candlestick event")
+            log.exception("Could not process CoinDCX futures candlestick event")
 
     async def run_websocket(self) -> None:
         delay = 2
