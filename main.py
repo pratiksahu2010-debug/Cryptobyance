@@ -222,11 +222,15 @@ async def scanner_session() -> None:
     # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
     candidate_store = await CandidateStore.connect(settings.database_url)
     state['database_connected'] = True
-    previous_checkpoint = await candidate_store.load_runtime()
-    state["previous_runtime_checkpoint"] = previous_checkpoint
-    if previous_checkpoint:
-        log.info("Loaded previous PostgreSQL scanner checkpoint updated_at=%s",
-                 previous_checkpoint["updated_at"])
+    try:
+        previous_checkpoint = await candidate_store.load_runtime()
+        state["previous_runtime_checkpoint"] = previous_checkpoint
+        if previous_checkpoint:
+            log.info("Loaded previous PostgreSQL scanner checkpoint updated_at=%s",
+                     previous_checkpoint["updated_at"])
+    except Exception as exc:
+        state["last_error"] = f"previous database checkpoint unavailable: {type(exc).__name__}"
+        log.warning("Could not load previous PostgreSQL checkpoint error_type=%s", type(exc).__name__)
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)
     notifier = TelegramNotifier(telegram_client, settings.telegram_bot_token, settings.telegram_chat_id)
@@ -319,8 +323,7 @@ async def scanner_session() -> None:
                     "websocket_connected": feed.websocket_connected,
                     "websocket_events_received": feed.ws_events_received,
                     "signals_queued": state.get("signals_queued", 0),
-                    "signals_queued": state.get("signals_queued", 0),
-        "signals_sent": state["signals_sent"],
+                    "signals_sent": state["signals_sent"],
                     "last_error": state["last_error"],
                 })
             except Exception as exc:
@@ -424,6 +427,8 @@ def build_health_payload() -> dict[str, Any]:
         "telegram_delivery_failures": state["telegram_delivery_failures"],
         "last_telegram_success": state["last_telegram_success"],
         "telegram_configured": state["telegram_configured"], "database_connected": state["database_connected"],
+        "signals_queued": state.get("signals_queued", 0),
+        "previous_runtime_checkpoint": state.get("previous_runtime_checkpoint"),
         "previous_runtime_checkpoint": state.get("previous_runtime_checkpoint"),
         "signals_queued": state.get("signals_queued", 0),
         "last_scan": state["last_scan"], "last_scan_age_seconds": scan_age,
