@@ -243,7 +243,7 @@ class EngineTests(unittest.TestCase):
             ))
         self.assertEqual(feed.refresh_limits, [6])
 
-    def test_undersized_cache_retries_full_history_bootstrap(self):
+    def test_cache_under_180_bars_retries_full_history_for_15m_context(self):
         import asyncio
         from unittest.mock import patch
 
