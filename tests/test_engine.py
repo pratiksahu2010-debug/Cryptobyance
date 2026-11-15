@@ -137,6 +137,20 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing interval"):
             validate_ohlcv(raw, "5m", base + 5 * interval + 2000)
 
+    def test_validator_rejects_fractional_timestamps(self):
+        interval = 300000
+        base = (1700000000000 // interval) * interval
+        raw = [[base + i * interval + 0.5, 100, 102, 99, 101, 10] for i in range(4)]
+        with self.assertRaisesRegex(ValueError, "fractional timestamp"):
+            validate_ohlcv(raw, "5m", base + 4 * interval + 2000)
+
+    def test_validator_rejects_negative_volume(self):
+        interval = 300000
+        base = (1700000000000 // interval) * interval
+        raw = [[base + i * interval, 100, 102, 99, 101, -1] for i in range(4)]
+        with self.assertRaisesRegex(ValueError, "invalid price or volume"):
+            validate_ohlcv(raw, "5m", base + 4 * interval + 2000)
+
     def test_validator_rejects_inconsistent_ohlc(self):
         interval = 300000
         base = (1700000000000 // interval) * interval
