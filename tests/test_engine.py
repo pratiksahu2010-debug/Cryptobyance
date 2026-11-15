@@ -155,7 +155,6 @@ class EngineTests(unittest.TestCase):
 
     def test_failed_telegram_delivery_is_not_retried_for_same_candle(self):
         import asyncio
-        from unittest.mock import AsyncMock, patch
 
         interval = 300_000
         base = (1_800_000_000_000 // interval) * interval
@@ -169,22 +168,29 @@ class EngineTests(unittest.TestCase):
             def rows(self, pair):
                 return rows
 
+        class FakeNotifier:
+            def __init__(self):
+                self.calls = 0
+
+            async def send(self, signal):
+                self.calls += 1
+                return False
+
         signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
                   "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
                   "candle": rows[-1][0]}
 
         last_seen_candle.pop("BTC/USDT", None)
         try:
-            with (
-                patch("main.evaluate_signal", return_value=signal),
-                patch("main.send_telegram", new_callable=AsyncMock, return_value=False) as send,
-            ):
+            from unittest.mock import patch
+            notifier = FakeNotifier()
+            with patch("main.evaluate_signal", return_value=signal):
                 async def run_twice():
                     semaphore = asyncio.Semaphore(1)
-                    await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
-                    await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
                 asyncio.run(run_twice())
-                send.assert_awaited_once()
+            self.assertEqual(notifier.calls, 1)
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
