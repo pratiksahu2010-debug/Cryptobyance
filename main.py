@@ -244,7 +244,7 @@ async def scan_symbol(feed, client, semaphore, display_symbol: str, pair: str, n
             rows = feed.rows(pair)
             latest_ts = int(rows[-1][0]) if rows else 0
             if (len(rows) < 60 or not latest_ts or
-                    now_ms - (latest_ts + timeframe_milliseconds('5m')) > 7 * 60_000):
+                    now_ms - (latest_ts + timeframe_milliseconds('5m')) > 30_000):
                 rows = await feed.fetch_history(pair, limit=320)
             df5 = validate_ohlcv(rows, '5m', now_ms)
             rows15 = aggregate_5m_to_15m(rows, now_ms)
