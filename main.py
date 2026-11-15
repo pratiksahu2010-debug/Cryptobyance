@@ -222,12 +222,12 @@ async def scanner_session() -> None:
     # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
     candidate_store = await CandidateStore.connect(settings.database_url)
     state['database_connected'] = True
-    cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="postgres-nightly-cleanup")
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)
     notifier = TelegramNotifier(telegram_client, settings.telegram_bot_token, settings.telegram_chat_id)
     state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
+    cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="postgres-nightly-cleanup")
     try:
         startup_attempt = 0
         while True:
