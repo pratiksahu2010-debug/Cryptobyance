@@ -49,7 +49,7 @@ if TIMEFRAME != "5m" or CONTEXT_TF != "15m":
     raise ValueError("This strategy requires TIMEFRAME=5m and CONTEXT_TIMEFRAME=15m")
 
 state: dict[str, Any] = {
-    "started_at": time.time(), "scans": 0, "last_scan": None,
+    "started_at": time.time(), "session_started_at": None, "scans": 0, "last_scan": None,
     "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "last_error": None, "running": False,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
@@ -64,7 +64,7 @@ state: dict[str, Any] = {
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 
-async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int) -> None:
+async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None) -> None:
     async with semaphore:
         try:
             rows = feed.rows(pair)
@@ -79,6 +79,11 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 raise ValueError(f'insufficient completed candles: 5m={len(df5)}, 15m={len(df15)}')
             closed_ts = int(df5.iloc[-1].timestamp)
             five_minute_close = closed_ts + timeframe_milliseconds('5m')
+            # Never emit a historical setup discovered during process startup.
+            if session_started_ms is not None and five_minute_close <= session_started_ms:
+                last_seen_candle[display_symbol] = closed_ts
+                state['symbols_ok'] += 1
+                return
             context_close = int(df15.iloc[-1].timestamp) + timeframe_milliseconds('15m')
             if context_close > five_minute_close:
                 raise ValueError('15m context candle is newer than the 5m signal candle')
@@ -118,6 +123,8 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
 
 
 async def scanner_session() -> None:
+    session_started_ms = int(time.time() * 1000)
+    state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
     telegram_client = httpx.AsyncClient(timeout=12.0)
@@ -170,7 +177,7 @@ async def scanner_session() -> None:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
             cycle_now_ms = int(time.time() * 1000)
-            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms) for symbol, pair in valid), return_exceptions=True)
+            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, session_started_ms) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
             state['scans'] += 1
             state['last_scan'] = datetime.now(timezone.utc).isoformat()
@@ -184,6 +191,8 @@ async def scanner_session() -> None:
             state['websocket_other_event_names'] = feed.ws_other_event_names
             if unexpected:
                 state['last_error'] = '; '.join(unexpected[:3])
+            elif state['symbols_failed'] == 0:
+                state['last_error'] = None
             log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
             await asyncio.sleep(max(1, SCAN_SECONDS - (time.monotonic() - started)))
     except asyncio.CancelledError:
@@ -261,7 +270,7 @@ async def health():
             "data_validation_failures": state["data_validation_failures"],
             "signals_sent": state["signals_sent"], "telegram_configured": state["telegram_configured"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
-            "uptime_seconds": int(time.time() - state["started_at"]),
+            "session_started_at": state["session_started_at"],\n            "uptime_seconds": int(time.time() - state["started_at"]),
             "last_error": state["last_error"]}
 
 @app.get("/ping")
