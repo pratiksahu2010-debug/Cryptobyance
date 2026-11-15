@@ -65,6 +65,41 @@ class CoinDCXFeedTests(unittest.TestCase):
         finally:
             asyncio.run(feed.close())
 
+    def test_socketio_v4_connection_uses_supported_connect_arguments(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed, SOCKET_URL
+
+        class FakeSocket:
+            connected = False
+            def __init__(self):
+                self.calls = []
+            async def connect(self, url, transports=None):
+                self.calls.append((url, transports))
+            async def wait(self):
+                raise asyncio.CancelledError()
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        fake = FakeSocket()
+        feed.sio = fake
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(feed.run_websocket())
+            self.assertEqual(fake.calls, [(SOCKET_URL, ["websocket"])])
+        finally:
+            asyncio.run(feed.close())
+
+    def test_websocket_connect_error_is_counted_and_truncated(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        try:
+            asyncio.run(feed._on_connect_error("handshake rejected"))
+            self.assertEqual(feed.ws_connect_errors, 1)
+            self.assertEqual(feed.last_ws_error, "handshake rejected")
+        finally:
+            asyncio.run(feed.close())
+
     def test_15m_aggregation_requires_three_complete_contiguous_bars(self):
         base = (1_800_000_000_000 // 300_000) * 300_000
         rows = [
