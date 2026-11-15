@@ -292,7 +292,7 @@ class EngineTests(unittest.TestCase):
             "low": base - .5, "close": base, "volume": np.full(n, 100.0),
         })
 
-    def test_failed_telegram_delivery_retries_same_current_candle(self):
+    def test_signal_is_queued_once_for_durable_outbox(self):
         import asyncio
 
         interval = 300_000
@@ -308,12 +308,19 @@ class EngineTests(unittest.TestCase):
                 return rows
 
         class FakeNotifier:
-            def __init__(self):
-                self.calls = 0
-
+            calls = 0
             async def send(self, signal):
                 self.calls += 1
-                return self.calls > 1
+                return True
+
+        class FakeCandidateStore:
+            def __init__(self):
+                self.queued = []
+            async def observe(self, symbol, direction, candle_ms, adx, adx_min):
+                return "READY", None
+            async def enqueue_signal(self, signal, candidate_id, cooldown_candles):
+                self.queued.append(signal.copy())
+                return True
 
         signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
                   "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
@@ -321,19 +328,21 @@ class EngineTests(unittest.TestCase):
 
         last_seen_candle.pop("BTC/USDT", None)
         notifier = FakeNotifier()
-        failures_before = state['telegram_delivery_failures']
-        sent_before = state['signals_sent']
+        store = FakeCandidateStore()
+        queued_before = state.get("signals_queued", 0)
         try:
             from unittest.mock import patch
             with patch("main.evaluate_setup", return_value={**signal, "adx_satisfied": True}):
                 async def run_twice():
                     semaphore = asyncio.Semaphore(1)
-                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
-                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT",
+                                      now_ms, candidate_store=store)
+                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT",
+                                      now_ms, candidate_store=store)
                 asyncio.run(run_twice())
-            self.assertEqual(notifier.calls, 2)
-            self.assertEqual(state['telegram_delivery_failures'], failures_before + 1)
-            self.assertEqual(state['signals_sent'], sent_before + 1)
+            self.assertEqual(len(store.queued), 1)
+            self.assertEqual(notifier.calls, 0)  # delivery is exclusively handled by outbox worker
+            self.assertEqual(state.get("signals_queued", 0), queued_before + 1)
             self.assertEqual(last_seen_candle["BTC/USDT"], int(rows[-1][0]))
         finally:
             last_seen_candle.pop("BTC/USDT", None)
