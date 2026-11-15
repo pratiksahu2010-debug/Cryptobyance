@@ -133,6 +133,7 @@ async def scan_symbol(feed, notifier, semaphore, candidate_store, display_symbol
             if previous and previous[0] == signal['side']:
                 candles_since = (closed_ts - previous[1]) // 300_000
                 if candles_since < COOLDOWN_CANDLES:
+                    await candidate_store.cancel(candidate_id)
                     last_seen_candle[display_symbol] = closed_ts
                     state['symbols_ok'] += 1
                     return
