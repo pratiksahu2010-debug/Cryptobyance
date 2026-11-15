@@ -184,11 +184,11 @@ async def telegram_outbox_loop(candidate_store: CandidateStore, notifier: Telegr
 
 
 async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
-    """Run safe retention cleanup on startup and nightly at 02:00 Asia/Kolkata."""
+    """Expire stale pending candidates nightly; never delete persisted records."""
     async def run_cleanup() -> None:
         result = await candidate_store.cleanup(int(time.time() * 1000))
         log.info(
-            "PostgreSQL nightly cleanup complete expired_candidates=%d deleted_terminal_candidates=%d",
+            "PostgreSQL retention sweep complete expired_candidates=%d deleted_records=%d",
             result["expired"], result["deleted"],
         )
 
