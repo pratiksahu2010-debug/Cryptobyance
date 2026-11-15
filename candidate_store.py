@@ -162,6 +162,9 @@ class CandidateStore:
         payload = json.dumps(signal, separators=(",", ":"), allow_nan=False)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                # Serialize competing signal writers for this symbol even when
+                # no cooldown row exists yet (SELECT FOR UPDATE cannot lock absence).
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", symbol)
                 cooldown = await conn.fetchrow(
                     "SELECT last_direction,last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1 FOR UPDATE", symbol)
                 if cooldown and cooldown["last_direction"] == direction and candle_ms - int(cooldown["last_candle_open_ms"]) < cooldown_candles * 300_000:
