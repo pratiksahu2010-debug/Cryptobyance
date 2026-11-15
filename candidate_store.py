@@ -97,7 +97,7 @@ class CandidateStore:
         await self.pool.close()
 
     async def cleanup(self, now_ms: int) -> dict[str, int]:
-        """Expire candidates and prune only old terminal candidates; retain signal audit/outbox."""
+        """Expire stale pending candidates without deleting any persisted records."""
         latest_completed_open_ms = ((now_ms // 300_000) - 1) * 300_000
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -105,12 +105,9 @@ class CandidateStore:
                     """UPDATE signal_candidates SET status='EXPIRED',updated_at=NOW()
                        WHERE status='PENDING' AND expires_after_candle_open_ms < $1""",
                     latest_completed_open_ms)
-                deleted_tag = await conn.execute(
-                    """DELETE FROM signal_candidates
-                       WHERE status IN ('EXPIRED','INVALID')
-                         AND updated_at < NOW() - INTERVAL '7 days'""")
-        return {"expired": int(expired_tag.rsplit(" ", 1)[-1]),
-                "deleted": int(deleted_tag.rsplit(" ", 1)[-1])}
+        # Retain candidate audit rows and all signal, delivery, cooldown and
+        # runtime records. No automatic DELETE is performed by this cleanup.
+        return {"expired": int(expired_tag.rsplit(" ", 1)[-1]), "deleted": 0}
 
     async def invalidate(self, symbol: str):
         async with self.pool.acquire() as conn:
