@@ -55,7 +55,7 @@ state: dict[str, Any] = {
     "started_at": time.time(), "scans": 0, "last_scan": None,
     "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "last_error": None, "running": False,
-    "active_symbols": 0, "unavailable_symbols": [],
+    "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -82,6 +82,45 @@ def candles_to_frame(raw: list) -> pd.DataFrame:
     for col in ("timestamp", "open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df.dropna(subset=["timestamp", "close", "volume"]).reset_index(drop=True)
+
+def timeframe_milliseconds(timeframe: str) -> int:
+    """Convert supported minute timeframes to milliseconds."""
+    if not timeframe.endswith("m") or not timeframe[:-1].isdigit() or int(timeframe[:-1]) <= 0:
+        raise ValueError(f"unsupported timeframe for validation: {timeframe}")
+    return int(timeframe[:-1]) * 60_000
+
+def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.DataFrame:
+    """Return sorted, unique, valid and fresh completed OHLCV candles."""
+    interval_ms = timeframe_milliseconds(timeframe)
+    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    df = candles_to_frame(raw)
+    if df.empty:
+        raise ValueError(f"empty {timeframe} OHLCV response")
+    df = df.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+    numeric = ["timestamp", "open", "high", "low", "close", "volume"]
+    if not np.isfinite(df[numeric].to_numpy(dtype=float)).all():
+        raise ValueError(f"non-finite values in {timeframe} OHLCV")
+    if (df[["open", "high", "low", "close"]] <= 0).any().any() or (df["volume"] < 0).any():
+        raise ValueError(f"invalid price or volume in {timeframe} OHLCV")
+    if (df["high"] < df[["open", "close", "low"]].max(axis=1)).any():
+        raise ValueError(f"inconsistent high in {timeframe} OHLCV")
+    if (df["low"] > df[["open", "close", "high"]].min(axis=1)).any():
+        raise ValueError(f"inconsistent low in {timeframe} OHLCV")
+    timestamps = df["timestamp"].astype("int64")
+    if (timestamps % interval_ms != 0).any():
+        raise ValueError(f"misaligned timestamp in {timeframe} OHLCV")
+    if int(timestamps.iloc[-1]) > now_ms + 5_000:
+        raise ValueError(f"future timestamp in {timeframe} OHLCV")
+    # Exclude forming bars using the exchange-cycle clock, not row position.
+    df = df.loc[df["timestamp"] + interval_ms <= now_ms - 1_500].copy().reset_index(drop=True)
+    if df.empty:
+        raise ValueError(f"no completed {timeframe} candles available")
+    latest_close_ms = int(df.iloc[-1].timestamp) + interval_ms
+    if now_ms - latest_close_ms > interval_ms + 30_000:
+        raise ValueError(f"stale {timeframe} candles: latest close is {(now_ms-latest_close_ms)/1000:.0f}s old")
+    if len(df) >= 3 and not (df.timestamp.astype("int64").diff().iloc[-2:] == interval_ms).all():
+        raise ValueError(f"missing interval in latest {timeframe} candles")
+    return df
 
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate indicators on OHLCV bars; VWAP resets at UTC day boundary."""
@@ -122,9 +161,9 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
     """Single strict-threshold engine. Uses only fully closed candles."""
     if len(df5) < 60 or len(df15) < 60:
         return None
-    # Binance returns the currently-forming last candle; exclude it.
-    a = indicators(df5.iloc[:-1].copy())
-    b = indicators(df15.iloc[:-1].copy())
+    # scan_symbol validates and removes forming candles before evaluation.
+    a = indicators(df5.copy())
+    b = indicators(df15.copy())
     if len(a) < 35 or len(b) < 35:
         return None
     c, p = a.iloc[-1], b.iloc[-1]
@@ -198,17 +237,24 @@ async def send_telegram(client: httpx.AsyncClient, signal: dict) -> bool:
         state["last_error"] = f"telegram: {exc}"
         return False
 
-async def scan_symbol(exchange, client, semaphore, display_symbol: str, exchange_symbol: str) -> None:
+async def scan_symbol(exchange, client, semaphore, display_symbol: str, exchange_symbol: str, now_ms: int) -> None:
     async with semaphore:
         try:
             raw5, raw15 = await asyncio.gather(
                 exchange.fetch_ohlcv(exchange_symbol, timeframe=TIMEFRAME, limit=300),
                 exchange.fetch_ohlcv(exchange_symbol, timeframe=CONTEXT_TF, limit=120),
             )
-            df5, df15 = candles_to_frame(raw5), candles_to_frame(raw15)
-            if len(df5) < 61 or len(df15) < 61:
-                raise ValueError(f"insufficient candles: 5m={len(df5)}, 15m={len(df15)}")
-            closed_ts = int(df5.iloc[-2].timestamp)
+            df5 = validate_ohlcv(raw5, TIMEFRAME, now_ms)
+            df15 = validate_ohlcv(raw15, CONTEXT_TF, now_ms)
+            if len(df5) < 60 or len(df15) < 60:
+                raise ValueError(f"insufficient completed candles: 5m={len(df5)}, 15m={len(df15)}")
+            closed_ts = int(df5.iloc[-1].timestamp)
+            five_minute_close = closed_ts + timeframe_milliseconds(TIMEFRAME)
+            context_close = int(df15.iloc[-1].timestamp) + timeframe_milliseconds(CONTEXT_TF)
+            if context_close > five_minute_close:
+                raise ValueError("15m context candle is newer than the 5m signal candle")
+            if five_minute_close - context_close > timeframe_milliseconds(CONTEXT_TF):
+                raise ValueError("15m context candle is too old for the 5m signal candle")
             # Process each newly closed 5m bar once.
             if last_seen_candle.get(display_symbol) == closed_ts:
                 state["symbols_ok"] += 1
@@ -236,6 +282,8 @@ async def scan_symbol(exchange, client, semaphore, display_symbol: str, exchange
             state["symbols_ok"] += 1
         except Exception as exc:
             state["symbols_failed"] += 1
+            if isinstance(exc, ValueError) and any(word in str(exc).lower() for word in ("candle", "ohlcv", "interval", "stale", "future", "timestamp", "high", "low", "volume", "price")):
+                state["data_validation_failures"] += 1
             state["last_error"] = f"{display_symbol}: {type(exc).__name__}: {exc}"
             log.warning("scan failed symbol=%s error=%s", display_symbol, exc)
 
@@ -268,8 +316,9 @@ async def scanner() -> None:
         # Resolve our human-readable static list to the exact active swap symbol.
         resolved = {}
         for market in exchange.markets.values():
-            if (market.get("active", True) and market.get("swap")
-                    and market.get("quote") == "USDT" and market.get("settle") == "USDT"):
+            if (market.get("active") is not False and market.get("swap") is True
+                    and market.get("linear") is True and market.get("quote") == "USDT"
+                    and market.get("settle") == "USDT" and market.get("symbol")):
                 resolved[f"{market.get('base')}/{market.get('quote')}"] = market["symbol"]
         valid = [(configured, resolved[configured]) for configured in SYMBOLS if configured in resolved]
         missing = sorted(set(SYMBOLS) - {configured for configured, _ in valid})
@@ -282,8 +331,9 @@ async def scanner() -> None:
         while True:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0)
+            cycle_now_ms = int(time.time() * 1000)
             results = await asyncio.gather(
-                *(scan_symbol(exchange, client, semaphore, configured, market_symbol)
+                *(scan_symbol(exchange, client, semaphore, configured, market_symbol, cycle_now_ms)
                   for configured, market_symbol in valid),
                 return_exceptions=True,
             )
@@ -334,6 +384,7 @@ async def health():
             "symbols_unavailable": state["unavailable_symbols"],
             "symbols_ok_last_scan": state["symbols_ok"],
             "symbols_failed_last_scan": state["symbols_failed"],
+            "data_validation_failures": state["data_validation_failures"],
             "signals_sent": state["signals_sent"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
             "uptime_seconds": int(time.time() - state["started_at"]),
