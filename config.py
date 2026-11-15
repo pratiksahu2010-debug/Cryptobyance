@@ -57,7 +57,7 @@ class Settings:
         if ema_fast >= ema_slow:
             raise ValueError("EMA_FAST must be smaller than EMA_SLOW")
 
-        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+        log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
 
