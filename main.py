@@ -18,6 +18,7 @@ from strategy import (
     ADX_MIN, ATR_STOP_MULT, MIN_RR, candles_to_frame, evaluate_signal,
     indicators, timeframe_milliseconds, validate_ohlcv,
 )
+from telegram import TelegramNotifier
 
 load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -54,7 +55,7 @@ state: dict[str, Any] = {
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
     "websocket_events_received": 0, "last_websocket_pair": None,
-    "websocket_other_events": 0, "websocket_other_event_names": [],
+    "websocket_other_events": 0, "websocket_other_event_names": [],\n    "telegram_configured": False,
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -62,51 +63,7 @@ last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 telegram_missing_logged = False
 
-def fmt_price(value: float) -> str:
-    if value >= 1000: return f"{value:,.2f}"
-    if value >= 1: return f"{value:.4f}"
-    return f"{value:.8f}".rstrip("0").rstrip(".")
-
-async def send_telegram(client: httpx.AsyncClient, signal: dict) -> bool:
-    global telegram_missing_logged
-    token, chat_id = os.getenv("TELEGRAM_BOT_TOKEN", "").strip(), os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        if not telegram_missing_logged:
-            log.error("Telegram credentials missing; signals cannot be delivered until both variables are configured")
-            telegram_missing_logged = True
-        return False
-    telegram_missing_logged = False
-    emoji = "🟢" if signal["side"] == "LONG" else "🔴"
-    text = (
-        f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
-        f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
-        f"Entry: <code>{fmt_price(signal['entry'])}</code>\n"
-        f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\n"
-        f"Target: <code>{fmt_price(signal['target'])}</code>\n"
-        f"Risk/Reward: 1:{signal['rr']:.2f}\n\n"
-        f"EMA 9/21: aligned\nVWAP: correct side\n"
-        f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
-        f"15m context: {signal['context']}\n"
-        f"5m candle close: {datetime.fromtimestamp(signal['candle']/1000, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-        f"<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
-    )
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        response = await client.post(url, json={
-            "chat_id": chat_id, "text": text, "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }, timeout=12)
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(str(payload))
-        return True
-    except Exception as exc:
-        log.exception("Telegram delivery failed: %s", exc)
-        state["last_error"] = f"telegram: {exc}"
-        return False
-
-async def scan_symbol(feed, client, semaphore, display_symbol: str, pair: str, now_ms: int) -> None:
+async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int) -> None:
     async with semaphore:
         try:
             rows = feed.rows(pair)
@@ -142,7 +99,7 @@ async def scan_symbol(feed, client, semaphore, display_symbol: str, pair: str, n
                     state['symbols_ok'] += 1
                     return
             signal['symbol'] = display_symbol
-            delivered = await send_telegram(client, signal)
+            delivered = await notifier.send(signal)
             # Record this candle even if delivery is unavailable. This prevents
             # retrying the same signal on every scan cycle and flooding logs.
             last_seen_candle[display_symbol] = closed_ts
@@ -162,7 +119,7 @@ async def scan_symbol(feed, client, semaphore, display_symbol: str, pair: str, n
 async def scanner() -> None:
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
-    telegram_client = httpx.AsyncClient(timeout=12.0)
+    telegram_client = httpx.AsyncClient(timeout=12.0)\n    notifier = TelegramNotifier(telegram_client)\n    state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
     try:
         startup_attempt = 0
@@ -210,7 +167,7 @@ async def scanner() -> None:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
             cycle_now_ms = int(time.time() * 1000)
-            results = await asyncio.gather(*(scan_symbol(feed, telegram_client, semaphore, symbol, pair, cycle_now_ms) for symbol, pair in valid), return_exceptions=True)
+            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
             state['scans'] += 1
             state['last_scan'] = datetime.now(timezone.utc).isoformat()
@@ -273,7 +230,7 @@ async def health():
             "symbols_ok_last_scan": state["symbols_ok"],
             "symbols_failed_last_scan": state["symbols_failed"],
             "data_validation_failures": state["data_validation_failures"],
-            "signals_sent": state["signals_sent"], "last_scan": state["last_scan"],
+            "signals_sent": state["signals_sent"], "telegram_configured": state["telegram_configured"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
             "uptime_seconds": int(time.time() - state["started_at"]),
             "last_error": state["last_error"]}
