@@ -73,7 +73,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             latest_ts = int(rows[-1][0]) if rows else 0
             if (len(rows) < 60 or not latest_ts or
                     now_ms - (latest_ts + timeframe_milliseconds('5m')) > 30_000):
-                rows = await feed.fetch_history(pair, limit=320)
+                await feed.fetch_history(pair, limit=6)
+                # Keep the full in-memory history for indicators and 15m context;
+                # only the REST refresh window is incremental after bootstrap.
+                rows = feed.rows(pair)
             df5 = validate_ohlcv(rows, '5m', now_ms)
             rows15 = aggregate_5m_to_15m(rows, now_ms)
             df15 = validate_ohlcv(rows15, '15m', now_ms)
