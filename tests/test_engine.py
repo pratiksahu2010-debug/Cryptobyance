@@ -281,6 +281,49 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(feed.refresh_limits, [320])
         self.assertEqual(len(feed.cache), 200)
 
+    def test_gapped_cache_with_180_rows_retries_full_history_for_15m_context(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        full_rows = [
+            [base + i * interval, 100 + i * 0.1, 100.5 + i * 0.1,
+             99.5 + i * 0.1, 100 + i * 0.1, 100]
+            for i in range(200)
+        ]
+        # Keep the latest three bars contiguous, but leave too few complete
+        # 15m groups in the existing cache despite its row count being >=180.
+        sparse_rows = [row for i, row in enumerate(full_rows)
+                       if i >= 197 or i % 4 == 0]
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.cache = sparse_rows
+                self.refresh_limits = []
+
+            def rows(self, pair):
+                return self.cache
+
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                if limit == 320:
+                    self.cache = full_rows
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [320])
+        self.assertGreaterEqual(len(aggregate_5m_to_15m(feed.cache, now_ms)), 60)
+
     def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
         import asyncio
         from unittest.mock import patch
