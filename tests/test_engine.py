@@ -7,6 +7,7 @@ from coindcx_feed import (
 )
 from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload, ping
 from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
+from telegram import TelegramNotifier
 
 
 class CoinDCXFeedTests(unittest.TestCase):
@@ -571,6 +572,24 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
         self.assertGreaterEqual(signal["adx"], 17)
+
+    def test_signal_includes_actual_five_minute_candle_close(self):
+        signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["candle_close"], signal["candle"] + 300_000)
+
+    def test_telegram_message_uses_candle_close_not_open_timestamp(self):
+        signal = {
+            "side": "LONG", "symbol": "BTC/USDT", "entry": 100.0,
+            "stop": 98.0, "target": 103.0, "rr": 1.5, "rsi": 60.0,
+            "adx": 25.0, "context": "15m bullish",
+            "candle": 1_800_000_000_000,
+            "candle_close": 1_800_000_300_000,
+            "signal_generated_at": "2027-01-15T08:05:02+00:00",
+        }
+        message = TelegramNotifier.format_message(signal)
+        self.assertIn("5m candle close: 2027-01-15 08:05:00 UTC", message)
+        self.assertIn("Signal generated: 2027-01-15T08:05:02+00:00", message)
 
     def test_signal_stop_and_target_preserve_configured_risk_reward(self):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
