@@ -39,14 +39,12 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls, 2)
         sleep.assert_awaited_once_with(2.0)
 
-    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "123:secret", "TELEGRAM_CHAT_ID": "456"})
     async def test_does_not_retry_permanent_telegram_rejection(self):
         client = FakeClient([httpx.Response(400, json={"ok": False, "description": "bad request"})])
-        notifier = TelegramNotifier(client)
+        notifier = TelegramNotifier(client, "123:secret", "456")
         self.assertFalse(await notifier.send(self._signal()))
         self.assertEqual(client.calls, 1)
 
-    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "123:secret", "TELEGRAM_CHAT_ID": "456"})
     async def test_network_error_does_not_log_bot_token(self):
         token = "123:secret"
         client = FakeClient([
@@ -54,7 +52,7 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
             httpx.ConnectError(f"failed https://api.telegram.org/bot{token}/sendMessage"),
             httpx.ConnectError(f"failed https://api.telegram.org/bot{token}/sendMessage"),
         ])
-        notifier = TelegramNotifier(client)
+        notifier = TelegramNotifier(client, "123:secret", "456")
         with self.assertLogs("cryptobyance.telegram", level=logging.ERROR) as captured:
             with patch("telegram.asyncio.sleep", new_callable=AsyncMock):
                 self.assertFalse(await notifier.send(self._signal()))
