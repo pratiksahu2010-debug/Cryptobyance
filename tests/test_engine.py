@@ -36,5 +36,33 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(float(frame.iloc[0].close), 1.5)
         self.assertEqual(float(frame.iloc[0].volume), 10)
 
+
+    def _trend_frame(self, direction: int, interval_ms: int) -> pd.DataFrame:
+        n = 400
+        base = np.linspace(100, 200, n) if direction > 0 else np.linspace(200, 100, n)
+        close = base
+        return pd.DataFrame({
+            "timestamp": 1700000000000 + np.arange(n) * interval_ms,
+            "open": close - direction * .1,
+            "high": close + .5,
+            "low": close - .5,
+            "close": close,
+            "volume": np.full(n, 100.0),
+        })
+
+    def test_strict_engine_emits_long_for_aligned_uptrend(self):
+        from main import evaluate_signal
+        signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertGreaterEqual(signal["adx"], 17)
+
+    def test_strict_engine_emits_short_for_aligned_downtrend(self):
+        from main import evaluate_signal
+        signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "SHORT")
+        self.assertGreaterEqual(signal["adx"], 17)
+
 if __name__ == "__main__":
     unittest.main()
