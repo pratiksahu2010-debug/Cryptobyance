@@ -398,7 +398,7 @@ class EngineTests(unittest.TestCase):
                 return True
 
         feed = FakeFeed()
-        with patch("main.evaluate_signal", return_value=None):
+        with patch("main.evaluate_setup", return_value=None):
             asyncio.run(scan_symbol(
                 feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
                 "B-BTC_USDT", now_ms,
@@ -435,7 +435,7 @@ class EngineTests(unittest.TestCase):
                 return True
 
         feed = FakeFeed()
-        with patch("main.evaluate_signal", return_value=None):
+        with patch("main.evaluate_setup", return_value=None):
             asyncio.run(scan_symbol(
                 feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
                 "B-BTC_USDT", now_ms,
@@ -478,7 +478,7 @@ class EngineTests(unittest.TestCase):
                 return True
 
         feed = FakeFeed()
-        with patch("main.evaluate_signal", return_value=None):
+        with patch("main.evaluate_setup", return_value=None):
             asyncio.run(scan_symbol(
                 feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
                 "B-BTC_USDT", now_ms,
@@ -516,7 +516,7 @@ class EngineTests(unittest.TestCase):
         last_seen_candle.pop("BTC/USDT", None)
         notifier = FakeNotifier()
         try:
-            with patch("main.evaluate_signal", return_value=signal):
+            with patch("main.evaluate_setup", return_value=signal):
                 asyncio.run(scan_symbol(
                     FakeFeed(), notifier, asyncio.Semaphore(1), "BTC/USDT",
                     "B-BTC_USDT", now_ms, session_started_ms=now_ms - 1_000,
@@ -571,7 +571,7 @@ class EngineTests(unittest.TestCase):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
-        self.assertGreaterEqual(signal["adx"], 17)
+        self.assertGreaterEqual(signal["adx"], 25)
 
     def test_signal_includes_actual_five_minute_candle_close(self):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
@@ -611,7 +611,7 @@ class EngineTests(unittest.TestCase):
         signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "SHORT")
-        self.assertGreaterEqual(signal["adx"], 17)
+        self.assertGreaterEqual(signal["adx"], 25)
 
 
 if __name__ == "__main__":
