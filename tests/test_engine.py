@@ -2,9 +2,21 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from main import SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv
+from main import (SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv,\n                  exchange_ban_retry_seconds)
 
 class EngineTests(unittest.TestCase):
+    def test_binance_ip_ban_retry_waits_until_expiry_plus_margin(self):
+        now_ms = 1_800_000_000_000
+        error = f"HTTP 418: IP banned until {now_ms + 90_000}"
+        self.assertEqual(exchange_ban_retry_seconds(error, now_ms, 5), 120)
+
+    def test_binance_ip_ban_retry_uses_fallback_for_other_or_expired_errors(self):
+        now_ms = 1_800_000_000_000
+        self.assertEqual(exchange_ban_retry_seconds("temporary network error", now_ms, 45), 45)
+        self.assertEqual(exchange_ban_retry_seconds(
+            f"IP banned until {now_ms - 1}", now_ms, 45
+        ), 45)
+
     def test_universe_has_exactly_60_unique_symbols(self):
         self.assertEqual(len(SYMBOLS), 60)
         self.assertEqual(len(set(SYMBOLS)), 60)
