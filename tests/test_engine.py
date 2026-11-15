@@ -36,8 +36,6 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(float(frame.iloc[0].close), 1.5)
         self.assertEqual(float(frame.iloc[0].volume), 10)
 
-
-
     def test_validator_sorts_deduplicates_and_excludes_forming_bar(self):
         interval = 300000
         base = (1700000000000 // interval) * interval
@@ -45,9 +43,9 @@ class EngineTests(unittest.TestCase):
         for i in range(5):
             price = 100 + i
             raw.append([base + i * interval, price, price + 2, price - 1, price + 1, 10])
-        # Duplicate one completed timestamp; the last copy should be retained.
-        raw.append([base + interval, 101, 103, 100, 102, 25])
         raw = list(reversed(raw))
+        # Append the duplicate last so keep="last" is tested independently of sort order.
+        raw.append([base + interval, 101, 103, 100, 102, 25])
         now_ms = base + 4 * interval + 2000
         frame = validate_ohlcv(raw, "5m", now_ms)
         self.assertEqual(len(frame), 4)
@@ -90,14 +88,12 @@ class EngineTests(unittest.TestCase):
         })
 
     def test_strict_engine_emits_long_for_aligned_uptrend(self):
-        from main import evaluate_signal
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
         self.assertGreaterEqual(signal["adx"], 17)
 
     def test_strict_engine_emits_short_for_aligned_downtrend(self):
-        from main import evaluate_signal
         signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "SHORT")
