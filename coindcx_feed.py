@@ -106,6 +106,13 @@ class CoinDCXFuturesFeed:
         self.sio.on("disconnect", self._on_disconnect)
         self.sio.on("candlestick", self._on_candlestick)
 
+    def configure_active_pairs(self, active_pairs: list[str]) -> None:
+        """Subscribe and cache only contracts confirmed active by CoinDCX."""
+        confirmed = set(active_pairs)
+        self.pairs = [pair for pair in self.pairs if pair in confirmed]
+        self.bars = {pair: self.bars.get(pair, {}) for pair in self.pairs}
+        log.info("CoinDCX active futures pairs configured=%d", len(self.pairs))
+
     async def active_instruments(self) -> set[str]:
         response = await self.client.get(
             ACTIVE_INSTRUMENTS_URL,
