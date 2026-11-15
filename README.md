@@ -39,6 +39,19 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 
 Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include entry, informational stop/target, RR, RSI, ADX, and candle close time.
 
+## Code architecture
+
+The runtime is split by responsibility:
+- `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
+- `main.py`: FastAPI lifecycle, scan orchestration, and health endpoints.
+- `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and 15m aggregation.
+- `strategy.py`: pure OHLCV validation, indicators, and the single LONG/SHORT decision rule.
+- `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
+
+The strategy module has no network or application-lifecycle dependencies. Telegram delivery retries rate limits, server errors, and transient network failures up to three attempts; permanent 4xx rejections are not retried. The scanner supervisor restarts a failed scanner session with bounded backoff. On startup/restart, candles that closed before the new scanner session began are ignored so old setups are not replayed as fresh alerts.
+
+Signal deduplication and same-direction cooldown state are currently in process memory. A process restart resets that state; durable cross-deploy deduplication would require a persistent store. No persistent store is added to this lightweight signal-only build.
+
 ## Run locally
 
 Python 3.11 recommended.

@@ -5,7 +5,8 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, candles_to_frame, indicators, evaluate_signal, validate_ohlcv, scan_symbol, last_seen_candle
+from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload
+from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
 
 
 class CoinDCXFeedTests(unittest.TestCase):
@@ -61,6 +62,83 @@ class CoinDCXFeedTests(unittest.TestCase):
             self.assertEqual(feed.ws_events_received, 1)
             self.assertEqual(feed.last_ws_pair, "B-BTC_USDT")
             self.assertEqual(len(feed.rows("B-BTC_USDT")), 1)
+        finally:
+            asyncio.run(feed.close())
+
+    def test_websocket_connect_subscribes_to_exact_futures_candle_channels(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        class FakeSocket:
+            connected = False
+            def __init__(self):
+                self.emitted = []
+            async def emit(self, event, payload):
+                self.emitted.append((event, payload))
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT", "B-ETH_USDT"])
+        fake = FakeSocket()
+        feed.sio = fake
+        try:
+            asyncio.run(feed._on_connect())
+            self.assertTrue(feed.websocket_connected)
+            self.assertEqual(fake.emitted, [
+                ("join", {"channelName": "B-BTC_USDT_5m-futures"}),
+                ("join", {"channelName": "B-ETH_USDT_5m-futures"}),
+            ])
+        finally:
+            feed.websocket_connected = False
+            asyncio.run(feed.close())
+
+    def test_websocket_ignores_unconfigured_pairs(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        try:
+            payload = {"channel": "B-ETH_USDT_5m-futures", "data": [{
+                "pair": "B-ETH_USDT", "open_time": 1_800_000_000,
+                "open": "100", "high": "102", "low": "99",
+                "close": "101", "volume": "12",
+            }]}
+            asyncio.run(feed._on_candlestick(payload))
+            self.assertEqual(feed.ws_events_received, 0)
+            self.assertEqual(feed.rows("B-BTC_USDT"), [])
+        finally:
+            asyncio.run(feed.close())
+
+    def test_socketio_v4_connection_uses_supported_connect_arguments(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed, SOCKET_URL
+
+        class FakeSocket:
+            connected = False
+            def __init__(self):
+                self.calls = []
+            async def connect(self, url, transports=None):
+                self.calls.append((url, transports))
+            async def wait(self):
+                raise asyncio.CancelledError()
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        fake = FakeSocket()
+        feed.sio = fake
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(feed.run_websocket())
+            self.assertEqual(fake.calls, [(SOCKET_URL, ["websocket"])])
+        finally:
+            asyncio.run(feed.close())
+
+    def test_websocket_connect_error_is_counted_and_truncated(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        try:
+            asyncio.run(feed._on_connect_error("handshake rejected"))
+            self.assertEqual(feed.ws_connect_errors, 1)
+            self.assertEqual(feed.last_ws_error, "handshake rejected")
         finally:
             asyncio.run(feed.close())
 
@@ -136,6 +214,20 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing interval"):
             validate_ohlcv(raw, "5m", base + 5 * interval + 2000)
 
+    def test_validator_rejects_fractional_timestamps(self):
+        interval = 300000
+        base = (1700000000000 // interval) * interval
+        raw = [[base + i * interval + 0.5, 100, 102, 99, 101, 10] for i in range(4)]
+        with self.assertRaisesRegex(ValueError, "fractional timestamp"):
+            validate_ohlcv(raw, "5m", base + 4 * interval + 2000)
+
+    def test_validator_rejects_negative_volume(self):
+        interval = 300000
+        base = (1700000000000 // interval) * interval
+        raw = [[base + i * interval, 100, 102, 99, 101, -1] for i in range(4)]
+        with self.assertRaisesRegex(ValueError, "invalid price or volume"):
+            validate_ohlcv(raw, "5m", base + 4 * interval + 2000)
+
     def test_validator_rejects_inconsistent_ohlc(self):
         interval = 300000
         base = (1700000000000 // interval) * interval
@@ -154,7 +246,6 @@ class EngineTests(unittest.TestCase):
 
     def test_failed_telegram_delivery_is_not_retried_for_same_candle(self):
         import asyncio
-        from unittest.mock import AsyncMock, patch
 
         interval = 300_000
         base = (1_800_000_000_000 // interval) * interval
@@ -168,30 +259,284 @@ class EngineTests(unittest.TestCase):
             def rows(self, pair):
                 return rows
 
+        class FakeNotifier:
+            def __init__(self):
+                self.calls = 0
+
+            async def send(self, signal):
+                self.calls += 1
+                return False
+
         signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
                   "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
                   "candle": rows[-1][0]}
 
         last_seen_candle.pop("BTC/USDT", None)
+        notifier = FakeNotifier()
+        failures_before = state['telegram_delivery_failures']
         try:
-            with (
-                patch("main.evaluate_signal", return_value=signal),
-                patch("main.send_telegram", new_callable=AsyncMock, return_value=False) as send,
-            ):
+            from unittest.mock import patch
+            with patch("main.evaluate_signal", return_value=signal):
                 async def run_twice():
                     semaphore = asyncio.Semaphore(1)
-                    await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
-                    await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
+                    await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
                 asyncio.run(run_twice())
-                send.assert_awaited_once()
+            self.assertEqual(notifier.calls, 1)
+            self.assertEqual(state['telegram_delivery_failures'], failures_before + 1)
         finally:
             last_seen_candle.pop("BTC/USDT", None)
+
+    def test_recent_cache_does_not_trigger_unnecessary_rest_refresh(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i, 102 + i, 99 + i, 101 + i, 10]
+                for i in range(200)]
+        # A cache only 60 seconds past its latest candle close is still
+        # inside the validator's accepted freshness window.
+        now_ms = base + 200 * interval + 60_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.refresh_limits = []
+
+            def rows(self, pair):
+                return rows
+
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                return rows[-limit:]
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [])
+
+    def test_stale_cache_uses_incremental_rest_refresh_after_freshness_window(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i, 102 + i, 99 + i, 101 + i, 10]
+                for i in range(200)]
+        # Latest candle closed more than one full 5m interval ago.
+        now_ms = base + 200 * interval + interval + 31_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.refresh_limits = []
+            def rows(self, pair):
+                return rows
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                return rows[-limit:]
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [6])
+
+    def test_cache_under_180_bars_retries_full_history_for_15m_context(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        full_rows = [
+            [base + i * interval, 100 + i * 0.1, 100.5 + i * 0.1,
+             99.5 + i * 0.1, 100 + i * 0.1, 100]
+            for i in range(200)
+        ]
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.cache = []
+                self.refresh_limits = []
+
+            def rows(self, pair):
+                return self.cache
+
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                self.cache = full_rows[-limit:]
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [320])
+        self.assertEqual(len(feed.cache), 200)
+
+    def test_gapped_cache_with_180_rows_retries_full_history_for_15m_context(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        full_rows = [
+            [base + i * interval, 100 + i * 0.1, 100.5 + i * 0.1,
+             99.5 + i * 0.1, 100 + i * 0.1, 100]
+            for i in range(300)
+        ]
+        # Keep >180 cached bars and the latest three contiguous, but retain
+        # only two bars per historical 15m bucket so context remains too short.
+        sparse_rows = [row for i, row in enumerate(full_rows)
+                       if i % 3 != 2 or i == 299]
+        now_ms = base + 300 * interval + 2_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.cache = sparse_rows
+                self.refresh_limits = []
+
+            def rows(self, pair):
+                return self.cache
+
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                if limit == 320:
+                    self.cache = full_rows
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [320])
+        self.assertGreaterEqual(len(aggregate_5m_to_15m(feed.cache, now_ms)), 60)
+
+    def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = []
+        for i in range(200):
+            price = 100 + i * 0.1
+            rows.append([base + i * interval, price, price + 0.5, price - 0.5, price, 100])
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def rows(self, pair):
+                return rows
+
+        class FakeNotifier:
+            def __init__(self):
+                self.calls = 0
+
+            async def send(self, signal):
+                self.calls += 1
+                return True
+
+        signal = {"side": "LONG", "entry": 120.0, "stop": 118.0, "target": 123.0,
+                  "rr": 1.5, "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
+                  "candle": rows[-1][0]}
+        last_seen_candle.pop("BTC/USDT", None)
+        notifier = FakeNotifier()
+        try:
+            with patch("main.evaluate_signal", return_value=signal):
+                asyncio.run(scan_symbol(
+                    FakeFeed(), notifier, asyncio.Semaphore(1), "BTC/USDT",
+                    "B-BTC_USDT", now_ms, session_started_ms=now_ms - 1_000,
+                ))
+            self.assertEqual(notifier.calls, 0)
+        finally:
+            last_seen_candle.pop("BTC/USDT", None)
+
+    def test_health_is_false_until_every_active_symbol_is_accounted_for(self):
+        import time
+        previous = state.copy()
+        try:
+            state.update(
+                running=True, market_metadata_ready=True, active_symbols=3,
+                last_scan_epoch=time.time(), last_cycle_symbols_ok=2,
+                last_cycle_symbols_failed=0,
+            )
+            self.assertFalse(build_health_payload()["ok"])
+        finally:
+            state.clear()
+            state.update(previous)
+
+    def test_health_is_false_when_cycle_completes_with_symbol_failures(self):
+        import time
+        previous = state.copy()
+        try:
+            state.update(
+                running=True, market_metadata_ready=True, active_symbols=3,
+                last_scan_epoch=time.time(), last_cycle_symbols_ok=2,
+                last_cycle_symbols_failed=1,
+            )
+            self.assertFalse(build_health_payload()["ok"])
+        finally:
+            state.clear()
+            state.update(previous)
+
+    def test_health_is_true_after_fresh_successful_scan_cycle(self):
+        import time
+        previous = state.copy()
+        try:
+            state.update(
+                running=True, market_metadata_ready=True, active_symbols=3,
+                last_scan_epoch=time.time(), last_cycle_symbols_ok=3,
+                last_cycle_symbols_failed=0,
+            )
+            self.assertTrue(build_health_payload()["ok"])
+        finally:
+            state.clear()
+            state.update(previous)
 
     def test_strict_engine_emits_long_for_aligned_uptrend(self):
         signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
         self.assertGreaterEqual(signal["adx"], 17)
+
+    def test_signal_stop_and_target_preserve_configured_risk_reward(self):
+        signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        risk = signal["entry"] - signal["stop"]
+        reward = signal["target"] - signal["entry"]
+        self.assertAlmostEqual(risk, signal["atr"] * 1.5, places=8)
+        self.assertAlmostEqual(reward / risk, 1.5, places=8)
+
+    def test_15m_opposing_context_blocks_long_signal(self):
+        signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(-1, 900000))
+        self.assertIsNone(signal)
+
+    def test_15m_opposing_context_blocks_short_signal(self):
+        signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNone(signal)
 
     def test_strict_engine_emits_short_for_aligned_downtrend(self):
         signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
