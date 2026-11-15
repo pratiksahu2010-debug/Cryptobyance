@@ -71,11 +71,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
         try:
             rows = feed.rows(pair)
             latest_ts = int(rows[-1][0]) if rows else 0
-            if (len(rows) < 60 or not latest_ts or
+            # 60 completed 15m candles require at least 180 completed 5m candles.
+            if (len(rows) < 180 or not latest_ts or
                     now_ms - (latest_ts + timeframe_milliseconds('5m')) > 30_000):
                 # A failed/undersized bootstrap needs a full indicator window;
                 # established caches use a small REST refresh to limit API traffic.
-                refresh_limit = 320 if len(rows) < 60 else 6
+                refresh_limit = 320 if len(rows) < 180 else 6
                 await feed.fetch_history(pair, limit=refresh_limit)
                 rows = feed.rows(pair)
             df5 = validate_ohlcv(rows, '5m', now_ms)
