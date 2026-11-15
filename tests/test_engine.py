@@ -492,6 +492,7 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         risk = signal["entry"] - signal["stop"]
         reward = signal["target"] - signal["entry"]
+        self.assertAlmostEqual(risk, signal["atr"] * 1.5, places=8)
         self.assertAlmostEqual(reward / risk, 1.5, places=8)
 
     def test_15m_opposing_context_blocks_long_signal(self):
