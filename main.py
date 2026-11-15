@@ -161,6 +161,11 @@ async def telegram_outbox_loop(candidate_store: CandidateStore, notifier: Telegr
     """Deliver durable queued alerts; expired leases are reclaimed after process restarts."""
     while True:
         try:
+            # Do not consume durable retry attempts while Telegram credentials are absent.
+            # Keep alerts PENDING so they can be delivered after configuration is fixed.
+            if not notifier.configured:
+                await asyncio.sleep(5.0)
+                continue
             item = await candidate_store.claim_outbox()
             if item is None:
                 await asyncio.sleep(1.0)
