@@ -295,6 +295,8 @@ class EngineTests(unittest.TestCase):
         base = (1_800_000_000_000 // interval) * interval
         rows = [[base + i * interval, 100 + i, 102 + i, 99 + i, 101 + i, 10]
                 for i in range(200)]
+        # A cache only 60 seconds past its latest candle close is still
+        # inside the validator's accepted freshness window.
         now_ms = base + 200 * interval + 60_000
 
         class FakeFeed:
@@ -304,6 +306,38 @@ class EngineTests(unittest.TestCase):
             def rows(self, pair):
                 return rows
 
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                return rows[-limit:]
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [])
+
+    def test_stale_cache_uses_incremental_rest_refresh_after_freshness_window(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i, 102 + i, 99 + i, 101 + i, 10]
+                for i in range(200)]
+        # Latest candle closed more than one full 5m interval ago.
+        now_ms = base + 200 * interval + interval + 31_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.refresh_limits = []
+            def rows(self, pair):
+                return rows
             async def fetch_history(self, pair, limit):
                 self.refresh_limits.append(limit)
                 return rows[-limit:]
