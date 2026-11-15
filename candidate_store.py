@@ -80,6 +80,14 @@ class CandidateStore:
                     symbol,direction,candle_ms,candle_ms+3*300_000,adx)
                 return ("PENDING", int(row["id"])) if row else ("PENDING", None)
 
+    async def cancel(self, candidate_id: int | None):
+        if candidate_id is None:
+            return
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
+                candidate_id)
+
     async def resolve(self, candidate_id: int | None, delivered: bool):
         if candidate_id is None:
             return
