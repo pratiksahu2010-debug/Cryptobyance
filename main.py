@@ -186,43 +186,46 @@ async def send_telegram(client: httpx.AsyncClient, signal: dict) -> bool:
         state["last_error"] = f"telegram: {exc}"
         return False
 
-async def scan_symbol(exchange, client, semaphore, symbol: str) -> None:
+async def scan_symbol(exchange, client, semaphore, display_symbol: str, exchange_symbol: str) -> None:
     async with semaphore:
         try:
             raw5, raw15 = await asyncio.gather(
-                exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300),
-                exchange.fetch_ohlcv(symbol, timeframe=CONTEXT_TF, limit=120),
+                exchange.fetch_ohlcv(exchange_symbol, timeframe=TIMEFRAME, limit=300),
+                exchange.fetch_ohlcv(exchange_symbol, timeframe=CONTEXT_TF, limit=120),
             )
             df5, df15 = candles_to_frame(raw5), candles_to_frame(raw15)
             if len(df5) < 61 or len(df15) < 61:
                 raise ValueError(f"insufficient candles: 5m={len(df5)}, 15m={len(df15)}")
             closed_ts = int(df5.iloc[-2].timestamp)
             # Process each newly closed 5m bar once.
-            if last_seen_candle.get(symbol) == closed_ts:
+            if last_seen_candle.get(display_symbol) == closed_ts:
                 state["symbols_ok"] += 1
                 return
-            last_seen_candle[symbol] = closed_ts
             signal = evaluate_signal(df5, df15)
             if not signal:
+                last_seen_candle[display_symbol] = closed_ts
                 state["symbols_ok"] += 1
                 return
-            previous = last_alert.get(symbol)
+            previous = last_alert.get(display_symbol)
             if previous and previous[0] == signal["side"]:
                 candles_since = (closed_ts - previous[1]) // 300_000
                 if candles_since < COOLDOWN_CANDLES:
+                    last_seen_candle[display_symbol] = closed_ts
                     state["symbols_ok"] += 1
                     return
-            signal["symbol"] = symbol
-            if await send_telegram(client, signal):
-                last_alert[symbol] = (signal["side"], closed_ts)
+            signal["symbol"] = display_symbol
+            delivered = await send_telegram(client, signal)
+            if delivered:
+                last_alert[display_symbol] = (signal["side"], closed_ts)
+                last_seen_candle[display_symbol] = closed_ts
                 state["signals_sent"] += 1
                 log.info("SIGNAL SENT %s %s entry=%s ADX=%.1f RSI=%.1f",
-                         symbol, signal["side"], signal["entry"], signal["adx"], signal["rsi"])
+                         display_symbol, signal["side"], signal["entry"], signal["adx"], signal["rsi"])
             state["symbols_ok"] += 1
         except Exception as exc:
             state["symbols_failed"] += 1
-            state["last_error"] = f"{symbol}: {type(exc).__name__}: {exc}"
-            log.warning("scan failed symbol=%s error=%s", symbol, exc)
+            state["last_error"] = f"{display_symbol}: {type(exc).__name__}: {exc}"
+            log.warning("scan failed symbol=%s error=%s", display_symbol, exc)
 
 async def scanner() -> None:
     exchange_class = getattr(ccxt, os.getenv("EXCHANGE_ID", "binanceusdm"))
@@ -234,17 +237,25 @@ async def scanner() -> None:
     semaphore = asyncio.Semaphore(CONCURRENCY)
     try:
         await exchange.load_markets()
-        valid = [s for s in SYMBOLS if s in exchange.markets and exchange.markets[s].get("active", True)]
-        missing = sorted(set(SYMBOLS) - set(valid))
+        # CCXT names USD-M perpetuals as BTC/USDT:USDT (not BTC/USDT).
+        # Resolve our human-readable static list to the exact active swap symbol.
+        resolved = {}
+        for market in exchange.markets.values():
+            if (market.get("active", True) and market.get("swap")
+                    and market.get("quote") == "USDT" and market.get("settle") == "USDT"):
+                resolved[f"{market.get('base')}/{market.get('quote')}"] = market["symbol"]
+        valid = [(configured, resolved[configured]) for configured in SYMBOLS if configured in resolved]
+        missing = sorted(set(SYMBOLS) - {configured for configured, _ in valid})
         log.info("market universe validated: configured=%d active=%d unavailable=%s",
                  len(SYMBOLS), len(valid), missing)
         if len(valid) != 60:
-            log.warning("Universe has %d active markets, expected 60; check static symbols", len(valid))
+            log.warning("Universe has %d active markets, expected 60; unavailable contracts will be skipped", len(valid))
         while True:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0)
             results = await asyncio.gather(
-                *(scan_symbol(exchange, client, semaphore, symbol) for symbol in valid),
+                *(scan_symbol(exchange, client, semaphore, configured, market_symbol)
+                  for configured, market_symbol in valid),
                 return_exceptions=True,
             )
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
