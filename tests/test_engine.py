@@ -210,6 +210,39 @@ class EngineTests(unittest.TestCase):
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
+    def test_stale_cache_uses_incremental_rest_refresh_and_keeps_full_history(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i, 102 + i, 99 + i, 101 + i, 10]
+                for i in range(200)]
+        now_ms = base + 200 * interval + 60_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.refresh_limits = []
+
+            def rows(self, pair):
+                return rows
+
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+                return rows[-limit:]
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        feed = FakeFeed()
+        with patch("main.evaluate_signal", return_value=None):
+            asyncio.run(scan_symbol(
+                feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
+                "B-BTC_USDT", now_ms,
+            ))
+        self.assertEqual(feed.refresh_limits, [6])
+
     def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
         import asyncio
         from unittest.mock import patch
