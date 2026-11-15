@@ -70,6 +70,7 @@ class CoinDCXFeedTests(unittest.TestCase):
         from coindcx_feed import CoinDCXFuturesFeed
 
         class FakeSocket:
+            connected = False
             def __init__(self):
                 self.emitted = []
             async def emit(self, event, payload):
