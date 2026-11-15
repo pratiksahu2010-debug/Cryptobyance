@@ -1,21 +1,21 @@
-"""Single-engine Binance USD-M crypto signal bot. Signals only; never places orders."""
+"""Single-engine CoinDCX USDT futures crypto signal bot. Signals only; never places orders."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-import ccxt.async_support as ccxt
 import httpx
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI
+
+from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
 
 load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -56,7 +56,8 @@ state: dict[str, Any] = {
     "started_at": time.time(), "scans": 0, "last_scan": None,
     "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "last_error": None, "running": False,
-    "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0, "market_metadata_ready": False,
+    "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
+    "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -64,8 +65,7 @@ last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 
 def candles_to_frame(raw: list) -> pd.DataFrame:
-    # CCXT fetch_ohlcv returns six fields. Native Binance kline rows may have
-    # twelve; accept both formats without assuming the exchange's raw schema.
+    # CoinDCX futures REST and socket candles are normalized to six OHLCV fields.
     if not raw:
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
     width = len(raw[0])
@@ -89,18 +89,6 @@ def timeframe_milliseconds(timeframe: str) -> int:
     if not timeframe.endswith("m") or not timeframe[:-1].isdigit() or int(timeframe[:-1]) <= 0:
         raise ValueError(f"unsupported timeframe for validation: {timeframe}")
     return int(timeframe[:-1]) * 60_000
-
-def exchange_ban_retry_seconds(error: object, now_ms: int | None = None, fallback_seconds: int = 5) -> int:
-    """Honor Binance's explicit IP-ban expiry instead of retrying every few minutes."""
-    match = re.search(r"banned until\s+(\d+)", str(error), flags=re.IGNORECASE)
-    if not match:
-        return max(1, int(fallback_seconds))
-    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-    remaining_ms = int(match.group(1)) - now_ms
-    if remaining_ms <= 0:
-        return max(1, int(fallback_seconds))
-    # Add a 30-second safety margin so the first retry is not sent at expiry.
-    return max(int(fallback_seconds), (remaining_ms + 999) // 1000 + 30)
 
 def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.DataFrame:
     """Return sorted, unique, valid and fresh completed OHLCV candles."""
@@ -223,7 +211,7 @@ async def send_telegram(client: httpx.AsyncClient, signal: dict) -> bool:
     emoji = "🟢" if signal["side"] == "LONG" else "🔴"
     text = (
         f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
-        f"<b>{signal['symbol']}</b> · Binance USDT Perpetual\n"
+        f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
         f"Entry: <code>{fmt_price(signal['entry'])}</code>\n"
         f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\n"
         f"Target: <code>{fmt_price(signal['target'])}</code>\n"
@@ -250,131 +238,128 @@ async def send_telegram(client: httpx.AsyncClient, signal: dict) -> bool:
         state["last_error"] = f"telegram: {exc}"
         return False
 
-async def scan_symbol(exchange, client, semaphore, display_symbol: str, exchange_symbol: str, now_ms: int) -> None:
+async def scan_symbol(feed, client, semaphore, display_symbol: str, pair: str, now_ms: int) -> None:
     async with semaphore:
         try:
-            raw5, raw15 = await asyncio.gather(
-                exchange.fetch_ohlcv(exchange_symbol, timeframe=TIMEFRAME, limit=300),
-                exchange.fetch_ohlcv(exchange_symbol, timeframe=CONTEXT_TF, limit=120),
-            )
-            df5 = validate_ohlcv(raw5, TIMEFRAME, now_ms)
-            df15 = validate_ohlcv(raw15, CONTEXT_TF, now_ms)
+            rows = feed.rows(pair)
+            latest_ts = int(rows[-1][0]) if rows else 0
+            if (len(rows) < 60 or not latest_ts or
+                    now_ms - (latest_ts + timeframe_milliseconds('5m')) > 7 * 60_000):
+                rows = await feed.fetch_history(pair, limit=320)
+            df5 = validate_ohlcv(rows, '5m', now_ms)
+            rows15 = aggregate_5m_to_15m(rows, now_ms)
+            df15 = validate_ohlcv(rows15, '15m', now_ms)
             if len(df5) < 60 or len(df15) < 60:
-                raise ValueError(f"insufficient completed candles: 5m={len(df5)}, 15m={len(df15)}")
+                raise ValueError(f'insufficient completed candles: 5m={len(df5)}, 15m={len(df15)}')
             closed_ts = int(df5.iloc[-1].timestamp)
-            five_minute_close = closed_ts + timeframe_milliseconds(TIMEFRAME)
-            context_close = int(df15.iloc[-1].timestamp) + timeframe_milliseconds(CONTEXT_TF)
+            five_minute_close = closed_ts + timeframe_milliseconds('5m')
+            context_close = int(df15.iloc[-1].timestamp) + timeframe_milliseconds('15m')
             if context_close > five_minute_close:
-                raise ValueError("15m context candle is newer than the 5m signal candle")
-            if five_minute_close - context_close > timeframe_milliseconds(CONTEXT_TF):
-                raise ValueError("15m context candle is too old for the 5m signal candle")
-            # Process each newly closed 5m bar once.
+                raise ValueError('15m context candle is newer than the 5m signal candle')
+            if five_minute_close - context_close > timeframe_milliseconds('15m'):
+                raise ValueError('15m context candle is too old for the 5m signal candle')
             if last_seen_candle.get(display_symbol) == closed_ts:
-                state["symbols_ok"] += 1
+                state['symbols_ok'] += 1
                 return
             signal = evaluate_signal(df5, df15)
             if not signal:
                 last_seen_candle[display_symbol] = closed_ts
-                state["symbols_ok"] += 1
+                state['symbols_ok'] += 1
                 return
             previous = last_alert.get(display_symbol)
-            if previous and previous[0] == signal["side"]:
+            if previous and previous[0] == signal['side']:
                 candles_since = (closed_ts - previous[1]) // 300_000
                 if candles_since < COOLDOWN_CANDLES:
                     last_seen_candle[display_symbol] = closed_ts
-                    state["symbols_ok"] += 1
+                    state['symbols_ok'] += 1
                     return
-            signal["symbol"] = display_symbol
+            signal['symbol'] = display_symbol
             delivered = await send_telegram(client, signal)
             if delivered:
-                last_alert[display_symbol] = (signal["side"], closed_ts)
+                last_alert[display_symbol] = (signal['side'], closed_ts)
                 last_seen_candle[display_symbol] = closed_ts
-                state["signals_sent"] += 1
-                log.info("SIGNAL SENT %s %s entry=%s ADX=%.1f RSI=%.1f",
-                         display_symbol, signal["side"], signal["entry"], signal["adx"], signal["rsi"])
-            state["symbols_ok"] += 1
+                state['signals_sent'] += 1
+                log.info('SIGNAL SENT %s %s entry=%s ADX=%.1f RSI=%.1f', display_symbol, signal['side'], signal['entry'], signal['adx'], signal['rsi'])
+            state['symbols_ok'] += 1
         except Exception as exc:
-            state["symbols_failed"] += 1
-            if isinstance(exc, ValueError) and any(word in str(exc).lower() for word in ("candle", "ohlcv", "interval", "stale", "future", "timestamp", "high", "low", "volume", "price")):
-                state["data_validation_failures"] += 1
-            state["last_error"] = f"{display_symbol}: {type(exc).__name__}: {exc}"
-            log.warning("scan failed symbol=%s error=%s", display_symbol, exc)
+            state['symbols_failed'] += 1
+            if isinstance(exc, ValueError) and any(word in str(exc).lower() for word in ('candle','ohlcv','interval','stale','future','timestamp','high','low','volume','price')):
+                state['data_validation_failures'] += 1
+            state['last_error'] = f'{display_symbol}: {type(exc).__name__}: {exc}'
+            log.warning('scan failed symbol=%s pair=%s error=%s', display_symbol, pair, exc)
+
 
 async def scanner() -> None:
-    exchange_class = getattr(ccxt, os.getenv("EXCHANGE_ID", "binanceusdm"))
-    exchange = exchange_class({
-        "enableRateLimit": True, "timeout": 15000,
-        "options": {"defaultType": "future", "adjustForTimeDifference": True},
-    })
-    client = httpx.AsyncClient()
+    pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
+    feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
+    telegram_client = httpx.AsyncClient(timeout=12.0)
     semaphore = asyncio.Semaphore(CONCURRENCY)
     try:
-        # Retry transient exchange startup failures instead of silently leaving
-        # the web process healthy while the background scanner has died.
         startup_attempt = 0
         while True:
             try:
-                await exchange.load_markets()
-                state["market_metadata_ready"] = True
-                state.pop("market_metadata_retry_at", None)
+                active = await feed.active_instruments()
+                state['market_metadata_ready'] = True
+                state.pop('market_metadata_retry_at', None)
                 break
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 startup_attempt += 1
-                state["last_error"] = f"market metadata attempt {startup_attempt}: {exc}"
+                state['market_metadata_ready'] = False
+                state['last_error'] = f'CoinDCX active instruments attempt {startup_attempt}: {exc}'
                 delay = min(300, 5 * (2 ** min(startup_attempt - 1, 6)))
-                delay = exchange_ban_retry_seconds(exc, fallback_seconds=delay)
                 retry_at = datetime.fromtimestamp(time.time() + delay, timezone.utc).isoformat()
-                state["market_metadata_retry_at"] = retry_at
-                log.exception("market metadata load failed; retrying in %ss at %s", delay, retry_at)
+                state['market_metadata_retry_at'] = retry_at
+                log.exception('CoinDCX active-instrument load failed; retrying in %ss at %s', delay, retry_at)
                 await asyncio.sleep(delay)
 
-        # CCXT names USD-M perpetuals as BTC/USDT:USDT (not BTC/USDT).
-        # Resolve our human-readable static list to the exact active swap symbol.
-        resolved = {}
-        for market in exchange.markets.values():
-            if (market.get("active") is not False and market.get("swap") is True
-                    and market.get("linear") is True and market.get("quote") == "USDT"
-                    and market.get("settle") == "USDT" and market.get("symbol")):
-                resolved[f"{market.get('base')}/{market.get('quote')}"] = market["symbol"]
-        valid = [(configured, resolved[configured]) for configured in SYMBOLS if configured in resolved]
-        missing = sorted(set(SYMBOLS) - {configured for configured, _ in valid})
-        log.info("market universe validated: configured=%d active=%d unavailable=%s",
-                 len(SYMBOLS), len(valid), missing)
-        state["active_symbols"] = len(valid)
-        state["unavailable_symbols"] = missing
-        if len(valid) != 60:
-            log.warning("Universe has %d active markets, expected 60; unavailable contracts will be skipped", len(valid))
+        valid = [(symbol, pair) for symbol, pair in pairs.items() if pair in active]
+        missing = sorted(set(SYMBOLS) - {symbol for symbol, _ in valid})
+        log.info('CoinDCX futures universe validated: configured=%d active=%d unavailable=%s', len(SYMBOLS), len(valid), missing)
+        state['active_symbols'] = len(valid)
+        state['unavailable_symbols'] = missing
+        if len(valid) != len(SYMBOLS):
+            log.warning('CoinDCX has %d of %d configured contracts; unavailable symbols will not be substituted', len(valid), len(SYMBOLS))
+        if not valid:
+            raise RuntimeError('No configured symbols are active on CoinDCX USDT futures')
+
+        async def bootstrap(symbol: str, pair: str):
+            try:
+                await feed.fetch_history(pair, limit=320)
+                log.info('CoinDCX history ready symbol=%s pair=%s', symbol, pair)
+            except Exception as exc:
+                state['last_error'] = f'history bootstrap {symbol}: {exc}'
+                log.warning('CoinDCX history bootstrap failed symbol=%s pair=%s error=%s', symbol, pair, exc)
+
+        await asyncio.gather(*(bootstrap(symbol, pair) for symbol, pair in valid))
+        feed.start_websocket()
         while True:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
             cycle_now_ms = int(time.time() * 1000)
-            results = await asyncio.gather(
-                *(scan_symbol(exchange, client, semaphore, configured, market_symbol, cycle_now_ms)
-                  for configured, market_symbol in valid),
-                return_exceptions=True,
-            )
+            results = await asyncio.gather(*(scan_symbol(feed, telegram_client, semaphore, symbol, pair, cycle_now_ms) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
-            state["scans"] += 1
-            state["last_scan"] = datetime.now(timezone.utc).isoformat()
-            state["last_scan_seconds"] = round(time.monotonic() - started, 2)
+            state['scans'] += 1
+            state['last_scan'] = datetime.now(timezone.utc).isoformat()
+            state['last_scan_seconds'] = round(time.monotonic() - started, 2)
+            state['websocket_connected'] = feed.websocket_connected
+            state['last_websocket_event'] = datetime.fromtimestamp(feed.last_ws_event, timezone.utc).isoformat() if feed.last_ws_event else None
             if unexpected:
-                state["last_error"] = "; ".join(unexpected[:3])
-            log.info("scan complete cycle=%d ok=%d failed=%d signals=%d duration=%.1fs",
-                     state["scans"], state["symbols_ok"], state["symbols_failed"],
-                     state["signals_sent"], state["last_scan_seconds"])
+                state['last_error'] = '; '.join(unexpected[:3])
+            log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
             await asyncio.sleep(max(1, SCAN_SECONDS - (time.monotonic() - started)))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        state["last_error"] = f"scanner fatal: {exc}"
-        log.exception("scanner stopped unexpectedly")
+        state['last_error'] = f'scanner fatal: {exc}'
+        log.exception('CoinDCX scanner stopped unexpectedly')
         raise
     finally:
-        state["running"] = False
-        await client.aclose()
-        await exchange.close()
+        state['running'] = False
+        state['websocket_connected'] = False
+        await telegram_client.aclose()
+        await feed.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -386,19 +371,20 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-app = FastAPI(title="CryptoByance Signal Bot", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2.0.0", lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"service": "cryptobyance-signal-bot", "mode": "signals_only",
+    return {"service": "cryptobyance-signal-bot", "exchange": "CoinDCX Futures", "mode": "signals_only",
             "symbols_configured": len(SYMBOLS), "timeframe": TIMEFRAME,
             "context_timeframe": CONTEXT_TF}
 
 @app.get("/health")
 async def health():
     return {"ok": bool(state["running"] and state["active_symbols"] > 0),
-            "service": "cryptobyance-signal-bot",
+            "service": "cryptobyance-signal-bot", "exchange": "CoinDCX Futures",
             "scanner_running": state["running"], "market_metadata_ready": state["market_metadata_ready"],
+            "websocket_connected": state["websocket_connected"], "last_websocket_event": state["last_websocket_event"],
             "market_metadata_retry_at": state.get("market_metadata_retry_at"),
             "scans": state["scans"],
             "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
