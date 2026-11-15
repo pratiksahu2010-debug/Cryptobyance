@@ -5,7 +5,7 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, scan_symbol, last_seen_candle
+from main import SYMBOLS, scan_symbol, last_seen_candle, state
 from strategy import candles_to_frame, indicators, evaluate_signal, validate_ohlcv
 
 
@@ -181,9 +181,10 @@ class EngineTests(unittest.TestCase):
                   "candle": rows[-1][0]}
 
         last_seen_candle.pop("BTC/USDT", None)
+        notifier = FakeNotifier()
+        failures_before = state['telegram_delivery_failures']
         try:
             from unittest.mock import patch
-            notifier = FakeNotifier()
             with patch("main.evaluate_signal", return_value=signal):
                 async def run_twice():
                     semaphore = asyncio.Semaphore(1)
@@ -191,6 +192,7 @@ class EngineTests(unittest.TestCase):
                     await scan_symbol(FakeFeed(), notifier, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
                 asyncio.run(run_twice())
             self.assertEqual(notifier.calls, 1)
+            self.assertEqual(state['telegram_delivery_failures'], failures_before + 1)
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
