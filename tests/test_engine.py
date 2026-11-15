@@ -174,8 +174,10 @@ class EngineTests(unittest.TestCase):
 
         last_seen_candle.pop("BTC/USDT", None)
         try:
-            with patch("main.evaluate_signal", return_value=signal), \\
-                 patch("main.send_telegram", new_callable=AsyncMock, return_value=False) as send:
+            with (
+                patch("main.evaluate_signal", return_value=signal),
+                patch("main.send_telegram", new_callable=AsyncMock, return_value=False) as send,
+            ):
                 async def run_twice():
                     semaphore = asyncio.Semaphore(1)
                     await scan_symbol(FakeFeed(), None, semaphore, "BTC/USDT", "B-BTC_USDT", now_ms)
