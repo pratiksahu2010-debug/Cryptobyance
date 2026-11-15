@@ -429,8 +429,6 @@ def build_health_payload() -> dict[str, Any]:
         "telegram_configured": state["telegram_configured"], "database_connected": state["database_connected"],
         "signals_queued": state.get("signals_queued", 0),
         "previous_runtime_checkpoint": state.get("previous_runtime_checkpoint"),
-        "previous_runtime_checkpoint": state.get("previous_runtime_checkpoint"),
-        "signals_queued": state.get("signals_queued", 0),
         "last_scan": state["last_scan"], "last_scan_age_seconds": scan_age,
         "last_scan_seconds": state["last_scan_seconds"],
         "session_started_at": state["session_started_at"],
