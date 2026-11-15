@@ -62,14 +62,25 @@ last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 
 def candles_to_frame(raw: list) -> pd.DataFrame:
-    df = pd.DataFrame(raw, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades", "taker_buy_base",
-        "taker_buy_quote", "ignore"
-    ])
-    for col in ("open", "high", "low", "close", "volume"):
+    # CCXT fetch_ohlcv returns six fields. Native Binance kline rows may have
+    # twelve; accept both formats without assuming the exchange's raw schema.
+    if not raw:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+    width = len(raw[0])
+    if width == 6:
+        columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    elif width >= 12:
+        columns = [
+            "timestamp", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_buy_base",
+            "taker_buy_quote", "ignore"
+        ] + [f"extra_{i}" for i in range(width - 12)]
+    else:
+        raise ValueError(f"unsupported OHLCV row width: {width}")
+    df = pd.DataFrame(raw, columns=columns)
+    for col in ("timestamp", "open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=["close", "volume"]).reset_index(drop=True)
+    return df.dropna(subset=["timestamp", "close", "volume"]).reset_index(drop=True)
 
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate indicators on OHLCV bars; VWAP resets at UTC day boundary."""
