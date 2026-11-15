@@ -9,6 +9,11 @@ import httpx
 
 log = logging.getLogger("cryptobyance.telegram")
 
+# httpx emits request URLs at INFO level. Telegram's bot token is part of that
+# URL, so keep transport loggers above INFO even when application logging is DEBUG/INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 def fmt_price(value: float) -> str:
     if value >= 1000:
