@@ -68,7 +68,7 @@ class Settings:
             signal_cooldown_candles=_integer("SIGNAL_COOLDOWN_CANDLES", "3", 1, 100),
             timeframe=timeframe,
             context_timeframe=context_timeframe,
-            adx_min=_number("ADX_MIN", "17", 0.01, 100),
+            adx_min=_number("ADX_MIN", "25", 0.01, 100),
             ema_fast=ema_fast,
             ema_slow=ema_slow,
             rsi_period=_integer("RSI_PERIOD", "14", 2, 100),
