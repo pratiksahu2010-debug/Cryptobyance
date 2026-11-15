@@ -92,7 +92,7 @@ def timeframe_milliseconds(timeframe: str) -> int:
 
 def exchange_ban_retry_seconds(error: object, now_ms: int | None = None, fallback_seconds: int = 5) -> int:
     """Honor Binance's explicit IP-ban expiry instead of retrying every few minutes."""
-    match = re.search(r"banned until\\s+(\\d+)", str(error), flags=re.IGNORECASE)
+    match = re.search(r"banned until\s+(\d+)", str(error), flags=re.IGNORECASE)
     if not match:
         return max(1, int(fallback_seconds))
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
