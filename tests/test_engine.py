@@ -290,13 +290,13 @@ class EngineTests(unittest.TestCase):
         full_rows = [
             [base + i * interval, 100 + i * 0.1, 100.5 + i * 0.1,
              99.5 + i * 0.1, 100 + i * 0.1, 100]
-            for i in range(200)
+            for i in range(300)
         ]
-        # Keep the latest three bars contiguous, but leave too few complete
-        # 15m groups in the existing cache despite its row count being >=180.
+        # Keep >180 cached bars and the latest three contiguous, but retain
+        # only two bars per historical 15m bucket so context remains too short.
         sparse_rows = [row for i, row in enumerate(full_rows)
-                       if i >= 197 or i % 4 == 0]
-        now_ms = base + 200 * interval + 2_000
+                       if i % 3 != 2 or i == 299]
+        now_ms = base + 300 * interval + 2_000
 
         class FakeFeed:
             def __init__(self):
