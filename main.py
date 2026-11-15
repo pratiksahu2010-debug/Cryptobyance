@@ -250,7 +250,10 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2def build_health_payload() -> dict[str, Any]:
+app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2.0.0", lifespan=lifespan)
+
+
+def build_health_payload() -> dict[str, Any]:
     """Health reflects the last fully completed scan, not partial progress."""
     last_scan_epoch = state["last_scan_epoch"]
     scan_age = max(0, int(time.time() - last_scan_epoch)) if last_scan_epoch else None
@@ -295,11 +298,7 @@ app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2def build_health_payl
 @app.get("/health")
 async def health():
     return build_health_payload()
-ured"], "last_scan": state["last_scan"],
-            "last_scan_seconds": state["last_scan_seconds"],
-            "session_started_at": state["session_started_at"],
-            "uptime_seconds": int(time.time() - state["started_at"]),
-            "last_error": state["last_error"]}
+
 
 @app.get("/ping")
 async def ping():
