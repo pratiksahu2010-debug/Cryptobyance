@@ -55,7 +55,9 @@ state: dict[str, Any] = {
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
     "websocket_events_received": 0, "last_websocket_pair": None,
-    "websocket_other_events": 0, "websocket_other_event_names": [],\n    "telegram_configured": False,
+    "websocket_other_events": 0, "websocket_other_event_names": [],
+    "websocket_candle_fresh": False, "scanner_restarts": 0,
+    "telegram_configured": False,
 }
 # In-process deduplication. Free Render restarts reset this; the cooldown is also
 # based on candle open-time, so a restart cannot emit an old candle's signal.
@@ -118,7 +120,9 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
 async def scanner_session() -> None:
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
     feed = CoinDCXFuturesFeed(list(pairs.values()), timeout=15.0)
-    telegram_client = httpx.AsyncClient(timeout=12.0)\n    notifier = TelegramNotifier(telegram_client)\n    state['telegram_configured'] = notifier.configured
+    telegram_client = httpx.AsyncClient(timeout=12.0)
+    notifier = TelegramNotifier(telegram_client)
+    state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
     try:
         startup_attempt = 0
