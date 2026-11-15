@@ -23,6 +23,17 @@ class CoinDCXFeedTests(unittest.TestCase):
             {"B-BTC_USDT"},
         )
 
+    def test_feed_configures_only_confirmed_active_pairs(self):
+        from coindcx_feed import CoinDCXFuturesFeed
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT", "B-ETH_USDT", "B-NOTLISTED_USDT"])
+        try:
+            feed.configure_active_pairs(["B-BTC_USDT", "B-ETH_USDT"])
+            self.assertEqual(feed.pairs, ["B-BTC_USDT", "B-ETH_USDT"])
+            self.assertEqual(set(feed.bars), {"B-BTC_USDT", "B-ETH_USDT"})
+        finally:
+            import asyncio
+            asyncio.run(feed.close())
+
     def test_active_instruments_rejects_empty_or_invalid_payload(self):
         with self.assertRaises(ValueError):
             parse_active_instruments([])
