@@ -49,7 +49,9 @@ CONTEXT_TF = settings.context_timeframe
 
 state: dict[str, Any] = {
     "started_at": time.time(), "session_started_at": None, "scans": 0, "last_scan": None,
-    "last_scan_seconds": None, "symbols_ok": 0, "symbols_failed": 0,
+    "last_scan_seconds": None, "last_scan_epoch": None,
+    "last_cycle_symbols_ok": 0, "last_cycle_symbols_failed": 0,
+    "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "telegram_delivery_failures": 0, "last_telegram_success": None,
     "last_error": None, "running": False,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
@@ -186,6 +188,9 @@ async def scanner_session() -> None:
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
             state['scans'] += 1
             state['last_scan'] = datetime.now(timezone.utc).isoformat()
+            state['last_scan_epoch'] = time.time()
+            state['last_cycle_symbols_ok'] = state['symbols_ok']
+            state['last_cycle_symbols_failed'] = state['symbols_failed']
             state['last_scan_seconds'] = round(time.monotonic() - started, 2)
             state['websocket_connected'] = feed.websocket_connected
             state['last_websocket_event'] = datetime.fromtimestamp(feed.last_ws_event, timezone.utc).isoformat() if feed.last_ws_event else None
@@ -245,37 +250,52 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2def build_health_payload() -> dict[str, Any]:
+    """Health reflects the last fully completed scan, not partial progress."""
+    last_scan_epoch = state["last_scan_epoch"]
+    scan_age = max(0, int(time.time() - last_scan_epoch)) if last_scan_epoch else None
+    completed_symbols = state["last_cycle_symbols_ok"] + state["last_cycle_symbols_failed"]
+    cycle_complete = bool(last_scan_epoch and completed_symbols == state["active_symbols"])
+    scan_fresh = bool(scan_age is not None and scan_age <= max(180, SCAN_SECONDS * 3))
+    healthy = bool(
+        state["running"] and state["market_metadata_ready"]
+        and state["active_symbols"] > 0 and cycle_complete and scan_fresh
+    )
+    return {
+        "ok": healthy,
+        "service": "cryptobyance-signal-bot", "exchange": "CoinDCX Futures",
+        "scanner_running": state["running"], "market_metadata_ready": state["market_metadata_ready"],
+        "websocket_connected": state["websocket_connected"], "last_websocket_event": state["last_websocket_event"],
+        "websocket_events_received": state["websocket_events_received"],
+        "websocket_candle_fresh": state["websocket_candle_fresh"],
+        "scanner_restarts": state["scanner_restarts"],
+        "last_websocket_pair": state["last_websocket_pair"],
+        "websocket_other_events": state["websocket_other_events"],
+        "websocket_other_event_names": state["websocket_other_event_names"],
+        "market_metadata_retry_at": state.get("market_metadata_retry_at"),
+        "scans": state["scans"],
+        "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
+        "universe_complete": state["active_symbols"] == len(SYMBOLS),
+        "symbols_unavailable": state["unavailable_symbols"],
+        "symbols_ok_last_scan": state["last_cycle_symbols_ok"],
+        "symbols_failed_last_scan": state["last_cycle_symbols_failed"],
+        "data_validation_failures": state["data_validation_failures"],
+        "signals_sent": state["signals_sent"],
+        "telegram_delivery_failures": state["telegram_delivery_failures"],
+        "last_telegram_success": state["last_telegram_success"],
+        "telegram_configured": state["telegram_configured"],
+        "last_scan": state["last_scan"], "last_scan_age_seconds": scan_age,
+        "last_scan_seconds": state["last_scan_seconds"],
+        "session_started_at": state["session_started_at"],
+        "uptime_seconds": int(time.time() - state["started_at"]),
+        "last_error": state["last_error"],
+    }
 
-@app.get("/")
-async def root():
-    return {"service": "cryptobyance-signal-bot", "exchange": "CoinDCX Futures", "mode": "signals_only",
-            "symbols_configured": len(SYMBOLS), "timeframe": TIMEFRAME,
-            "context_timeframe": CONTEXT_TF}
 
 @app.get("/health")
 async def health():
-    return {"ok": bool(state["running"] and state["active_symbols"] > 0),
-            "service": "cryptobyance-signal-bot", "exchange": "CoinDCX Futures",
-            "scanner_running": state["running"], "market_metadata_ready": state["market_metadata_ready"],
-            "websocket_connected": state["websocket_connected"], "last_websocket_event": state["last_websocket_event"],
-            "websocket_events_received": state["websocket_events_received"],
-            "websocket_candle_fresh": state["websocket_candle_fresh"],
-            "scanner_restarts": state["scanner_restarts"],
-            "last_websocket_pair": state["last_websocket_pair"],
-            "websocket_other_events": state["websocket_other_events"],
-            "websocket_other_event_names": state["websocket_other_event_names"],
-            "market_metadata_retry_at": state.get("market_metadata_retry_at"),
-            "scans": state["scans"],
-            "symbols_configured": len(SYMBOLS), "symbols_active": state["active_symbols"],
-            "universe_complete": state["active_symbols"] == len(SYMBOLS),
-            "symbols_unavailable": state["unavailable_symbols"],
-            "symbols_ok_last_scan": state["symbols_ok"],
-            "symbols_failed_last_scan": state["symbols_failed"],
-            "data_validation_failures": state["data_validation_failures"],
-            "signals_sent": state["signals_sent"], "telegram_delivery_failures": state["telegram_delivery_failures"],
-            "last_telegram_success": state["last_telegram_success"],
-            "telegram_configured": state["telegram_configured"], "last_scan": state["last_scan"],
+    return build_health_payload()
+ured"], "last_scan": state["last_scan"],
             "last_scan_seconds": state["last_scan_seconds"],
             "session_started_at": state["session_started_at"],
             "uptime_seconds": int(time.time() - state["started_at"]),
