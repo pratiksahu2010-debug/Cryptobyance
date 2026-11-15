@@ -65,6 +65,44 @@ class CoinDCXFeedTests(unittest.TestCase):
         finally:
             asyncio.run(feed.close())
 
+    def test_nested_coindcx_socket_envelope_is_decoded_and_counted(self):
+        import asyncio
+        import json
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        feed = CoinDCXFuturesFeed(["B-ARB_USDT"])
+        try:
+            inner = {
+                "data": [{
+                    "pair": "B-ARB_USDT", "open_time": 1_800_000_000,
+                    "open": "1.0", "high": "1.2", "low": "0.9",
+                    "close": "1.1", "volume": "42",
+                }],
+                "ecode": "B",
+            }
+            payload = {"event": "candlestick", "data": json.dumps(inner)}
+            asyncio.run(feed._on_candlestick(payload))
+            self.assertEqual(feed.ws_events_received, 1)
+            self.assertEqual(feed.last_ws_pair, "B-ARB_USDT")
+            self.assertEqual(len(feed.rows("B-ARB_USDT")), 1)
+            self.assertEqual(feed.rows("B-ARB_USDT")[0][5], 42.0)
+        finally:
+            asyncio.run(feed.close())
+
+    def test_websocket_ignores_malformed_nested_json(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        try:
+            asyncio.run(feed._on_candlestick({
+                "event": "candlestick", "data": "{not valid json",
+            }))
+            self.assertEqual(feed.ws_events_received, 0)
+            self.assertEqual(feed.rows("B-BTC_USDT"), [])
+        finally:
+            asyncio.run(feed.close())
+
     def test_websocket_connect_subscribes_to_exact_futures_candle_channels(self):
         import asyncio
         from coindcx_feed import CoinDCXFuturesFeed
