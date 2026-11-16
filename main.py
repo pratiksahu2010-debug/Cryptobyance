@@ -447,7 +447,7 @@ async def health():
     return build_health_payload()
 
 
-@app.get("/ping")
-async def ping():
-    """Empty, lightweight keepalive response."""
-    return Response(content="", status_code=200, media_type="text/plain")
+@app.get("/ping", response_class=Response)
+async def ping() -> Response:
+    """Return an empty HTTP 200 response for keepalive checks."""
+    return Response(status_code=200)
