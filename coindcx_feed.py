@@ -32,19 +32,37 @@ def symbol_to_pair(symbol: str) -> str:
 
 
 def parse_active_instruments(payload: Any) -> set[str]:
-    """Normalize CoinDCX's public active-instruments response."""
-    if isinstance(payload, dict):
-        payload = payload.get("data", payload.get("instruments", []))
+    """Normalize CoinDCX's active-instruments response to USDT futures pairs."""
+    # Accept the documented plain list and common API envelope wrappers.
+    for _ in range(4):
+        if isinstance(payload, dict):
+            nested = next(
+                (payload[key] for key in ("data", "instruments", "result")
+                 if key in payload and isinstance(payload[key], (list, dict))),
+                None,
+            )
+            if nested is None or nested is payload:
+                break
+            payload = nested
+        else:
+            break
     if not isinstance(payload, list):
         raise ValueError("CoinDCX active instruments response is not a list")
-    pairs = set()
+
+    pairs: set[str] = set()
     for item in payload:
         if isinstance(item, str):
-            pairs.add(item)
+            pair = item.strip()
         elif isinstance(item, dict):
-            pair = item.get("pair") or item.get("instrument_name")
-            if pair:
-                pairs.add(str(pair))
+            pair = str(
+                item.get("pair") or item.get("instrument_name") or item.get("symbol") or ""
+            ).strip()
+        else:
+            continue
+        # The unfiltered fallback can contain other margin currencies. Only
+        # accept the exact CoinDCX USDT perpetual naming convention.
+        if pair.startswith("B-") and pair.endswith("_USDT"):
+            pairs.add(pair)
     if not pairs:
         raise ValueError("CoinDCX returned no active USDT futures instruments")
     return pairs
@@ -127,12 +145,39 @@ class CoinDCXFuturesFeed:
         log.info("CoinDCX active futures pairs configured=%d", len(self.pairs))
 
     async def active_instruments(self) -> set[str]:
-        response = await self.client.get(
-            ACTIVE_INSTRUMENTS_URL,
-            params=[("margin_currency_short_name[]", "USDT")],
+        """Load active USDT futures, retrying the documented endpoint unfiltered.
+
+        Some CoinDCX responses have intermittently returned an empty/unsupported
+        filtered payload. The unfiltered fallback is safe because the parser
+        explicitly keeps only B-..._USDT instruments.
+        """
+        attempts = (
+            ("USDT-filtered", [("margin_currency_short_name[]", "USDT")]),
+            ("unfiltered-fallback", None),
         )
-        response.raise_for_status()
-        return parse_active_instruments(response.json())
+        failures: list[str] = []
+        for label, params in attempts:
+            response = None
+            try:
+                response = await self.client.get(ACTIVE_INSTRUMENTS_URL, params=params)
+                response.raise_for_status()
+                pairs = parse_active_instruments(response.json())
+                log.info("CoinDCX active instruments loaded source=%s count=%d", label, len(pairs))
+                return pairs
+            except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+                status = getattr(response, "status_code", None)
+                content_type = getattr(response, "headers", {}).get("content-type", "unknown")
+                preview = str(getattr(response, "text", ""))[:180].replace("\\n", " ")
+                log.warning(
+                    "CoinDCX active instruments source=%s failed status=%s content_type=%s "
+                    "error=%s response_preview=%r",
+                    label, status, content_type, type(exc).__name__, preview,
+                )
+                failures.append(f"{label}:{type(exc).__name__}")
+        raise RuntimeError(
+            "CoinDCX active instruments unavailable after filtered and unfiltered requests "
+            f"({', '.join(failures)})"
+        )
 
     async def fetch_history(self, pair: str, limit: int = 320) -> list[list]:
         now_s = int(time.time())
