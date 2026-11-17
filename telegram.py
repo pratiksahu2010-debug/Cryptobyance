@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import httpx
 
@@ -35,6 +36,18 @@ class TelegramNotifier:
         self._missing_config_logged = False
 
     @staticmethod
+    def tradingview_url(symbol: str) -> str:
+        """Build the 5-minute Binance USDT perpetual chart URL for a signal symbol."""
+        normalized = str(symbol or "").strip().upper()
+        if not normalized.endswith("/USDT"):
+            return ""
+        base = normalized[:-5]
+        if not base or not all(ch.isalnum() for ch in base):
+            return ""
+        query = urlencode({"symbol": f"BINANCE:{base}USDT.P", "interval": "5"})
+        return f"https://www.tradingview.com/chart/?{query}"
+
+    @staticmethod
     def format_message(signal: dict) -> str:
         emoji = "🟢" if signal["side"] == "LONG" else "🔴"
         # Exchange timestamps identify candle OPEN; show the true close time.
@@ -43,10 +56,16 @@ class TelegramNotifier:
             candle_close_ms / 1000, timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S UTC")
         generated_at = signal.get("signal_generated_at")
+        chart_url = TelegramNotifier.tradingview_url(signal.get("symbol", ""))
+        chart_link = (
+            f'<a href="{chart_url}">📊 OPEN BINANCE PERPETUAL CHART · 5m</a>\n\n'
+            if chart_url else ""
+        )
         return (
             f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
             f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
-            f"Entry: <code>{fmt_price(signal['entry'])}</code>\n"
+            + chart_link
+            + f"Entry: <code>{fmt_price(signal['entry'])}</code>\n"
             f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\n"
             f"Target: <code>{fmt_price(signal['target'])}</code>\n"
             f"Risk/Reward: 1:{signal['rr']:.2f}\n\n"
