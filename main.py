@@ -114,6 +114,20 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             closed_ts = int(df5.iloc[-1].timestamp)
             five_minute_close = closed_ts + timeframe_milliseconds('5m')
 
+            # Outcome tracking is observational and must never block signal generation.
+            # Only later completed 5m candles are considered by the store.
+            if candidate_store is not None:
+                try:
+                    await candidate_store.update_open_outcomes(
+                        display_symbol, df5.to_dict("records")
+                    )
+                except Exception as outcome_error:
+                    state["outcome_tracking_errors"] = state.get("outcome_tracking_errors", 0) + 1
+                    log.warning(
+                        "outcome tracking failed symbol=%s error_type=%s",
+                        display_symbol, type(outcome_error).__name__,
+                    )
+
             # Never emit a historical setup discovered during process startup.
             if session_started_ms is not None and five_minute_close <= session_started_ms:
                 last_seen_candle[display_symbol] = closed_ts
