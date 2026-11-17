@@ -69,76 +69,49 @@ last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
+    """Scan completed 5m candles; never wait for ADX or 15m confirmation."""
     async with semaphore:
         try:
             rows = feed.rows(pair)
             latest_ts = int(rows[-1][0]) if rows else 0
-            # 60 completed 15m candles require at least 180 completed 5m candles.
-            full_history_refreshed = False
-            if (len(rows) < 180 or not latest_ts or
+            if (len(rows) < 60 or not latest_ts or
                     now_ms - (latest_ts + timeframe_milliseconds('5m')) >
                     timeframe_milliseconds('5m') + 30_000):
-                # A failed/undersized bootstrap needs a full indicator window;
-                # established caches use a small REST refresh to limit API traffic.
-                refresh_limit = 320 if len(rows) < 180 else 6
+                refresh_limit = 320 if len(rows) < 60 else 6
                 await feed.fetch_history(pair, limit=refresh_limit)
-                full_history_refreshed = refresh_limit == 320
                 rows = feed.rows(pair)
+
             df5 = validate_ohlcv(rows, '5m', now_ms)
-            rows15 = aggregate_5m_to_15m(rows, now_ms)
-            # A cache can contain 180+ 5m rows but still have fewer than 60
-            # usable 15m bars because of historical gaps or alignment. Retry a
-            # full history fetch once before declaring the symbol unhealthy.
-            if len(rows15) < 60 and len(rows) >= 180 and not full_history_refreshed:
-                await feed.fetch_history(pair, limit=320)
-                rows = feed.rows(pair)
-                df5 = validate_ohlcv(rows, '5m', now_ms)
-                rows15 = aggregate_5m_to_15m(rows, now_ms)
-            df15 = validate_ohlcv(rows15, '15m', now_ms)
-            if len(df5) < 60 or len(df15) < 60:
-                raise ValueError(f'insufficient completed candles: 5m={len(df5)}, 15m={len(df15)}')
+            if len(df5) < 60:
+                raise ValueError(f'insufficient completed 5m candles: {len(df5)}')
             closed_ts = int(df5.iloc[-1].timestamp)
             five_minute_close = closed_ts + timeframe_milliseconds('5m')
+
             # Never emit a historical setup discovered during process startup.
             if session_started_ms is not None and five_minute_close <= session_started_ms:
                 last_seen_candle[display_symbol] = closed_ts
                 state['symbols_ok'] += 1
                 return
-            context_close = int(df15.iloc[-1].timestamp) + timeframe_milliseconds('15m')
-            if context_close > five_minute_close:
-                raise ValueError('15m context candle is newer than the 5m signal candle')
-            if five_minute_close - context_close > timeframe_milliseconds('15m'):
-                raise ValueError('15m context candle is too old for the 5m signal candle')
             if last_seen_candle.get(display_symbol) == closed_ts:
                 state['symbols_ok'] += 1
                 return
-            setup = evaluate_setup(df5, df15)
+
+            # 15m is deliberately not fetched or required: it cannot delay/veto 5m.
+            setup = evaluate_setup(df5)
             if not setup:
                 if candidate_store is not None:
+                    # Retire legacy pending candidates so they can never promote later.
                     await candidate_store.invalidate(display_symbol)
                 last_seen_candle[display_symbol] = closed_ts
                 state['symbols_ok'] += 1
                 return
-            if candidate_store is not None:
-                candidate_state, candidate_id = await candidate_store.observe(
-                    display_symbol, setup['side'], closed_ts, setup['adx'], settings.adx_min
-                )
-            else:
-                candidate_state, candidate_id = ("READY", None) if setup["adx_satisfied"] else ("PENDING", None)
-            if candidate_state == "PENDING":
-                last_seen_candle[display_symbol] = closed_ts
-                state['symbols_ok'] += 1
-                return
-            if candidate_state not in {"READY", "TRIGGER"}:
-                state['symbols_ok'] += 1
-                return
-            signal = {k: v for k, v in setup.items() if k != "adx_satisfied"}
+
+            signal = dict(setup)
             signal['symbol'] = display_symbol
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
-            # Signal history, durable same-direction cooldown, candidate transition
-            # and Telegram outbox insertion commit in one PostgreSQL transaction.
-            queued = await candidate_store.enqueue_signal(signal, candidate_id, COOLDOWN_CANDLES)
+            # Durable idempotency, same-direction cooldown and outbox stay atomic.
+            queued = await candidate_store.enqueue_signal(signal, None, COOLDOWN_CANDLES)
             last_seen_candle[display_symbol] = closed_ts
             if queued:
                 state['signals_queued'] = state.get('signals_queued', 0) + 1
