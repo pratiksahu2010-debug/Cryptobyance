@@ -13,6 +13,11 @@ import socketio
 
 log = logging.getLogger("cryptobyance.coindcx")
 
+# Socket.IO/Engine.IO emit one INFO record per market-data frame, including the
+# full candle payload. Keep production logs focused on bot diagnostics.
+logging.getLogger("socketio.client").setLevel(logging.WARNING)
+logging.getLogger("engineio.client").setLevel(logging.WARNING)
+
 ACTIVE_INSTRUMENTS_URL = "https://api.coindcx.com/exchange/v1/derivatives/futures/data/active_instruments"
 CANDLES_URL = "https://public.coindcx.com/market_data/candlesticks"
 SOCKET_URL = "wss://stream.coindcx.com"

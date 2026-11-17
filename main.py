@@ -358,7 +358,7 @@ async def scanner_session() -> None:
                 })
             except Exception as exc:
                 log.error("Scanner runtime checkpoint failed error_type=%s", type(exc).__name__)
-            log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
+            log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals_queued_total=%d signals_sent_total=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state.get('signals_queued', 0), state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
             stale_data = state['stale_candle_failures'] > 0
             delay = scanner_sleep_seconds(stale_data=stale_data)
             log.info('Next scan scheduled delay=%.1fs reason=%s', delay, 'stale-data-retry' if stale_data else 'next-5m-close')

@@ -11,6 +11,11 @@ from telegram import TelegramNotifier
 
 
 class CoinDCXFeedTests(unittest.TestCase):
+    def test_socket_transport_loggers_do_not_emit_every_market_data_frame(self):
+        import logging
+        self.assertGreaterEqual(logging.getLogger("socketio.client").level, logging.WARNING)
+        self.assertGreaterEqual(logging.getLogger("engineio.client").level, logging.WARNING)
+
     def test_configured_symbol_maps_to_coin_dcx_pair(self):
         self.assertEqual(symbol_to_pair("BTC/USDT"), "B-BTC_USDT")
         self.assertEqual(symbol_to_pair("1000BONK/USDT"), "B-1000BONK_USDT")
