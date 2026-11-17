@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -58,7 +59,7 @@ class TelegramNotifier:
         generated_at = signal.get("signal_generated_at")
         chart_url = TelegramNotifier.tradingview_url(signal.get("symbol", ""))
         chart_link = (
-            f'<a href="{chart_url}">📊 OPEN BINANCE PERPETUAL CHART · 5m</a>\n\n'
+            f'<a href="{escape(chart_url, quote=True)}">📊 OPEN BINANCE PERPETUAL CHART · 5m</a>\n\n'
             if chart_url else ""
         )
         return (
