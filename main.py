@@ -110,6 +110,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             signal['symbol'] = display_symbol
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
+            # Retire pending rows created by older releases; the current engine
+            # never promotes a candidate after its crossover candle.
+            if candidate_store is not None:
+                await candidate_store.invalidate(display_symbol)
+            if candidate_store is None:
+                raise RuntimeError('persistent candidate store is required to queue a signal')
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
             queued = await candidate_store.enqueue_signal(signal, None, COOLDOWN_CANDLES)
             last_seen_candle[display_symbol] = closed_ts
