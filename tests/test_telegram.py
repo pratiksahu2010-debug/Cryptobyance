@@ -29,6 +29,30 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
             "candle": 1_800_000_000_000,
         }
 
+    def test_tradingview_url_uses_binance_usdt_perpetual_and_five_minute_interval(self):
+        self.assertEqual(
+            TelegramNotifier.tradingview_url("BTC/USDT"),
+            "https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P&interval=5",
+        )
+        self.assertEqual(
+            TelegramNotifier.tradingview_url("1000BONK/USDT"),
+            "https://www.tradingview.com/chart/?symbol=BINANCE%3A1000BONKUSDT.P&interval=5",
+        )
+
+    def test_tradingview_url_rejects_invalid_or_non_usdt_symbols(self):
+        self.assertEqual(TelegramNotifier.tradingview_url(""), "")
+        self.assertEqual(TelegramNotifier.tradingview_url("BTC/USD"), "")
+        self.assertEqual(TelegramNotifier.tradingview_url("BTC/USDT<script>"), "")
+
+    def test_formatted_signal_contains_clickable_tradingview_chart_link(self):
+        message = TelegramNotifier.format_message(self._signal())
+        self.assertIn(
+            '<a href="https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P&amp;interval=5">',
+            message,
+        )
+        self.assertIn("OPEN BINANCE PERPETUAL CHART · 5m", message)
+        self.assertIn("CoinDCX USDT Perpetual", message)
+
     async def test_retries_rate_limit_then_succeeds(self):
         client = FakeClient([
             httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 2}}),
