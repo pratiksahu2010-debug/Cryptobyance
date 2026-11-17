@@ -573,6 +573,63 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(feed.refresh_limits, [])
         self.assertEqual(len(feed.cache), len(sparse_rows))
 
+    def test_scanner_passes_optional_aligned_15m_context_without_changing_5m_scan(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i * 0.1, 100.5 + i * 0.1,
+                 99.5 + i * 0.1, 100 + i * 0.1, 100] for i in range(200)]
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def rows(self, pair):
+                return rows
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        captured = {}
+        def fake_evaluate(df5, df15=None):
+            captured['df5'] = df5
+            captured['df15'] = df15
+            return None
+
+        with patch('main.evaluate_setup', side_effect=fake_evaluate):
+            asyncio.run(scan_symbol(FakeFeed(), FakeNotifier(), asyncio.Semaphore(1),
+                                    'BTC/USDT', 'B-BTC_USDT', now_ms))
+        self.assertIsNotNone(captured['df15'])
+        self.assertGreaterEqual(len(captured['df15']), 35)
+        self.assertTrue((captured['df15'].timestamp.astype('int64') % 900_000 == 0).all())
+        self.assertEqual(int(captured['df5'].iloc[-1].timestamp), rows[-1][0])
+
+    def test_scanner_keeps_5m_evaluation_when_15m_context_is_unavailable(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i * 0.1, 100.5 + i * 0.1,
+                 99.5 + i * 0.1, 100 + i * 0.1, 100] for i in range(200)]
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def rows(self, pair):
+                return rows
+
+        class FakeNotifier:
+            async def send(self, signal):
+                return True
+
+        with patch('main.aggregate_5m_to_15m', return_value=[]):
+            with patch('main.evaluate_setup', return_value=None) as evaluate:
+                asyncio.run(scan_symbol(FakeFeed(), FakeNotifier(), asyncio.Semaphore(1),
+                                        'BTC/USDT', 'B-BTC_USDT', now_ms))
+        evaluate.assert_called_once()
+        self.assertIsNone(evaluate.call_args.args[1])
+
     def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
         import asyncio
         from unittest.mock import patch
