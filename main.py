@@ -74,14 +74,20 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
         try:
             rows = feed.rows(pair)
             latest_ts = int(rows[-1][0]) if rows else 0
-            if (len(rows) < 60 or not latest_ts or
-                    now_ms - (latest_ts + timeframe_milliseconds('5m')) >
-                    timeframe_milliseconds('5m') + 30_000):
-                refresh_limit = 320 if len(rows) < 60 else 6
-                await feed.fetch_history(pair, limit=refresh_limit)
+            if len(rows) < 60 or not latest_ts:
+                await feed.fetch_history(pair, limit=320)
                 rows = feed.rows(pair)
 
-            df5 = validate_ohlcv(rows, '5m', now_ms)
+            # A completed candle older than 90 seconds is too late for an
+            # actionable alert. Refresh once from REST before rejecting it.
+            try:
+                df5 = validate_ohlcv(rows, '5m', now_ms, max_age_ms=90_000)
+            except ValueError as exc:
+                if 'stale 5m candles' not in str(exc).lower():
+                    raise
+                await feed.fetch_history(pair, limit=6)
+                rows = feed.rows(pair)
+                df5 = validate_ohlcv(rows, '5m', now_ms, max_age_ms=90_000)
             if len(df5) < 60:
                 raise ValueError(f'insufficient completed 5m candles: {len(df5)}')
             closed_ts = int(df5.iloc[-1].timestamp)

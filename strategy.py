@@ -46,7 +46,10 @@ def timeframe_milliseconds(timeframe: str) -> int:
         raise ValueError(f"unsupported timeframe for validation: {timeframe}")
     return int(timeframe[:-1]) * 60_000
 
-def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.DataFrame:
+def validate_ohlcv(
+    raw: list, timeframe: str, now_ms: int | None = None,
+    max_age_ms: int | None = None,
+) -> pd.DataFrame:
     """Return sorted, unique, valid and fresh completed OHLCV candles."""
     interval_ms = timeframe_milliseconds(timeframe)
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
@@ -75,8 +78,14 @@ def validate_ohlcv(raw: list, timeframe: str, now_ms: int | None = None) -> pd.D
     if df.empty:
         raise ValueError(f"no completed {timeframe} candles available")
     latest_close_ms = int(df.iloc[-1].timestamp) + interval_ms
-    if now_ms - latest_close_ms > interval_ms + 30_000:
-        raise ValueError(f"stale {timeframe} candles: latest close is {(now_ms-latest_close_ms)/1000:.0f}s old")
+    freshness_limit_ms = interval_ms + 30_000 if max_age_ms is None else int(max_age_ms)
+    if freshness_limit_ms < 0:
+        raise ValueError("max_age_ms must be non-negative")
+    if now_ms - latest_close_ms > freshness_limit_ms:
+        raise ValueError(
+            f"stale {timeframe} candles: latest close is "
+            f"{(now_ms-latest_close_ms)/1000:.0f}s old (max {freshness_limit_ms/1000:.0f}s)"
+        )
     if len(df) >= 3 and not (df.timestamp.astype("int64").diff().iloc[-2:] == interval_ms).all():
         raise ValueError(f"missing interval in latest {timeframe} candles")
     return df
