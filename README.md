@@ -6,13 +6,13 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 
 **5-minute completed-candle entry. 15-minute context is not an entry gate.**
 
-LONG requires all conditions on the same latest completed 5m candle:
-- A fresh EMA(9) crossing above EMA(21) on this candle (not an older EMA alignment).
+LONG requires all conditions on the latest completed 5m candle:
+- EMA(9) > EMA(21) (alignment; a fresh crossover is not required).
 - 5m close above UTC-day cumulative VWAP.
 - 5m RSI(14) above 50.
 - 5m ADX(14) at or above `ADX_MIN` (default 20), with +DI greater than -DI.
 
-SHORT is the exact inverse: fresh EMA(9) cross below EMA(21), close below VWAP, RSI below 50, ADX at/above the threshold, and -DI greater than +DI. ADX below threshold rejects immediately; the engine never waits for ADX to rise on later candles. 15m data cannot delay or veto a valid 5m setup. No ORB, breakout, momentum, or secondary signal module is included. The engine evaluates completed candles only.
+SHORT is the exact inverse: EMA(9) < EMA(21), close below VWAP, RSI below 50, ADX at/above the threshold, and -DI greater than +DI. ADX below threshold rejects immediately; the engine never waits for ADX to rise on later candles. A mandatory 15m trend veto permits LONG only when 15m EMA(9) > EMA(21), and SHORT only when 15m EMA(9) < EMA(21); missing, stale, invalid, insufficient or neutral 15m data blocks signals. Both timeframes use completed candles only. No ORB, breakout, momentum, or secondary signal module is included.
 
 ATR(14) is used only to calculate the informational stop distance (1.5 ATR by default); it is not an entry filter. Target is 1.5R by default. These are planning levels, not exchange orders or guaranteed fills.
 
@@ -28,7 +28,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 - Active futures instruments: public CoinDCX active-instruments endpoint.
 - Historical 5m candles: public CoinDCX futures candlestick REST endpoint.
 - Live updates: public CoinDCX futures Socket.IO 5m candlestick channels.
-- 15m aggregation remains available for diagnostics/optional context only; it is not fetched or required by the live entry scanner.
+- The scanner aggregates aligned groups of three completed 5m candles into 15m bars. At least 35 valid 15m bars are required; the latest 15m EMA(9)/EMA(21) direction is a mandatory veto.
 - Reconnects: Socket.IO reconnection with bounded retry delay.
 - Recovery: REST history is refreshed for symbols whose candle cache is missing or stale.
 - Public market data only. No CoinDCX API key or secret is required.
@@ -36,7 +36,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a one-click TradingView link to the matching Binance USDT-margined perpetual reference chart on the 5-minute interval, plus entry, informational stop/target, RR, RSI, ADX, and candle close time. The chart is a Binance reference chart; signal data and contract validation remain CoinDCX-based. Symbols that cannot be safely converted to a USDT ticker omit the link rather than generating a malformed URL.
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a one-click TradingView link to the matching Binance USDT-margined perpetual reference chart on the 5-minute interval, plus entry, ATR-derived stop/target, RR, RSI, ADX, mandatory 15m trend confirmation, and candle close time. The chart is a Binance reference chart; signal data and contract validation remain CoinDCX-based. Symbols that cannot be safely converted to a USDT ticker omit the link rather than generating a malformed URL.
 
 ## Code architecture
 

@@ -69,9 +69,9 @@ class TelegramNotifier:
             f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\n"
             f"Target: <code>{fmt_price(signal['target'])}</code>\n"
             f"Risk/Reward: 1:{signal['rr']:.2f}\n\n"
-            f"EMA 9/21: fresh crossover confirmed\nVWAP: correct side\n"
+            f"EMA 9/21: aligned with signal direction\nVWAP: correct side\n"
             f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
-            f"15m context: {escape(str(signal.get('context', '15m unavailable')))} (informational only; never a veto)\n"
+            f"15m trend filter: {escape(str(signal.get('context', 'unavailable')))} (mandatory direction confirmation)\n"
             f"5m candle close: {candle_time}\n\n"
             "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )

@@ -89,7 +89,7 @@ def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = Fal
     return seconds_until_next_candle_scan(now_epoch)
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
-    """Scan completed 5m candles; never wait for ADX or 15m confirmation."""
+    """Scan completed 5m candles; 15m EMA trend is a mandatory direction veto."""
     async with semaphore:
         rows = []
         try:
@@ -123,9 +123,9 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['symbols_ok'] += 1
                 return
 
-            # Build optional 15m context from aligned groups of three completed
-            # 5m candles already in cache. Missing, stale, or gapped 15m data is
-            # informational only and never blocks an otherwise valid 5m setup.
+            # Build mandatory 15m trend context from aligned groups of three completed
+            # 5m candles. Missing, stale, gapped, or insufficient 15m data is
+            # passed as None and the strategy safely vetoes every signal.
             df15 = None
             try:
                 rows15 = aggregate_5m_to_15m(rows, now_ms)
@@ -134,7 +134,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     if len(candidate15) >= 35:
                         df15 = candidate15
             except ValueError as context_error:
-                log.debug('15m context unavailable symbol=%s reason=%s', display_symbol, context_error)
+                log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
             setup = evaluate_setup(df5, df15)
             if not setup:
                 if candidate_store is not None:

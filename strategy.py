@@ -128,45 +128,54 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     return x
 
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Return a setup only on the latest completed 5m EMA9/21 crossover.
+    """Evaluate aligned 5m entry conditions with a mandatory 15m EMA trend veto.
 
-    15m data is optional and informational only. All entry gates (VWAP, RSI,
-    ADX and directional DI) are evaluated on the same completed 5m candle.
+    EMA alignment (not a fresh crossover) is the entry rule on both timeframes.
+    A signal is impossible without at least 35 valid 15m candles.
     """
-    if len(df5) < 60:
+    if len(df5) < 60 or df15 is None or len(df15) < 35:
         return None
+
     a = indicators(df5.copy())
     if len(a) < 35:
         return None
-    c, p = a.iloc[-1], a.iloc[-2]
-    needed = [c.ema9, c.ema21, p.ema9, p.ema21, c.vwap, c.rsi,
-              c.adx, c.atr, c.plus_di, c.minus_di]
+    c = a.iloc[-1]
+    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr,
+              c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
 
-    # Fresh cross on this candle only: an already-aligned EMA pair is not an entry.
-    long_cross = p.ema9 <= p.ema21 and c.ema9 > c.ema21
-    short_cross = p.ema9 >= p.ema21 and c.ema9 < c.ema21
-    long_ok = (long_cross and c.close > c.vwap and c.rsi > 50
+    # The requested rule is EMA alignment, not a one-candle crossover.
+    long_ok = (c.ema9 > c.ema21 and c.close > c.vwap and c.rsi > 50
                and c.adx >= ADX_MIN and c.plus_di > c.minus_di)
-    short_ok = (short_cross and c.close < c.vwap and c.rsi < 50
+    short_ok = (c.ema9 < c.ema21 and c.close < c.vwap and c.rsi < 50
                 and c.adx >= ADX_MIN and c.minus_di > c.plus_di)
     if not (long_ok or short_ok):
         return None
 
+    # 15m is a hard direction veto. Missing, invalid, or neutral context blocks.
+    context_frame = indicators(df15.copy())
+    if len(context_frame) < 35:
+        return None
+    context_row = context_frame.iloc[-1]
+    context_values = [context_row.ema9, context_row.ema21]
+    if not all(pd.notna(v) and np.isfinite(float(v)) for v in context_values):
+        return None
+    if context_row.ema9 > context_row.ema21:
+        context = "15m bullish"
+    elif context_row.ema9 < context_row.ema21:
+        context = "15m bearish"
+    else:
+        return None
+
     side = "LONG" if long_ok else "SHORT"
+    if (side == "LONG" and context != "15m bullish") or (side == "SHORT" and context != "15m bearish"):
+        return None
+
     entry, atr_value = float(c.close), float(c.atr)
     if not np.isfinite(atr_value) or atr_value <= 0:
         return None
     risk = atr_value * ATR_STOP_MULT
-    context = "15m unavailable"
-    if df15 is not None and len(df15) >= 35:
-        context_frame = indicators(df15.copy())
-        context_row = context_frame.iloc[-1]
-        if pd.notna(context_row.ema9) and pd.notna(context_row.ema21):
-            context = ("15m bullish" if context_row.ema9 > context_row.ema21
-                       else "15m bearish" if context_row.ema9 < context_row.ema21
-                       else "15m neutral")
     return {
         "side": side, "entry": entry,
         "stop": entry - risk if side == "LONG" else entry + risk,
