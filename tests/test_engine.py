@@ -623,7 +623,7 @@ class EngineTests(unittest.TestCase):
             signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(-1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
-        self.assertEqual(signal["context"], "15m bullish")
+        self.assertEqual(signal["context"], "15m bearish")
 
     def test_signal_includes_actual_five_minute_candle_close(self):
         from unittest.mock import patch
@@ -650,10 +650,10 @@ class EngineTests(unittest.TestCase):
         frame.loc[:, "rsi"] = 40.0
         frame.loc[:, "plus_di"] = 10.0
         frame.loc[:, "minus_di"] = 30.0
-        frame.loc[:, "ema9"] = 101.0
+        frame.loc[:, "ema9"] = 99.0
         frame.loc[:, "ema21"] = 100.0
-        frame.loc[len(frame) - 2, "ema9"] = 100.0
-        frame.loc[len(frame) - 2, "ema21"] = 101.0
+        frame.loc[len(frame) - 2, "ema9"] = 101.0
+        frame.loc[len(frame) - 2, "ema21"] = 100.0
         with patch("strategy.indicators", return_value=frame):
             signal = evaluate_signal(self._trend_frame(-1, 300000))
         self.assertIsNotNone(signal)
