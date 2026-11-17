@@ -42,8 +42,10 @@ SYMBOLS = [
 ]
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
-# Cap scan interval at 20s for prompt post-close detection.
-SCAN_SECONDS = min(settings.scan_interval_seconds, 20)
+# Retry stale data briefly, but align normal scans to completed 5m candle closes.
+SCAN_RETRY_SECONDS = min(settings.scan_interval_seconds, 20)
+CANDLE_INTERVAL_SECONDS = 5 * 60
+CANDLE_CLOSE_GRACE_SECONDS = 3
 CONCURRENCY = settings.concurrency
 COOLDOWN_CANDLES = settings.signal_cooldown_candles
 TIMEFRAME = settings.timeframe
@@ -55,7 +57,7 @@ state: dict[str, Any] = {
     "last_cycle_symbols_ok": 0, "last_cycle_symbols_failed": 0,
     "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "telegram_delivery_failures": 0, "last_telegram_success": None,
-    "last_error": None, "running": False,
+    "last_error": None, "running": False, "stale_candle_failures": 0,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
     "websocket_events_received": 0, "last_websocket_pair": None,
@@ -67,6 +69,22 @@ state: dict[str, Any] = {
 # closed before the current scanner session began; state is not durable across restarts.
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
+
+
+def seconds_until_next_candle_scan(now_epoch: float | None = None) -> float:
+    """Delay until just after the next UTC-aligned 5m candle close."""
+    now_epoch = time.time() if now_epoch is None else float(now_epoch)
+    next_close = (int(now_epoch // CANDLE_INTERVAL_SECONDS) + 1) * CANDLE_INTERVAL_SECONDS
+    target = next_close + CANDLE_CLOSE_GRACE_SECONDS
+    return max(1.0, target - now_epoch)
+
+
+def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = False) -> float:
+    """Retry stale feeds during the fresh window; otherwise wait for next 5m close."""
+    until_close = seconds_until_next_candle_scan(now_epoch)
+    if stale_data:
+        return max(1.0, min(float(SCAN_RETRY_SECONDS), until_close))
+    return until_close
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
     """Scan completed 5m candles; never wait for ADX or 15m confirmation."""
@@ -138,6 +156,8 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             state['symbols_failed'] += 1
             if isinstance(exc, ValueError) and any(word in str(exc).lower() for word in ('candle','ohlcv','interval','stale','future','timestamp','high','low','volume','price')):
                 state['data_validation_failures'] += 1
+                if 'stale 5m candles' in str(exc).lower():
+                    state['stale_candle_failures'] += 1
             state['last_error'] = f'{display_symbol}: {type(exc).__name__}: {exc}'
             log.warning('scan failed symbol=%s pair=%s error=%s', display_symbol, pair, exc)
 
@@ -283,7 +303,7 @@ async def scanner_session() -> None:
         first_scan_cutoff_ms = int(time.time() * 1000)
         while True:
             started = time.monotonic()
-            state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0)
+            state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0, stale_candle_failures=0)
             cycle_now_ms = int(time.time() * 1000)
             results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
@@ -319,7 +339,10 @@ async def scanner_session() -> None:
             except Exception as exc:
                 log.error("Scanner runtime checkpoint failed error_type=%s", type(exc).__name__)
             log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
-            await asyncio.sleep(max(1, SCAN_SECONDS - (time.monotonic() - started)))
+            stale_data = state['stale_candle_failures'] > 0
+            delay = scanner_sleep_seconds(stale_data=stale_data)
+            log.info('Next scan scheduled delay=%.1fs reason=%s', delay, 'stale-data-retry' if stale_data else 'next-5m-close')
+            await asyncio.sleep(delay)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -413,6 +436,7 @@ def build_health_payload() -> dict[str, Any]:
         "symbols_ok_last_scan": state["last_cycle_symbols_ok"],
         "symbols_failed_last_scan": state["last_cycle_symbols_failed"],
         "data_validation_failures": state["data_validation_failures"],
+        "stale_candle_failures": state["stale_candle_failures"],
         "signals_sent": state["signals_sent"],
         "telegram_delivery_failures": state["telegram_delivery_failures"],
         "last_telegram_success": state["last_telegram_success"],
