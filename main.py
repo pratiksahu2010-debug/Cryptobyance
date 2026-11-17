@@ -42,8 +42,8 @@ SYMBOLS = [
 ]
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
-# Retry stale data briefly, but align normal scans to completed 5m candle closes.
-SCAN_RETRY_SECONDS = min(settings.scan_interval_seconds, 20)
+# Scan only around completed 5m candle closes. Stale data waits for the
+# next close rather than repeatedly retrying the same expired candle.
 CANDLE_INTERVAL_SECONDS = 5 * 60
 CANDLE_CLOSE_GRACE_SECONDS = 3
 CONCURRENCY = settings.concurrency
@@ -80,19 +80,13 @@ def seconds_until_next_candle_scan(now_epoch: float | None = None) -> float:
 
 
 def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = False) -> float:
-    """Avoid polling stale prior candles when the next completed 5m bar is imminent."""
+    """Schedule the next scan at the next completed 5m candle close."""
     now_epoch = time.time() if now_epoch is None else float(now_epoch)
-    until_close = seconds_until_next_candle_scan(now_epoch)
-    if stale_data:
-        # Between candle closes, the last completed bar naturally ages past 90s.
-        # If the next close is within the 90s actionable window, wait for that
-        # close plus grace instead of repeatedly rescanning the same old bar.
-        # If the close is farther away, keep short retries so a genuinely late
-        # provider update can still be picked up without waiting a full interval.
-        if until_close <= 90.0:
-            return until_close
-        return max(1.0, min(float(SCAN_RETRY_SECONDS), until_close))
-    return until_close
+    # Once a candle is older than the 90s actionability window, retrying it
+    # every few seconds cannot make it valid again. Wait for the next close
+    # plus grace; scan_symbol still performs one REST refresh and enforces
+    # the unchanged strict 90s freshness limit.
+    return seconds_until_next_candle_scan(now_epoch)
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
     """Scan completed 5m candles; never wait for ADX or 15m confirmation."""

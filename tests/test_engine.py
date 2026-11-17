@@ -5,9 +5,28 @@ import pandas as pd
 from coindcx_feed import (
     aggregate_5m_to_15m, candle_to_row, parse_active_instruments, symbol_to_pair,
 )
-from main import SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload, ping
+from main import (
+    SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload, ping,
+    scanner_sleep_seconds, seconds_until_next_candle_scan,
+)
 from strategy import candles_to_frame, indicators, evaluate_signal, evaluate_setup, validate_ohlcv
 from telegram import TelegramNotifier
+
+
+
+
+class ScannerSchedulingTests(unittest.TestCase):
+    def test_stale_scan_waits_for_next_completed_candle_instead_of_repeating_old_bar(self):
+        # 1000s is 200s after a 5m boundary; the next close is 203s away.
+        self.assertEqual(seconds_until_next_candle_scan(1000), 203)
+        self.assertEqual(scanner_sleep_seconds(1000, stale_data=True), 203)
+
+    def test_stale_scan_near_next_close_waits_only_until_close_grace(self):
+        # Five seconds before the next boundary, wait eight seconds (3s grace).
+        self.assertEqual(scanner_sleep_seconds(1195, stale_data=True), 8)
+
+    def test_fresh_scan_remains_aligned_to_next_completed_candle(self):
+        self.assertEqual(scanner_sleep_seconds(1000, stale_data=False), 203)
 
 
 class CoinDCXFeedTests(unittest.TestCase):
