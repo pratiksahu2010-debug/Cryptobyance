@@ -4,16 +4,15 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 
 ## Strategy — one engine only
 
-**5-minute closed-candle entry + 15-minute closed-candle context**
+**5-minute completed-candle entry. 15-minute context is not an entry gate.**
 
-LONG requires all:
-- 5m EMA(9) > EMA(21)
-- 5m close > UTC-day cumulative VWAP
-- 5m RSI(14) > 50
-- 5m ADX(14) >= configured minimum (default 25)
-- 15m EMA(9) > EMA(21) and 15m close > EMA(21)
+LONG requires all conditions on the same latest completed 5m candle:
+- A fresh EMA(9) crossing above EMA(21) on this candle (not an older EMA alignment).
+- 5m close above UTC-day cumulative VWAP.
+- 5m RSI(14) above 50.
+- 5m ADX(14) at or above `ADX_MIN` (default 20), with +DI greater than -DI.
 
-SHORT is the exact inverse. ADX measures strength, not direction. No ORB, breakout, momentum, or secondary signal module is included. All conditions are mandatory. The engine evaluates completed candles only.
+SHORT is the exact inverse: fresh EMA(9) cross below EMA(21), close below VWAP, RSI below 50, ADX at/above the threshold, and -DI greater than +DI. ADX below threshold rejects immediately; the engine never waits for ADX to rise on later candles. 15m data cannot delay or veto a valid 5m setup. No ORB, breakout, momentum, or secondary signal module is included. The engine evaluates completed candles only.
 
 ATR(14) is used only to calculate the informational stop distance (1.5 ATR by default); it is not an entry filter. Target is 1.5R by default. These are planning levels, not exchange orders or guaranteed fills.
 
@@ -29,7 +28,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 - Active futures instruments: public CoinDCX active-instruments endpoint.
 - Historical 5m candles: public CoinDCX futures candlestick REST endpoint.
 - Live updates: public CoinDCX futures Socket.IO 5m candlestick channels.
-- 15m context: built from three contiguous, completed 5m candles to keep context aligned with the trigger timeframe.
+- 15m aggregation remains available for diagnostics/optional context only; it is not fetched or required by the live entry scanner.
 - Reconnects: Socket.IO reconnection with bounded retry delay.
 - Recovery: REST history is refreshed for symbols whose candle cache is missing or stale.
 - Public market data only. No CoinDCX API key or secret is required.
@@ -41,15 +40,15 @@ Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Pe
 
 ## Code architecture
 
-Pending ADX candidates are persisted in PostgreSQL. A setup that passes EMA/VWAP/RSI/15m direction gates but has ADX below 25 is retained for up to three subsequent completed 5m candles; it triggers only when ADX reaches 25 while the directional setup still holds. `DATABASE_URL` is required for the scanner to start; configure it with the Render internal database URL. The candidate store does not place trades.
+`DATABASE_URL` is required for durable signal history, duplicate protection, cooldowns and the Telegram outbox; configure it with the Render internal database URL. Legacy pending-candidate rows are invalidated and are never promoted into delayed alerts. The candidate store does not place trades.
 
 The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
 - `main.py`: FastAPI lifecycle, scan orchestration, outbox delivery worker, cleanup schedule and health endpoints.
-- `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and 15m aggregation.
+- `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and optional 15m aggregation.
 - `strategy.py`: pure OHLCV validation, indicators, and the single LONG/SHORT decision rule.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
-- `candidate_store.py`: PostgreSQL schema, pending-candidate lifecycle, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
+- `candidate_store.py`: PostgreSQL schema, legacy-candidate invalidation, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
 
 ### PostgreSQL persistence design
 

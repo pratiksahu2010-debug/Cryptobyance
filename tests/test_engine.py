@@ -318,6 +318,8 @@ class EngineTests(unittest.TestCase):
                 self.queued = []
             async def observe(self, symbol, direction, candle_ms, adx, adx_min):
                 return "READY", None
+            async def invalidate(self, symbol):
+                return None
             async def enqueue_signal(self, signal, candidate_id, cooldown_candles):
                 self.queued.append(signal.copy())
                 return True

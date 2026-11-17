@@ -22,7 +22,7 @@ services:
       - key: CONTEXT_TIMEFRAME
         value: 15m
       - key: ADX_MIN
-        value: "25"
+        value: "20"
       - key: DATABASE_URL
         sync: false
       - key: SIGNAL_COOLDOWN_CANDLES
