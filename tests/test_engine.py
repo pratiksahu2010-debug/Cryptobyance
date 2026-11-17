@@ -29,6 +29,58 @@ class CoinDCXFeedTests(unittest.TestCase):
             parse_active_instruments({"data": [{"pair": "B-BTC_USDT"}]}),
             {"B-BTC_USDT"},
         )
+        self.assertEqual(
+            parse_active_instruments({
+                "data": {"instruments": [
+                    {"instrument_name": "B-ETH_USDT"},
+                    {"symbol": "B-BTC_USDC"},
+                    "B-SOL_USDT",
+                ]}
+            }),
+            {"B-ETH_USDT", "B-SOL_USDT"},
+        )
+
+    def test_active_instruments_retries_unfiltered_when_filtered_response_is_empty(self):
+        import asyncio
+        from coindcx_feed import CoinDCXFuturesFeed
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+                self.status_code = 200
+                self.headers = {"content-type": "application/json"}
+                self.text = str(payload)
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def get(self, url, params=None):
+                self.calls.append((url, params))
+                if params is not None:
+                    return FakeResponse([])
+                return FakeResponse(["B-BTC_USDT", "B-ETH_USDC", "B-SOL_USDT"])
+
+            async def aclose(self):
+                return None
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        fake_client = FakeClient()
+        feed.client = fake_client
+        try:
+            result = asyncio.run(feed.active_instruments())
+            self.assertEqual(result, {"B-BTC_USDT", "B-SOL_USDT"})
+            self.assertEqual(len(fake_client.calls), 2)
+            self.assertIsNotNone(fake_client.calls[0][1])
+            self.assertIsNone(fake_client.calls[1][1])
+        finally:
+            asyncio.run(feed.close())
 
     def test_feed_configures_only_confirmed_active_pairs(self):
         from coindcx_feed import CoinDCXFuturesFeed
