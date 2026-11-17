@@ -57,7 +57,7 @@ state: dict[str, Any] = {
     "last_cycle_symbols_ok": 0, "last_cycle_symbols_failed": 0,
     "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "telegram_delivery_failures": 0, "last_telegram_success": None,
-    "last_error": None, "running": False, "stale_candle_failures": 0,
+    "last_error": None, "running": False, "stale_candle_failures": 0, "stale_candle_sample": None,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
     "websocket_events_received": 0, "last_websocket_pair": None,
@@ -89,6 +89,7 @@ def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = Fal
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
     """Scan completed 5m candles; never wait for ADX or 15m confirmation."""
     async with semaphore:
+        rows = []
         try:
             rows = feed.rows(pair)
             latest_ts = int(rows[-1][0]) if rows else 0
@@ -158,6 +159,17 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['data_validation_failures'] += 1
                 if 'stale 5m candles' in str(exc).lower():
                     state['stale_candle_failures'] += 1
+                    if state.get('stale_candle_sample') is None:
+                        latest_open_ms = int(rows[-1][0]) if rows else None
+                        latest_close_ms = latest_open_ms + timeframe_milliseconds('5m') if latest_open_ms is not None else None
+                        state['stale_candle_sample'] = {
+                            'symbol': display_symbol, 'pair': pair,
+                            'latest_open_ms': latest_open_ms,
+                            'latest_close_ms': latest_close_ms,
+                            'age_seconds': round((now_ms - latest_close_ms) / 1000, 1) if latest_close_ms is not None else None,
+                            'websocket_last_event': state.get('last_websocket_event'),
+                            'websocket_last_pair': state.get('last_websocket_pair'),
+                        }
             state['last_error'] = f'{display_symbol}: {type(exc).__name__}: {exc}'
             log.warning('scan failed symbol=%s pair=%s error=%s', display_symbol, pair, exc)
 
@@ -303,7 +315,7 @@ async def scanner_session() -> None:
         first_scan_cutoff_ms = int(time.time() * 1000)
         while True:
             started = time.monotonic()
-            state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0, stale_candle_failures=0)
+            state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0, stale_candle_failures=0, stale_candle_sample=None)
             cycle_now_ms = int(time.time() * 1000)
             results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
@@ -437,6 +449,7 @@ def build_health_payload() -> dict[str, Any]:
         "symbols_failed_last_scan": state["last_cycle_symbols_failed"],
         "data_validation_failures": state["data_validation_failures"],
         "stale_candle_failures": state["stale_candle_failures"],
+        "stale_candle_sample": state["stale_candle_sample"],
         "signals_sent": state["signals_sent"],
         "telegram_delivery_failures": state["telegram_delivery_failures"],
         "last_telegram_success": state["last_telegram_success"],
