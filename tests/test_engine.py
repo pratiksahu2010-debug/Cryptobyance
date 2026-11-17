@@ -205,10 +205,10 @@ class CoinDCXFeedTests(unittest.TestCase):
         self.assertEqual(len(SYMBOLS), 60)
         self.assertEqual(len(set(SYMBOLS)), 60)
 
-    def test_ping_returns_empty_success_response(self):
+    def test_ping_returns_empty_204_keepalive_response(self):
         import asyncio
         response = asyncio.run(ping())
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 204)
         self.assertEqual(response.body, b"")
 
 
