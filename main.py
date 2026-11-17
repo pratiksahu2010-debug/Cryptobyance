@@ -123,8 +123,19 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['symbols_ok'] += 1
                 return
 
-            # 15m is deliberately not fetched or required: it cannot delay/veto 5m.
-            setup = evaluate_setup(df5)
+            # Build optional 15m context from aligned groups of three completed
+            # 5m candles already in cache. Missing, stale, or gapped 15m data is
+            # informational only and never blocks an otherwise valid 5m setup.
+            df15 = None
+            try:
+                rows15 = aggregate_5m_to_15m(rows, now_ms)
+                if len(rows15) >= 35:
+                    candidate15 = validate_ohlcv(rows15, '15m', now_ms)
+                    if len(candidate15) >= 35:
+                        df15 = candidate15
+            except ValueError as context_error:
+                log.debug('15m context unavailable symbol=%s reason=%s', display_symbol, context_error)
+            setup = evaluate_setup(df5, df15)
             if not setup:
                 if candidate_store is not None:
                     # Retire legacy pending candidates so they can never promote later.

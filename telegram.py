@@ -71,7 +71,7 @@ class TelegramNotifier:
             f"Risk/Reward: 1:{signal['rr']:.2f}\n\n"
             f"EMA 9/21: fresh crossover confirmed\nVWAP: correct side\n"
             f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
-            f"15m context: informational only (not an entry filter)\n"
+            f"15m context: {escape(str(signal.get('context', '15m unavailable')))} (informational only; never a veto)\n"
             f"5m candle close: {candle_time}\n\n"
             "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
