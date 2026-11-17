@@ -182,7 +182,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
     alignment_age = 0
-    for row in reversed(a.tail(6).itertuples()):
+    for row in a.tail(6).iloc[::-1].itertuples(index=False):
         aligned = row.ema9 > row.ema21 if side == "LONG" else row.ema9 < row.ema21
         if not bool(aligned):
             break
