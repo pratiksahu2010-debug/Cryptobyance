@@ -94,3 +94,9 @@ Render Free instances can spin down and restart; scanning is not continuous whil
 ## Performance validation
 
 No indicator recipe guarantees a particular win rate. Backtest this exact rule set out of sample with fees, funding, spread and realistic slippage. Forward-test alerts before risking capital.
+
+## Signal diagnostics (research-only)
+
+Every emitted signal stores a versioned `diagnostics` snapshot inside its persisted signal payload. It records the 5m EMA spread and slopes normalized by ATR, consecutive EMA-alignment age (capped at six bars), price-to-VWAP distance and VWAP slope normalized by ATR, RSI14, ADX14, directional-indicator spread, ATR as a percentage of price, and the 15m EMA spread/slope.
+
+These fields are **observability data only**. They do not add entry filters, change the existing LONG/SHORT rules, modify stops or targets, or affect Telegram delivery. No quality score or threshold has been enabled. Use the collected snapshots with independently labelled trade outcomes before considering any strategy change.

@@ -176,6 +176,35 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     if not np.isfinite(atr_value) or atr_value <= 0:
         return None
     risk = atr_value * ATR_STOP_MULT
+
+    # Research telemetry only: these measurements are stored with each signal
+    # but never alter eligibility, sizing, stop placement, or Telegram delivery.
+    prev5 = a.iloc[-4]
+    prev15 = context_frame.iloc[-4]
+    alignment_age = 0
+    for row in a.tail(6).iloc[::-1].itertuples(index=False):
+        aligned = row.ema9 > row.ema21 if side == "LONG" else row.ema9 < row.ema21
+        if not bool(aligned):
+            break
+        alignment_age += 1
+    diagnostics = {
+        "version": 1,
+        "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
+        "ema9_slope_atr_3bars": (float(c.ema9) - float(prev5.ema9)) / atr_value,
+        "ema21_slope_atr_3bars": (float(c.ema21) - float(prev5.ema21)) / atr_value,
+        "ema_alignment_age_bars_capped_6": alignment_age,
+        "price_vwap_distance_atr": (float(c.close) - float(c.vwap)) / atr_value,
+        "vwap_slope_atr_3bars": (float(c.vwap) - float(prev5.vwap)) / atr_value,
+        "rsi14": float(c.rsi),
+        "adx14": float(c.adx),
+        "di_spread": float(c.plus_di) - float(c.minus_di),
+        "atr_pct_of_price": 100.0 * atr_value / entry,
+        "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
+        "context_ema9_slope_pct_3bars": 100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9),
+    }
+    if not all(np.isfinite(float(value)) for value in diagnostics.values()):
+        return None
+
     return {
         "side": side, "entry": entry,
         "stop": entry - risk if side == "LONG" else entry + risk,
@@ -184,7 +213,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
         "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
-        "context": context,
+        "context": context, "diagnostics": diagnostics,
     }
 
 

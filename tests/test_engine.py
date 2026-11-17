@@ -737,6 +737,37 @@ class EngineTests(unittest.TestCase):
         frame["ema21"] = 100.0
         return frame
 
+    def test_signal_diagnostics_are_persisted_and_never_change_signal_gates(self):
+        from unittest.mock import patch
+
+        five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+
+        self.assertIsNotNone(signal)
+        diagnostics = signal["diagnostics"]
+        self.assertEqual(diagnostics["version"], 1)
+        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 6)
+        self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
+        self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
+        self.assertAlmostEqual(diagnostics["di_spread"], 20.0)
+        self.assertAlmostEqual(diagnostics["context_ema_spread_pct"], 1.0)
+        self.assertTrue(all(np.isfinite(value) for value in diagnostics.values()))
+
+    def test_short_signal_diagnostics_keep_directional_signs(self):
+        from unittest.mock import patch
+
+        five, fifteen = self._indicator_frame("SHORT"), self._context_frame(False)
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
+
+        self.assertIsNotNone(signal)
+        diagnostics = signal["diagnostics"]
+        self.assertLess(diagnostics["ema_spread_atr"], 0)
+        self.assertLess(diagnostics["price_vwap_distance_atr"], 0)
+        self.assertLess(diagnostics["di_spread"], 0)
+        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 6)
+
     def test_ema_alignment_with_all_gates_and_bullish_15m_emits_long(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
