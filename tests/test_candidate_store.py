@@ -89,29 +89,25 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FOR UPDATE SKIP LOCKED", conn.fetchrow_calls[0][0])
         self.assertIn("lease_until", conn.execute.await_args.args[0])
 
-    async def test_pending_candidate_gets_exactly_three_followup_candles(self):
-        first = 1_800_000
-        row = {"id": 17, "direction": "LONG",
-               "expires_after_candle_open_ms": first + 3 * 300_000,
-               "last_checked_candle_open_ms": first + 2 * 300_000}
-        conn = FakeConnection(fetchrows=[row])
+    async def test_adx_qualified_candidate_is_ready_on_same_candle_only(self):
+        conn = FakeConnection()
         store = CandidateStore(FakePool(conn))
         state, candidate_id = await store.observe(
-            "BTC/USDT", "LONG", first + 3 * 300_000, 25.0, 25.0
+            "BTC/USDT", "LONG", 1_800_000, 20.0, 20.0
         )
-        self.assertEqual((state, candidate_id), ("TRIGGER", 17))
-        self.assertEqual(conn.execute.await_count, 2)  # expiry check and last-checked update
+        self.assertEqual((state, candidate_id), ("READY", None))
+        self.assertEqual(conn.execute.await_count, 1)
+        self.assertIn("INVALID", conn.execute.await_args.args[0])
 
-    async def test_new_pending_candidate_expires_after_three_followup_bars(self):
-        first = 2_100_000
-        conn = FakeConnection(fetchrows=[None, {"id": 29}])
+    async def test_adx_below_threshold_is_rejected_without_pending_candidate(self):
+        conn = FakeConnection()
         store = CandidateStore(FakePool(conn))
         state, candidate_id = await store.observe(
-            "ETH/USDT", "SHORT", first, 18.0, 25.0
+            "ETH/USDT", "SHORT", 2_100_000, 19.9, 20.0
         )
-        self.assertEqual((state, candidate_id), ("PENDING", 29))
-        insert_args = conn.fetchrow_calls[1][1]
-        self.assertEqual(insert_args[3], first + 3 * 300_000)
+        self.assertEqual((state, candidate_id), ("REJECT", None))
+        self.assertEqual(conn.execute.await_count, 1)
+        self.assertNotIn("INSERT", conn.execute.await_args.args[0].upper())
 
     async def test_outbox_exhaustion_moves_alert_to_dead_letter(self):
         conn = FakeConnection(fetchrows=[{"signal_id": 91}])
