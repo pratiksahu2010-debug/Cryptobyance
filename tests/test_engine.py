@@ -591,6 +591,7 @@ class EngineTests(unittest.TestCase):
             async def send(self, signal):
                 return True
 
+        last_seen_candle.pop('BTC/USDT', None)
         captured = {}
         def fake_evaluate(df5, df15=None):
             captured['df5'] = df5
@@ -604,6 +605,7 @@ class EngineTests(unittest.TestCase):
         self.assertGreaterEqual(len(captured['df15']), 35)
         self.assertTrue((captured['df15'].timestamp.astype('int64') % 900_000 == 0).all())
         self.assertEqual(int(captured['df5'].iloc[-1].timestamp), rows[-1][0])
+        last_seen_candle.pop('BTC/USDT', None)
 
     def test_scanner_keeps_5m_evaluation_when_15m_context_is_unavailable(self):
         import asyncio
@@ -623,12 +625,14 @@ class EngineTests(unittest.TestCase):
             async def send(self, signal):
                 return True
 
+        last_seen_candle.pop('BTC/USDT', None)
         with patch('main.aggregate_5m_to_15m', return_value=[]):
             with patch('main.evaluate_setup', return_value=None) as evaluate:
                 asyncio.run(scan_symbol(FakeFeed(), FakeNotifier(), asyncio.Semaphore(1),
                                         'BTC/USDT', 'B-BTC_USDT', now_ms))
         evaluate.assert_called_once()
         self.assertIsNone(evaluate.call_args.args[1])
+        last_seen_candle.pop('BTC/USDT', None)
 
     def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
         import asyncio
