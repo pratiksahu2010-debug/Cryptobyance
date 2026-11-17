@@ -493,7 +493,7 @@ class EngineTests(unittest.TestCase):
                 "B-BTC_USDT", now_ms,
             ))
         self.assertEqual(feed.refresh_limits, [])
-        self.assertGreaterEqual(len(aggregate_5m_to_15m(feed.cache, now_ms)), 60)
+        self.assertEqual(len(feed.cache), len(sparse_rows))
 
     def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
         import asyncio
@@ -618,7 +618,8 @@ class EngineTests(unittest.TestCase):
     def test_15m_opposing_context_is_informational_not_a_veto(self):
         from unittest.mock import patch
         five = self._indicator_frame(long_cross=True, adx=22.0)
-        fifteen = self._indicator_frame(long_cross=False, adx=30.0)
+        fifteen = self._indicator_frame(long_cross=True, adx=30.0)
+        fifteen.loc[:, "ema9"] = 99.0
         with patch("strategy.indicators", side_effect=[five, fifteen]):
             signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(-1, 900000))
         self.assertIsNotNone(signal)
