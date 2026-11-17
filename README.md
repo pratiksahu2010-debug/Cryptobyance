@@ -37,7 +37,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include entry, informational stop/target, RR, RSI, ADX, and candle close time.
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a one-click TradingView link to the matching Binance USDT-margined perpetual reference chart on the 5-minute interval, plus entry, informational stop/target, RR, RSI, ADX, and candle close time. The chart is a Binance reference chart; signal data and contract validation remain CoinDCX-based. Symbols that cannot be safely converted to a USDT ticker omit the link rather than generating a malformed URL.
 
 ## Code architecture
 
