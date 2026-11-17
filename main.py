@@ -80,9 +80,17 @@ def seconds_until_next_candle_scan(now_epoch: float | None = None) -> float:
 
 
 def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = False) -> float:
-    """Retry stale feeds during the fresh window; otherwise wait for next 5m close."""
+    """Avoid polling stale prior candles when the next completed 5m bar is imminent."""
+    now_epoch = time.time() if now_epoch is None else float(now_epoch)
     until_close = seconds_until_next_candle_scan(now_epoch)
     if stale_data:
+        # Between candle closes, the last completed bar naturally ages past 90s.
+        # If the next close is within the 90s actionable window, wait for that
+        # close plus grace instead of repeatedly rescanning the same old bar.
+        # If the close is farther away, keep short retries so a genuinely late
+        # provider update can still be picked up without waiting a full interval.
+        if until_close <= 90.0:
+            return until_close
         return max(1.0, min(float(SCAN_RETRY_SECONDS), until_close))
     return until_close
 
