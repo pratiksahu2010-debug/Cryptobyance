@@ -492,7 +492,7 @@ class EngineTests(unittest.TestCase):
                 feed, FakeNotifier(), asyncio.Semaphore(1), "BTC/USDT",
                 "B-BTC_USDT", now_ms,
             ))
-        self.assertEqual(feed.refresh_limits, [320])
+        self.assertEqual(feed.refresh_limits, [])
         self.assertGreaterEqual(len(aggregate_5m_to_15m(feed.cache, now_ms)), 60)
 
     def test_scanner_skips_signal_from_candle_closed_before_session_start(self):
