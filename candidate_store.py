@@ -117,38 +117,16 @@ class CandidateStore:
 
     async def observe(self, symbol: str, direction: str, candle_ms: int, adx: float,
                       adx_min: float) -> tuple[str, int | None]:
+        """Compatibility guard: ADX is evaluated immediately, never promoted later.
+
+        Pending rows from older releases are invalidated and cannot generate
+        delayed alerts. New callers should queue only a fully valid signal.
+        """
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """UPDATE signal_candidates SET status='EXPIRED',updated_at=NOW()
-                       WHERE symbol=$1 AND status='PENDING' AND expires_after_candle_open_ms < $2""",
-                    symbol, candle_ms)
-                row = await conn.fetchrow(
-                    """SELECT id,direction,expires_after_candle_open_ms,last_checked_candle_open_ms
-                       FROM signal_candidates WHERE symbol=$1 AND status='PENDING' FOR UPDATE""", symbol)
-                if row and row["direction"] != direction:
-                    await conn.execute(
-                        "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1", row["id"])
-                    row = None
-                if row and candle_ms <= row["last_checked_candle_open_ms"]:
-                    return "PENDING", int(row["id"])
-                if row:
-                    await conn.execute(
-                        """UPDATE signal_candidates SET last_checked_candle_open_ms=$2,
-                           current_adx=$3,updated_at=NOW() WHERE id=$1""", row["id"], candle_ms, adx)
-                    if adx >= adx_min:
-                        return "TRIGGER", int(row["id"])
-                    return "PENDING", int(row["id"])
-                if adx >= adx_min:
-                    return "READY", None
-                row = await conn.fetchrow(
-                    """INSERT INTO signal_candidates
-                       (symbol,direction,first_candle_open_ms,last_checked_candle_open_ms,
-                        expires_after_candle_open_ms,initial_adx,current_adx)
-                       VALUES($1,$2,$3,$3,$4,$5,$5)
-                       ON CONFLICT DO NOTHING RETURNING id""",
-                    symbol,direction,candle_ms,candle_ms+3*300_000,adx)
-                return ("PENDING", int(row["id"])) if row else ("PENDING", None)
+            await conn.execute(
+                """UPDATE signal_candidates SET status='INVALID',updated_at=NOW()
+                   WHERE symbol=$1 AND status='PENDING'""", symbol)
+        return ("READY", None) if float(adx) >= float(adx_min) else ("REJECT", None)
 
     async def enqueue_signal(self, signal: dict, candidate_id: int | None,
                              cooldown_candles: int) -> bool:

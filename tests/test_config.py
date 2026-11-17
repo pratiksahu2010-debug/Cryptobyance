@@ -10,7 +10,7 @@ class SettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertEqual(settings.timeframe, "5m")
         self.assertEqual(settings.context_timeframe, "15m")
-        self.assertEqual(settings.adx_min, 25)
+        self.assertEqual(settings.adx_min, 20)
         self.assertEqual(settings.ema_fast, 9)
         self.assertEqual(settings.ema_slow, 21)
 
