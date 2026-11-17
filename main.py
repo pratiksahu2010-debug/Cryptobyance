@@ -449,5 +449,5 @@ async def health():
 
 @app.get("/ping", response_class=Response)
 async def ping() -> Response:
-    """Return an empty HTTP 200 response for keepalive checks."""
-    return Response(status_code=200)
+    """Return an empty 204 response; do not perform scanner or external work."""
+    return Response(status_code=204)
