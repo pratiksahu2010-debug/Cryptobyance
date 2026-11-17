@@ -421,7 +421,7 @@ def build_health_payload() -> dict[str, Any]:
     scan_age = max(0, int(time.time() - last_scan_epoch)) if last_scan_epoch else None
     completed_symbols = state["last_cycle_symbols_ok"] + state["last_cycle_symbols_failed"]
     cycle_complete = bool(last_scan_epoch and completed_symbols == state["active_symbols"])
-    scan_fresh = bool(scan_age is not None and scan_age <= max(180, SCAN_SECONDS * 3))
+    scan_fresh = bool(scan_age is not None and scan_age <= max(180, CANDLE_INTERVAL_SECONDS + CANDLE_CLOSE_GRACE_SECONDS + 60))
     healthy = bool(
         state["running"] and state["market_metadata_ready"]
         and state["active_symbols"] > 0 and cycle_complete and scan_fresh
