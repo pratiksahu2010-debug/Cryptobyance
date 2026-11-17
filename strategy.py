@@ -108,6 +108,8 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     minus_di = 100 * minus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD).mean() / atr.replace(0, np.nan)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     x["adx"] = dx.ewm(alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD).mean()
+    x["plus_di"] = plus_di
+    x["minus_di"] = minus_di
     x["atr"] = atr
 
     typical = (x.high + x.low + x.close) / 3
