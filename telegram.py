@@ -56,7 +56,6 @@ class TelegramNotifier:
         candle_time = datetime.fromtimestamp(
             candle_close_ms / 1000, timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S UTC")
-        generated_at = signal.get("signal_generated_at")
         chart_url = TelegramNotifier.tradingview_url(signal.get("symbol", ""))
         chart_link = (
             f'<a href="{escape(chart_url, quote=True)}">📊 OPEN BINANCE PERPETUAL CHART · 5m</a>\n\n'
@@ -73,10 +72,8 @@ class TelegramNotifier:
             f"EMA 9/21: fresh crossover confirmed\nVWAP: correct side\n"
             f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
             f"15m context: informational only (not an entry filter)\n"
-            f"5m candle close: {candle_time}\n"
-            + (f"Signal generated: {generated_at}\n" if generated_at else "")
-            + "\n"
-            + "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
+            f"5m candle close: {candle_time}\n\n"
+            "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
     async def send(self, signal: dict) -> bool:

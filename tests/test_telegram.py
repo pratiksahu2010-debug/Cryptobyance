@@ -55,6 +55,9 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("EMA 9/21: fresh crossover confirmed", message)
         self.assertIn("15m context: informational only", message)
         self.assertNotIn("15m bullish", message)
+        self.assertIn("5m candle close:", message)
+        self.assertNotIn("Signal generated:", message)
+        self.assertEqual(message.count("UTC"), 1)
 
     async def test_retries_rate_limit_then_succeeds(self):
         client = FakeClient([
