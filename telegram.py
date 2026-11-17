@@ -56,7 +56,6 @@ class TelegramNotifier:
         candle_time = datetime.fromtimestamp(
             candle_close_ms / 1000, timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S UTC")
-        generated_at = signal.get("signal_generated_at")
         chart_url = TelegramNotifier.tradingview_url(signal.get("symbol", ""))
         chart_link = (
             f'<a href="{escape(chart_url, quote=True)}">📊 OPEN BINANCE PERPETUAL CHART · 5m</a>\n\n'
