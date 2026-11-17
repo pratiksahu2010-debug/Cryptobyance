@@ -100,3 +100,37 @@ No indicator recipe guarantees a particular win rate. Backtest this exact rule s
 Every emitted signal stores a versioned `diagnostics` snapshot inside its persisted signal payload. It records the 5m EMA spread and slopes normalized by ATR, consecutive EMA-alignment age (capped at six bars), price-to-VWAP distance and VWAP slope normalized by ATR, RSI14, ADX14, directional-indicator spread, ATR as a percentage of price, and the 15m EMA spread/slope.
 
 These fields are **observability data only**. They do not add entry filters, change the existing LONG/SHORT rules, modify stops or targets, or affect Telegram delivery. No quality score or threshold has been enabled. Use the collected snapshots with independently labelled trade outcomes before considering any strategy change.
+
+## Delivered-signal outcome tracking
+
+New delivered alerts are tracked in PostgreSQL `signal_outcomes`. For each signal, subsequent completed 5m candles update maximum favourable excursion (MFE) and maximum adverse excursion (MAE), both in units of initial risk (R). The first stop/target resolution is recorded; a candle touching both levels is labelled `AMBIGUOUS` because OHLC data cannot establish which level traded first. Missing 5m intervals set `data_gap=true`.
+
+Only alerts with `signal_history.status='SENT'` are included. The signal candle is excluded from outcome measurement because the assumed entry is its close. Open outcomes remain open until a stop or target is reached; there is no invented time-based exit. This is research telemetry, not simulated exchange fills, and it does not change signals or execute orders.
+
+Read-only summary query for Render PostgreSQL:
+
+```sql
+SELECT
+  status,
+  COUNT(*) AS signals,
+  ROUND(AVG(realized_r)::numeric, 3) AS avg_realized_r,
+  ROUND(AVG(best_favorable_r)::numeric, 3) AS avg_mfe_r,
+  ROUND(AVG(worst_adverse_r)::numeric, 3) AS avg_mae_r,
+  COUNT(*) FILTER (WHERE data_gap) AS signals_with_data_gaps
+FROM signal_outcomes
+GROUP BY status
+ORDER BY status;
+```
+
+Breakdown by symbol and direction:
+
+```sql
+SELECT
+  symbol, direction, status, COUNT(*) AS signals,
+  ROUND(AVG(realized_r)::numeric, 3) AS avg_realized_r,
+  ROUND(AVG(best_favorable_r)::numeric, 3) AS avg_mfe_r,
+  ROUND(AVG(worst_adverse_r)::numeric, 3) AS avg_mae_r
+FROM signal_outcomes
+GROUP BY symbol, direction, status
+ORDER BY symbol, direction, status;
+```

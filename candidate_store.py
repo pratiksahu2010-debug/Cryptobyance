@@ -46,6 +46,31 @@ CREATE TABLE IF NOT EXISTS signal_history (
 );
 CREATE INDEX IF NOT EXISTS ix_signal_history_created ON signal_history(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+ signal_id BIGINT PRIMARY KEY REFERENCES signal_history(id) ON DELETE RESTRICT,
+ symbol TEXT NOT NULL,
+ direction TEXT NOT NULL CHECK(direction IN ('LONG','SHORT')),
+ signal_candle_open_ms BIGINT NOT NULL,
+ entry DOUBLE PRECISION NOT NULL,
+ stop DOUBLE PRECISION NOT NULL,
+ target DOUBLE PRECISION NOT NULL,
+ risk_per_unit DOUBLE PRECISION NOT NULL CHECK(risk_per_unit > 0),
+ status TEXT NOT NULL DEFAULT 'OPEN'
+   CHECK(status IN ('OPEN','TARGET','STOP_LOSS','AMBIGUOUS')),
+ best_favorable_r DOUBLE PRECISION NOT NULL DEFAULT 0,
+ worst_adverse_r DOUBLE PRECISION NOT NULL DEFAULT 0,
+ bars_observed INTEGER NOT NULL DEFAULT 0,
+ last_observed_candle_open_ms BIGINT NOT NULL,
+ exit_candle_open_ms BIGINT,
+ exit_price DOUBLE PRECISION,
+ realized_r DOUBLE PRECISION,
+ data_gap BOOLEAN NOT NULL DEFAULT FALSE,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_signal_outcomes_symbol_status
+ ON signal_outcomes(symbol,status,last_observed_candle_open_ms);
+
 CREATE TABLE IF NOT EXISTS telegram_outbox (
  id BIGSERIAL PRIMARY KEY,
  signal_id BIGINT NOT NULL UNIQUE REFERENCES signal_history(id) ON DELETE RESTRICT,
@@ -74,7 +99,7 @@ CREATE TABLE IF NOT EXISTS scanner_runtime (
  status JSONB NOT NULL,
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-INSERT INTO schema_migrations(version) VALUES (1) ON CONFLICT DO NOTHING;
+INSERT INTO schema_migrations(version) VALUES (1),(2) ON CONFLICT DO NOTHING;
 """
 
 class CandidateStore:
@@ -164,6 +189,19 @@ class CandidateStore:
                                WHERE id=$1 AND status='PENDING'""", candidate_id)
                     return False
                 signal_id = int(row["id"])
+                entry = float(signal["entry"])
+                stop = float(signal["stop"])
+                target = float(signal["target"])
+                risk_per_unit = abs(entry - stop)
+                if risk_per_unit <= 0:
+                    raise ValueError("signal stop must define positive risk")
+                await conn.execute(
+                    """INSERT INTO signal_outcomes(
+                           signal_id,symbol,direction,signal_candle_open_ms,
+                           entry,stop,target,risk_per_unit,last_observed_candle_open_ms
+                       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4)
+                       ON CONFLICT(signal_id) DO NOTHING""",
+                    signal_id,symbol,direction,candle_ms,entry,stop,target,risk_per_unit)
                 await conn.execute(
                     """INSERT INTO telegram_outbox(signal_id,idempotency_key,payload)
                        VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING""",
@@ -179,6 +217,96 @@ class CandidateStore:
                         """UPDATE signal_candidates SET status='TRIGGERED',triggered_at=NOW(),updated_at=NOW()
                            WHERE id=$1 AND status='PENDING'""", candidate_id)
                 return True
+
+    async def update_open_outcomes(self, symbol: str, candles: list[dict]) -> int:
+        """Update MFE/MAE and conservative stop/target outcomes from later closed 5m bars.
+
+        Only delivered signals are measured. The signal candle itself is excluded
+        because entry is assumed at its close. If both stop and target occur in
+        one OHLC candle, the result is AMBIGUOUS rather than assuming an intrabar
+        path that OHLC data cannot prove.
+        """
+        normalized = []
+        for candle in candles:
+            ts = int(candle["timestamp"])
+            normalized.append((ts, float(candle["high"]), float(candle["low"])))
+        normalized.sort(key=lambda item: item[0])
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT o.signal_id,o.direction,o.signal_candle_open_ms,o.entry,
+                          o.stop,o.target,o.risk_per_unit,o.best_favorable_r,
+                          o.worst_adverse_r,o.bars_observed,
+                          o.last_observed_candle_open_ms,o.data_gap
+                   FROM signal_outcomes o
+                   JOIN signal_history s ON s.id=o.signal_id
+                   WHERE o.symbol=$1 AND o.status='OPEN' AND s.status='SENT'
+                   ORDER BY o.signal_candle_open_ms""",
+                symbol)
+            updated = 0
+            for outcome in rows:
+                side = outcome["direction"]
+                entry = float(outcome["entry"])
+                stop = float(outcome["stop"])
+                target = float(outcome["target"])
+                risk = float(outcome["risk_per_unit"])
+                best = float(outcome["best_favorable_r"])
+                worst = float(outcome["worst_adverse_r"])
+                bars_seen = int(outcome["bars_observed"])
+                last_ts = int(outcome["last_observed_candle_open_ms"])
+                data_gap = bool(outcome["data_gap"])
+                status = "OPEN"
+                exit_ts = None
+                exit_price = None
+                realized_r = None
+
+                for ts, high, low in normalized:
+                    if ts <= last_ts or ts <= int(outcome["signal_candle_open_ms"]):
+                        continue
+                    if ts - last_ts != 300_000:
+                        data_gap = True
+                    if side == "LONG":
+                        favorable = max(0.0, (high - entry) / risk)
+                        adverse = max(0.0, (entry - low) / risk)
+                        stop_hit = low <= stop
+                        target_hit = high >= target
+                    else:
+                        favorable = max(0.0, (entry - low) / risk)
+                        adverse = max(0.0, (high - entry) / risk)
+                        stop_hit = high >= stop
+                        target_hit = low <= target
+                    best = max(best, favorable)
+                    worst = max(worst, adverse)
+                    bars_seen += 1
+                    last_ts = ts
+                    if stop_hit and target_hit:
+                        status = "AMBIGUOUS"
+                        exit_ts = ts
+                    elif stop_hit:
+                        status = "STOP_LOSS"
+                        exit_ts = ts
+                        exit_price = stop
+                        realized_r = -1.0
+                    elif target_hit:
+                        status = "TARGET"
+                        exit_ts = ts
+                        exit_price = target
+                        realized_r = abs(target - entry) / risk
+                    if status != "OPEN":
+                        break
+
+                if bars_seen == int(outcome["bars_observed"]) and data_gap == bool(outcome["data_gap"]):
+                    continue
+                await conn.execute(
+                    """UPDATE signal_outcomes
+                       SET status=$2,best_favorable_r=$3,worst_adverse_r=$4,
+                           bars_observed=$5,last_observed_candle_open_ms=$6,
+                           exit_candle_open_ms=$7,exit_price=$8,realized_r=$9,
+                           data_gap=$10,updated_at=NOW()
+                       WHERE signal_id=$1 AND status='OPEN'""",
+                    int(outcome["signal_id"]),status,best,worst,bars_seen,last_ts,
+                    exit_ts,exit_price,realized_r,data_gap)
+                updated += 1
+            return updated
 
     async def claim_outbox(self) -> dict | None:
         """Claim one ready message using a lease; safe across concurrent workers."""
