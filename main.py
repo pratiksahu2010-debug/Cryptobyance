@@ -106,7 +106,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['symbols_ok'] += 1
                 return
 
-            signal = dict(setup)
+            signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
