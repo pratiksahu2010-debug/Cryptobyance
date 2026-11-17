@@ -116,42 +116,58 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     x["vwap"] = pv.groupby(utc_day).cumsum() / x.volume.groupby(utc_day).cumsum().replace(0, np.nan)
     return x
 
-def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
-    """Evaluate all directional gates while exposing ADX as a separate pending gate."""
-    if len(df5) < 60 or len(df15) < 60:
+def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
+    """Return a setup only on the latest completed 5m EMA9/21 crossover.
+
+    15m data is optional and informational only. All entry gates (VWAP, RSI,
+    ADX and directional DI) are evaluated on the same completed 5m candle.
+    """
+    if len(df5) < 60:
         return None
-    a, b = indicators(df5.copy()), indicators(df15.copy())
-    if len(a) < 35 or len(b) < 35:
+    a = indicators(df5.copy())
+    if len(a) < 35:
         return None
-    c, p = a.iloc[-1], b.iloc[-1]
-    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, p.ema9, p.ema21, p.close]
+    c, p = a.iloc[-1], a.iloc[-2]
+    needed = [c.ema9, c.ema21, p.ema9, p.ema21, c.vwap, c.rsi,
+              c.adx, c.atr, c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
-    long_ok = c.ema9 > c.ema21 and c.close > c.vwap and c.rsi > 50 and p.ema9 > p.ema21 and p.close > p.ema21
-    short_ok = c.ema9 < c.ema21 and c.close < c.vwap and c.rsi < 50 and p.ema9 < p.ema21 and p.close < p.ema21
+
+    # Fresh cross on this candle only: an already-aligned EMA pair is not an entry.
+    long_cross = p.ema9 <= p.ema21 and c.ema9 > c.ema21
+    short_cross = p.ema9 >= p.ema21 and c.ema9 < c.ema21
+    long_ok = (long_cross and c.close > c.vwap and c.rsi > 50
+               and c.adx >= ADX_MIN and c.plus_di > c.minus_di)
+    short_ok = (short_cross and c.close < c.vwap and c.rsi < 50
+                and c.adx >= ADX_MIN and c.minus_di > c.plus_di)
     if not (long_ok or short_ok):
         return None
+
     side = "LONG" if long_ok else "SHORT"
     entry, atr_value = float(c.close), float(c.atr)
     if not np.isfinite(atr_value) or atr_value <= 0:
         return None
     risk = atr_value * ATR_STOP_MULT
+    context = "15m unavailable"
+    if df15 is not None and len(df15) >= 35:
+        context_frame = indicators(df15.copy())
+        context_row = context_frame.iloc[-1]
+        if pd.notna(context_row.ema9) and pd.notna(context_row.ema21):
+            context = ("15m bullish" if context_row.ema9 > context_row.ema21
+                       else "15m bearish" if context_row.ema9 < context_row.ema21
+                       else "15m neutral")
     return {
         "side": side, "entry": entry,
         "stop": entry - risk if side == "LONG" else entry + risk,
         "target": entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR,
         "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
+        "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
         "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
-        "context": "15m bullish" if side == "LONG" else "15m bearish",
-        "adx_satisfied": float(c.adx) >= ADX_MIN,
+        "context": context,
     }
 
 
-def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame) -> dict | None:
-    """Strict signal evaluator; all original gates remain mandatory."""
-    setup = evaluate_setup(df5, df15)
-    if setup is None or not setup["adx_satisfied"]:
-        return None
-    setup.pop("adx_satisfied", None)
-    return setup
+def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
+    """Strict same-candle 5m signal evaluator; never queues delayed candidates."""
+    return evaluate_setup(df5, df15)
