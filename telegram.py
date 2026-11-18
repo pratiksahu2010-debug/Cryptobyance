@@ -5,7 +5,6 @@ import asyncio
 import logging
 from html import escape
 from datetime import datetime, timezone
-from urllib.parse import urlencode
 
 import httpx
 
