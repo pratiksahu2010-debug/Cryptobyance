@@ -38,15 +38,18 @@ class TelegramNotifier:
 
     @staticmethod
     def tradingview_url(symbol: str) -> str:
-        """Build the 5-minute Binance USDT perpetual chart URL for a signal symbol."""
+        """Build a TradingView market directory URL without implying exchange parity."""
         normalized = str(symbol or "").strip().upper()
         if not normalized.endswith("/USDT"):
             return ""
         base = normalized[:-5]
         if not base or not all(ch.isalnum() for ch in base):
             return ""
-        query = urlencode({"symbol": f"BINANCE:{base}USDT.P", "interval": "5"})
-        return f"https://www.tradingview.com/chart/?{query}"
+        # CoinDCX's embedded TradingView charts do not establish a public
+        # standalone COINDCX: ticker. Open the symbol's market directory so
+        # users can deliberately select an available exchange instead of
+        # silently being sent to a different venue's perpetual contract.
+        return f"https://www.tradingview.com/symbols/{base}USDT/markets/"
 
     @staticmethod
     def format_message(signal: dict) -> str:
@@ -58,7 +61,7 @@ class TelegramNotifier:
         ).strftime("%Y-%m-%d %H:%M:%S UTC")
         chart_url = TelegramNotifier.tradingview_url(signal.get("symbol", ""))
         chart_link = (
-            f'<a href="{escape(chart_url, quote=True)}">📊 OPEN BINANCE PERPETUAL CHART · 5m</a>\n\n'
+            f'<a href="{escape(chart_url, quote=True)}">📊 OPEN TRADINGVIEW MARKET LIST · SELECT EXCHANGE</a>\n\n'
             if chart_url else ""
         )
         return (
