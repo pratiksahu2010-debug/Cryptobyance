@@ -196,10 +196,9 @@ def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Simple completed-5m EMA/VWAP/RSI/ADX strategy with a hard 15m EMA veto.
 
-    LONG: 5m EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 20.
-    SHORT: exact inverse. 15m EMA9/EMA21 must agree with the signal direction.
-    This builder is called only after the persisted state machine confirms an
-    ARMED RSI-band trigger. It uses a prior swing stop and configured TP1/TP2.
+    The persisted state machine has already confirmed the directional setup and
+    RSI-band trigger. This builder rechecks EMA/VWAP/ADX plus the 15m veto and
+    creates a prior-swing stop with configured TP1/TP2 levels.
     """
     if (not has_contiguous_tail(df5, "5m", 60)
             or df15 is None
