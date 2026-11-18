@@ -313,8 +313,8 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -
                     or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di))
     short_invalid = (float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
                      or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di))
-    long_trigger = float(p.rsi) < 52.0 and 52.0 <= float(c.rsi) <= 70.0
-    short_trigger = float(p.rsi) > 42.0 and 30.0 <= float(c.rsi) <= 42.0
+    long_trigger = float(p.rsi) < settings.rsi_long_min and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max
+    short_trigger = float(p.rsi) > settings.rsi_short_max and settings.rsi_short_min <= float(c.rsi) <= settings.rsi_short_max
     return {
         "LONG": {"setup_valid": bool(long_setup), "invalidation": bool(long_invalid),
                  "trigger": bool(long_trigger)},
