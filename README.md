@@ -39,11 +39,11 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a one-click TradingView link to the matching Binance USDT-margined perpetual reference chart on the 5-minute interval, plus entry, ATR-derived stop/target, RR, RSI, ADX, mandatory 15m trend confirmation, and candle close time. The chart is a Binance reference chart; signal data and contract validation remain CoinDCX-based. Symbols that cannot be safely converted to a USDT ticker omit the link rather than generating a malformed URL.
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a TradingView market-directory link for the symbol, where you can select an exchange that lists the market. This is deliberately not presented as a CoinDCX chart: the bot's signal data and contract validation remain CoinDCX-based. Alerts also include entry, ATR-derived stop/target, RR, RSI, ADX, mandatory 15m trend confirmation, and candle close time. Symbols that cannot be safely converted to a USDT ticker omit the link.
 
 ## Code architecture
 
-`DATABASE_URL` is required for durable signal history, duplicate protection, cooldowns and the Telegram outbox; configure it with the Render internal database URL. Legacy pending-candidate rows are invalidated and are never promoted into delayed alerts. The candidate store does not place trades.
+`DATABASE_URL` is required for durable signal history, duplicate protection, cooldowns and the Telegram outbox. It must be a PostgreSQL connection string for your chosen provider (for Neon, use the pooled connection string and require TLS, e.g. `sslmode=require`). Do not paste database credentials into source control. Legacy pending-candidate rows are invalidated and are never promoted into delayed alerts. The candidate store does not place trades.
 
 The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
@@ -85,7 +85,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 ## Render deployment
 
-The existing Render web service remains attached to this repository's `main` branch. Keep one Uvicorn worker because the scanner and websocket cache are in-process. Set the two Telegram environment variables in Render. Auto-deploy will pick up commits to `main`.
+The existing Render web service remains attached to this repository's `main` branch. Keep one Uvicorn worker because the scanner and websocket cache are in-process. Configure `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID` in Render. To use the protected journal dashboard and APIs, also set `JOURNAL_API_TOKEN`; to receive Telegram inline-button feedback, set `TELEGRAM_WEBHOOK_SECRET` and register the webhook as described below. Auto-deploy will pick up commits to `main`.
 
 Check:
 - `/health`: market metadata ready, active/unavailable symbols, websocket status, last websocket event, scan counters and errors.
@@ -157,7 +157,7 @@ ORDER BY symbol, direction, status;
 
 ### Performance report interpretation
 
-`/performance` reads aggregate metrics from the same internal PostgreSQL connection used by the scanner and refreshes after each completed scan. `avg_realized_r` includes only TARGET and STOP_LOSS outcomes; OPEN and AMBIGUOUS rows are excluded. MFE/MAE are descriptive excursions, not realized returns. A candle gap or a bar touching both stop and target is AMBIGUOUS and is excluded from the realized-R average. These are candle-based research estimates assuming entry at the signal candle close; they are not actual exchange fills and do not include fees, slippage, funding or liquidation effects. Treat small samples as descriptive only, not proof of an edge.
+`/performance` reads aggregate metrics from the configured PostgreSQL connection used by the scanner and refreshes after each completed scan. `avg_realized_r` includes only TARGET and STOP_LOSS outcomes; OPEN and AMBIGUOUS rows are excluded. MFE/MAE are descriptive excursions, not realized returns. A candle gap or a bar touching both stop and target is AMBIGUOUS and is excluded from the realized-R average. These are candle-based research estimates assuming entry at the signal candle close; they are not actual exchange fills and do not include fees, slippage, funding or liquidation effects. Treat small samples as descriptive only, not proof of an edge.
 
 
 ## Self-learning signal journal
