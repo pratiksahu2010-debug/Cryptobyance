@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)\s*(?:-|to|until)\s*([01]?\d|2[0-3]):([0-5]\d)(?!\d)", re.I)
+TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)\s*(?:-|to|until|and)\s*([01]?\d|2[0-3]):([0-5]\d)(?!\d)", re.I)
 NUMBER_RE = re.compile(r"\b(?:rvol|relative\s+volume)\s*(?:>=|>|at\s+least)\s*(\d+(?:\.\d+)?)", re.I)
 SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,18})(?:/|-)?USDT\b", re.I)
 
