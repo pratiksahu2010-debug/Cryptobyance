@@ -148,5 +148,46 @@ class TestRestConfirmedCandles(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_failed_reconnect_backfill_blocks_scan_until_full_repair_succeeds(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        expected_open = 1_800_000_000_000
+        calls = []
+
+        async def fetch(pair, limit=320):
+            calls.append(limit)
+            if len(calls) == 1:
+                raise RuntimeError("temporary reconnect backfill failure")
+            return [_row(expected_open, 100.0)]
+
+        feed.fetch_history = AsyncMock(side_effect=fetch)
+
+        async def run():
+            feed._reconnect_backfill_failed_pairs.add("B-BTC_USDT")
+            now_ms = expected_open + 300_000
+            confirmed = await feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms=now_ms)
+            self.assertEqual(confirmed, expected_open)
+            self.assertEqual(calls, [320, 6])
+            self.assertNotIn("B-BTC_USDT", feed._reconnect_backfill_failed_pairs)
+            await feed.close()
+
+        asyncio.run(run())
+
+    def test_failed_full_repair_keeps_pair_blocked_and_skips_short_refresh(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        feed.fetch_history = AsyncMock(side_effect=RuntimeError("REST unavailable"))
+
+        async def run():
+            feed._reconnect_backfill_failed_pairs.add("B-BTC_USDT")
+            with self.assertRaisesRegex(RuntimeError, "reconnect history remains incomplete"):
+                await feed.refresh_latest_closed_candle(
+                    "B-BTC_USDT", now_ms=1_800_000_300_000
+                )
+            feed.fetch_history.assert_awaited_once_with("B-BTC_USDT", limit=320)
+            self.assertIn("B-BTC_USDT", feed._reconnect_backfill_failed_pairs)
+            await feed.close()
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     unittest.main()
