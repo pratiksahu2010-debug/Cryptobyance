@@ -134,6 +134,9 @@ class CoinDCXFuturesFeed:
             reconnection_delay_max=30, logger=False, engineio_logger=False,
         )
         self.bars: dict[str, dict[int, list]] = {pair: {} for pair in self.pairs}
+        # Last 5m candle whose final OHLCV was confirmed by REST for each pair.
+        # Socket.IO updates can be provisional until the candle closes.
+        self._rest_confirmed_closed_open: dict[str, int] = {}
         self.websocket_connected = False
         self.last_ws_event: float | None = None
         self.ws_events_received = 0
@@ -215,6 +218,32 @@ class CoinDCXFuturesFeed:
         rows = deduplicate_rest_candles(rows)
         self._merge_rows(pair, rows)
         return rows
+
+    async def refresh_latest_closed_candle(self, pair: str, now_ms: int | None = None) -> int:
+        """Confirm the just-closed 5m candle from REST once per pair and interval.
+
+        WebSocket candle events are useful for live cache updates, but a final
+        frame is not guaranteed to arrive exactly at the interval boundary.
+        Never let a provisional last-bar value become an actionable completed
+        candle without a REST confirmation.
+        """
+        now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        interval = 300_000
+        expected_open = (now_ms // interval) * interval - interval
+        if expected_open < 0:
+            raise ValueError("invalid expected completed candle timestamp")
+        if self._rest_confirmed_closed_open.get(pair) == expected_open:
+            return expected_open
+
+        rows = await self.fetch_history(pair, limit=6)
+        confirmed = {int(row[0]) for row in rows}
+        if expected_open not in confirmed:
+            raise ValueError(
+                f"REST history did not confirm latest completed 5m candle for {pair}: "
+                f"expected_open={expected_open}"
+            )
+        self._rest_confirmed_closed_open[pair] = expected_open
+        return expected_open
 
     def _merge_rows(self, pair: str, rows: list[list]) -> None:
         cache = self.bars.setdefault(pair, {})
