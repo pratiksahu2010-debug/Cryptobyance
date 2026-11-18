@@ -86,8 +86,8 @@ class TelegramNotifier:
             + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
             + f"<b>Bar time: <code>{candle_time}</code></b>\n"
             + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\n"
-            + f"<b>EMA 9/21: <code>{ema9_text}</code> / <code>{ema21_text}</code></b>\n"
-            + f"<b>VWAP: <code>{vwap_text}</code></b>\n"
+            + ema_line
+            + vwap_line
             + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
