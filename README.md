@@ -55,14 +55,17 @@ The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
 - `main.py`: FastAPI lifecycle, scan orchestration, outbox delivery worker, cleanup schedule and health endpoints.
 - `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and optional 15m aggregation.
-- `strategy.py`: pure OHLCV validation, indicators, per-direction setup/invalidation/RSI trigger evaluation, and risk levels.\n- `state_machine.py`: pure lifecycle transitions and PostgreSQL persistence for per-symbol/per-direction state.
+- `strategy.py`: pure OHLCV validation, indicators, per-direction setup/invalidation/RSI trigger evaluation, and risk levels.
+- `state_machine.py`: pure lifecycle transitions and PostgreSQL persistence for per-symbol/per-direction state.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
 - `candidate_store.py`: PostgreSQL schema, legacy-candidate invalidation, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
 
 ### PostgreSQL persistence design
 
 PostgreSQL is the durable source of truth for bot workflow state:
-- `strategy_signal_states`: one durable IDLE/ARMED/COOLDOWN state per strategy, symbol and direction, with cycle ID, invalidation history and processed-candle checkpoint.\n- `strategy_state_events`: append-only transition audit log.\n- `signal_candidates`: legacy pending-candidate table retained for compatibility; the current state machine does not promote its rows.
+- `strategy_signal_states`: one durable IDLE/ARMED/COOLDOWN state per strategy, symbol and direction, with cycle ID, invalidation history and processed-candle checkpoint.
+- `strategy_state_events`: append-only transition audit log.
+- `signal_candidates`: legacy pending-candidate table retained for compatibility; the current state machine does not promote its rows.
 - `signal_history`: one durable record per symbol/direction/5m candle, protected by a unique idempotency key.
 - `telegram_outbox`: queued alert payloads, attempt count, retry time, delivery lease and terminal status. A worker claims rows with `FOR UPDATE SKIP LOCKED`; expired leases are recovered after restarts.
 - `signal_cooldowns`: same-direction cooldown survives service restarts. Per-symbol transaction advisory locks serialize concurrent signal creation.
