@@ -285,6 +285,15 @@ class CandidateStore:
         # runtime records. No automatic DELETE is performed by this cleanup.
         return {"expired": int(expired_tag.rsplit(" ", 1)[-1]), "deleted": 0}
 
+    async def load_symbol_states(self, strategy_key: str, symbol: str) -> dict[str, str]:
+        """Load durable direction states so RSI is computed only for ARMED sides."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT direction,state FROM strategy_signal_states
+                   WHERE strategy_key=$1 AND symbol=$2""", strategy_key, symbol
+            )
+        return {str(row["direction"]): str(row["state"]) for row in rows}
+
     async def advance_symbol_state(
         self, *, strategy_key: str, symbol: str, direction: str,
         candle_open_ms: int, setup_valid: bool, invalidation: bool,
