@@ -296,18 +296,17 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
     explicit 5m DI/ADX setup conditions.
     """
     if not has_contiguous_tail(df5, "5m", 60) or df15 is None or not has_contiguous_tail(df15, "15m", 35):
-        return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
-                "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
-    a = indicators(df5.copy())
+        return None
+    armed_sides = armed_sides or set()
+    a = indicators(df5.copy(), include_rsi=bool(armed_sides))
     if len(a) < 35:
-        return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
-                "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
+        return None
     c, p = a.iloc[-1], a.iloc[-2]
     required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di)
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
         return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
                 "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
-    ctx = indicators(df15.copy()).iloc[-1]
+    ctx = indicators(df15.copy(), include_rsi=False).iloc[-1]
     context_long = pd.notna(ctx.ema9) and pd.notna(ctx.ema21) and float(ctx.ema9) > float(ctx.ema21)
     context_short = pd.notna(ctx.ema9) and pd.notna(ctx.ema21) and float(ctx.ema9) < float(ctx.ema21)
     common = float(c.adx) >= ADX_MIN
