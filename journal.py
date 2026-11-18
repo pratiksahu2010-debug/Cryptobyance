@@ -436,7 +436,7 @@ class SignalJournal:
             missed = await conn.fetch(
                 """SELECT COUNT(*) AS count,ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r
                    FROM journal_candidates WHERE created_at >= NOW()-INTERVAL '24 hours'
-                   AND rejection_reasons @> '[\"manual_missed_opportunity\]'::jsonb""")
+                   AND rejection_reasons ? 'manual_missed_opportunity'""")
         resolved = int(totals["resolved"] or 0)
         return {
             "window": "rolling_24_hours", "generated_at": datetime.now(timezone.utc).isoformat(),
