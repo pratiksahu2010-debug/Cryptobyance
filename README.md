@@ -2,25 +2,23 @@
 
 A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX USDT-margined perpetual futures. It sends Telegram alerts and never places, modifies, or cancels orders.
 
-## Strategy — one engine only
+## Strategy — one simple LONG/SHORT engine
 
-**5-minute completed-candle entry with mandatory 15-minute EMA trend confirmation.**
+**5-minute completed-candle entry with a mandatory 15-minute EMA trend veto.**
 
-LONG requires all conditions on the latest completed 5m candle:
-- EMA(9) > EMA(21) (alignment; a fresh crossover is not required).
-- 5m close above UTC-day cumulative VWAP.
-- 5m RSI(14) above 50.
-- 5m ADX(14) at or above `ADX_MIN` (default 20), with +DI greater than -DI.
-- EMA(9) and EMA(21) both rising over the preceding three-bar window.
-- Current EMA alignment age is no more than three completed 5m candles.
-- The close is no more than 1 ATR above VWAP, to avoid chasing an extended move.
+LONG requires all four 5m conditions on the latest completed candle:
+- EMA(9) > EMA(21).
+- Close above session VWAP (VWAP resets at the UTC day boundary).
+- RSI(14) > 50.
+- ADX(14) >= 20 (configurable with `ADX_MIN`; default 20).
 
-SHORT is the exact inverse: EMA(9) < EMA(21), close below VWAP, RSI below 50, ADX at/above the threshold, -DI greater than +DI, both EMAs falling over the preceding three-bar window, alignment age no more than three candles, and the close no more than 1 ATR below VWAP. ADX below threshold rejects immediately; the engine never waits for ADX to rise on later candles. A mandatory 15m trend veto permits LONG only when 15m EMA(9) > EMA(21), and SHORT only when 15m EMA(9) < EMA(21); missing, stale, invalid, insufficient or neutral 15m data blocks signals. Both timeframes use completed candles only. These are global rules applied equally to every configured symbol; there are no symbol-specific thresholds or exceptions. No ORB, breakout, momentum, or secondary signal module is included.
+SHORT is the exact inverse: EMA(9) < EMA(21), close below VWAP, RSI(14) < 50, and ADX(14) >= 20. No additional +DI/-DI, EMA-slope, fresh-crossover, EMA-alignment-age, or VWAP-extension gates are used.
 
-The new early-entry and extension guards are conservative strategy changes, not a proven profitability guarantee. They must be forward-observed and independently backtested before any claim that expectancy improved.
+**15-minute veto:** LONG is allowed only when 15m EMA(9) > EMA(21); SHORT only when 15m EMA(9) < EMA(21). A neutral, missing, stale, invalid, or insufficient 15m context blocks the signal. Both timeframes use completed candles only; at least 35 contiguous 15m bars and 60 contiguous 5m bars are required.
 
-ATR(14) is used only to calculate the informational stop distance (1.5 ATR by default); it is not an entry filter. Target is 1.5R by default. These are planning levels, not exchange orders or guaranteed fills.
+**ATR risk levels:** ATR(14) on the 5m entry timeframe sets stop distance (`ATR_STOP_MULTIPLIER`, default 1.5 ATR). Target is the configured risk multiple (`MIN_RISK_REWARD`, default 1.5R). ATR is used for risk levels, not as an extra directional entry filter. These are informational planning levels, not exchange orders or guaranteed fills.
 
+This is intentionally a small, explainable ruleset. It can produce more signals than the previous version because restrictive slope, age, DI, and extension gates have been removed. Validate it with chronological backtests and forward observation; no indicator combination guarantees profitability.
 ## Universe
 
 The bot retains the original 60 configured symbols:
