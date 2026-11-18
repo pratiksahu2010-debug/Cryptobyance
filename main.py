@@ -333,8 +333,12 @@ async def scanner_session() -> None:
     # Connect persistence before allocating network clients so a missing or
     # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
     candidate_store = await CandidateStore.connect(settings.database_url)
-    journal_service = SignalJournal(candidate_store)
-    await journal_service.initialize()
+    try:
+        journal_service = SignalJournal(candidate_store)
+        await journal_service.initialize()
+    except BaseException:
+        await candidate_store.close()
+        raise
     state['database_connected'] = True
     try:
         state["performance_summary"] = await candidate_store.performance_summary()
@@ -686,6 +690,7 @@ async def journal_manual_observation(payload: ManualObservationRequest, request:
             payload.symbol, payload.direction, payload.candle_open_ms,
             payload.entry, payload.stop, payload.target, payload.comment
         )
+        await get_journal().add_candidate_feedback(candidate_id, "MISSED_OPPORTUNITY", payload.comment, "dashboard")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"saved": True, "candidate_id": candidate_id}
@@ -697,8 +702,8 @@ async def journal_export(request: Request):
     journal = get_journal()
     payload = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "signals": await journal.entries(250),
-        "rejected_candidates": await journal.candidates(250),
+        "signals": await journal.entries(5000),
+        "rejected_candidates": await journal.candidates(5000),
         "learning": await journal.learning_summary(),
     }
     return Response(
