@@ -143,13 +143,6 @@ async def advance_persisted_state(
             decision.invalidated, int(candle_open_ms) if next_state == "ARMED" else None,
         )
     else:
-        if next_state != state:
-            await conn.execute(
-                """INSERT INTO strategy_state_events(
-                     strategy_key,symbol,direction,from_state,to_state,candle_open_ms
-                   ) VALUES($1,$2,$3,$4,$5,$6)""",
-                strategy_key, symbol, direction, state, next_state, int(candle_open_ms),
-            )
         await conn.execute(
             """UPDATE strategy_signal_states SET state=$4,last_processed_candle_open_ms=$5,
                setup_invalidated=$6,
