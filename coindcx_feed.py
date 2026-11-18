@@ -150,6 +150,8 @@ class CoinDCXFuturesFeed:
         self.ws_task: asyncio.Task | None = None
         self._websocket_ready = asyncio.Event()
         self._closed = False
+        self._has_connected_once = False
+        self._reconnect_backfill_task: asyncio.Task | None = None
         self.sio.on("connect", self._on_connect)
         self.sio.on("disconnect", self._on_disconnect)
         self.sio.on("candlestick", self._on_candlestick)
@@ -160,6 +162,9 @@ class CoinDCXFuturesFeed:
         confirmed = set(active_pairs)
         self.pairs = [pair for pair in self.pairs if pair in confirmed]
         self.bars = {pair: self.bars.get(pair, {}) for pair in self.pairs}
+        self._rest_confirmed_closed_opens = {
+            pair: self._rest_confirmed_closed_opens.get(pair, set()) for pair in self.pairs
+        }
         log.info("CoinDCX active futures pairs configured=%d", len(self.pairs))
 
     async def active_instruments(self) -> set[str]:
@@ -272,13 +277,55 @@ class CoinDCXFuturesFeed:
     def rows(self, pair: str) -> list[list]:
         return [self.bars.get(pair, {})[ts] for ts in sorted(self.bars.get(pair, {}))]
 
+    async def _backfill_pair_after_reconnect(self, pair: str, semaphore: asyncio.Semaphore) -> bool:
+        """Restore a full contiguous history window after a websocket outage."""
+        try:
+            async with semaphore:
+                rows = await self.fetch_history(pair, limit=320)
+            log.info(
+                "CoinDCX reconnect history backfill complete pair=%s candles=%d",
+                pair, len(rows),
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "CoinDCX reconnect history backfill failed pair=%s error=%s",
+                pair, type(exc).__name__,
+            )
+            return False
+
+    async def _backfill_after_reconnect(self) -> None:
+        """REST-backfill every active pair after reconnect; never trust socket continuity."""
+        semaphore = asyncio.Semaphore(8)
+        results = await asyncio.gather(*(
+            self._backfill_pair_after_reconnect(pair, semaphore) for pair in self.pairs
+        ))
+        succeeded = sum(bool(result) for result in results)
+        log.info(
+            "CoinDCX reconnect backfill finished pairs_ok=%d pairs_failed=%d",
+            succeeded, len(results) - succeeded,
+        )
+
     async def _on_connect(self):
         self.websocket_connected = True
+        reconnected = self._has_connected_once
+        self._has_connected_once = True
         log.info("CoinDCX futures websocket connected; subscribing to %d 5m channels", len(self.pairs))
         for pair in self.pairs:
             await self.sio.emit("join", {"channelName": f"{pair}_5m-futures"})
         self._websocket_ready.set()
         log.info("CoinDCX futures websocket subscriptions sent=%d", len(self.pairs))
+        if reconnected:
+            # The initial connection follows a full 320-candle bootstrap in
+            # scanner_session. Every later connection must repair bars missed
+            # while disconnected before indicators can use the cached history.
+            if self._reconnect_backfill_task is None or self._reconnect_backfill_task.done():
+                self._reconnect_backfill_task = asyncio.create_task(
+                    self._backfill_after_reconnect(),
+                    name="coindcx-reconnect-history-backfill",
+                )
 
     async def _on_connect_error(self, response):
         """Record Socket.IO handshake failures using the v4-compatible event API."""
@@ -369,12 +416,13 @@ class CoinDCXFuturesFeed:
 
     async def close(self) -> None:
         self._closed = True
-        if self.ws_task:
-            self.ws_task.cancel()
-            try:
-                await self.ws_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self.ws_task, self._reconnect_backfill_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         if self.sio.connected:
             await self.sio.disconnect()
         await self.client.aclose()
