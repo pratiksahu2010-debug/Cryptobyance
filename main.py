@@ -240,7 +240,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             if candidate_store is None:
                 raise RuntimeError('persistent candidate store is required to queue a signal')
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
-            queued = await candidate_store.enqueue_signal(signal, None, COOLDOWN_CANDLES)
+            queued = await candidate_store.enqueue_signal(
+                signal, None, COOLDOWN_CANDLES,
+                strategy_key="ema_vwap_rsi_adx_15m_v1",
+            )
             last_seen_candle[display_symbol] = closed_ts
             if queued:
                 state['signals_queued'] = state.get('signals_queued', 0) + 1
