@@ -67,6 +67,9 @@ class TelegramNotifier:
         ema9 = signal.get("ema9", snapshot.get("ema9"))
         ema21 = signal.get("ema21", snapshot.get("ema21"))
         vwap = signal.get("vwap", snapshot.get("vwap"))
+        ema9_text = fmt_price(float(ema9)) if ema9 is not None else "N/A"
+        ema21_text = fmt_price(float(ema21)) if ema21 is not None else "N/A"
+        vwap_text = fmt_price(float(vwap)) if vwap is not None else "N/A"
         target1 = signal.get("target1", signal.get("target"))
         target2 = signal.get("target2", signal.get("target"))
         signal_ref = f"\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
@@ -76,8 +79,8 @@ class TelegramNotifier:
             + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
             + f"<b>Bar time: <code>{candle_time}</code></b>\n"
             + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\n"
-            + f"<b>EMA 9/21: <code>{fmt_price(float(ema9))}</code> / <code>{fmt_price(float(ema21))}</code></b>\n"
-            + f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\n"
+            + f"<b>EMA 9/21: <code>{ema9_text}</code> / <code>{ema21_text}</code></b>\n"
+            + f"<b>VWAP: <code>{vwap_text}</code></b>\n"
             + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
