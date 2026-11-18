@@ -234,7 +234,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 if action == "TRIGGER":
                     triggered_side = side
             if triggered_side is None:
-                if journal is not None:
+                if journal is not None and armed_sides:
                     try:
                         observation = rejected_observation(df5, df15)
                         if observation:
