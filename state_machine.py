@@ -114,7 +114,7 @@ async def persist_signal_lifecycle(
             strategy_key, symbol, direction, from_state, to_state, int(candle_open_ms),
         )
 
-    cooldown_until_ms = int(candle_open_ms) + (int(cooldown_candles) + 1) * CANDLE_INTERVAL_MS
+    cooldown_until_ms = int(candle_open_ms) + int(cooldown_candles) * CANDLE_INTERVAL_MS
     await conn.execute(
         """INSERT INTO strategy_signal_states(
                strategy_key,symbol,direction,state,last_processed_candle_open_ms,
