@@ -231,6 +231,21 @@ class CoinDCXFuturesFeed:
         self._merge_rows(pair, rows)
         return rows
 
+    async def _await_latest_reconnect_backfill(self) -> None:
+        """Wait until the newest queued reconnect repair has completed.
+
+        A second reconnect can replace the task while a scan is awaiting the
+        first one. Re-read the task after every await so the scan cannot resume
+        between an older repair and the newer repair queued behind it.
+        """
+        while True:
+            reconnect_task = self._reconnect_backfill_task
+            if reconnect_task is None or reconnect_task.done():
+                return
+            await reconnect_task
+            if self._reconnect_backfill_task is reconnect_task:
+                return
+
     async def refresh_latest_closed_candle(self, pair: str, now_ms: int | None = None) -> int:
         """Confirm the just-closed 5m candle from REST once per pair and interval.
 
@@ -242,9 +257,7 @@ class CoinDCXFuturesFeed:
         # A reconnect schedules a full history repair asynchronously. Do not
         # let the scanner consume the cache (or its prior confirmation marker)
         # until that repair has finished; otherwise a scan can race the backfill.
-        reconnect_task = self._reconnect_backfill_task
-        if reconnect_task is not None and not reconnect_task.done():
-            await reconnect_task
+        await self._await_latest_reconnect_backfill()
 
         # A failed full repair must not silently degrade to a six-candle refresh:
         # older bars in the indicator lookback may still be missing. Retry the
