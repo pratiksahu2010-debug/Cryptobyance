@@ -49,26 +49,26 @@ Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Pe
 
 ## Code architecture
 
-`DATABASE_URL` is required for durable signal history, duplicate protection, cooldowns and the Telegram outbox. It must be a PostgreSQL connection string for your chosen provider (for Neon, use the pooled connection string and require TLS, e.g. `sslmode=require`). Do not paste database credentials into source control. Legacy pending-candidate rows are invalidated and are never promoted into delayed alerts. The candidate store does not place trades.
+`DATABASE_URL` is required for durable signal history, duplicate protection, cooldowns and the Telegram outbox. It must be a PostgreSQL connection string for your chosen provider (for Neon, use the pooled connection string and require TLS, e.g. `sslmode=require`). Do not paste database credentials into source control. The new state machine does not use legacy pending-candidate rows; they are not promoted into delayed alerts. The candidate store does not place trades.
 
 The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
 - `main.py`: FastAPI lifecycle, scan orchestration, outbox delivery worker, cleanup schedule and health endpoints.
 - `coindcx_feed.py`: CoinDCX public REST/Socket.IO adapter and optional 15m aggregation.
-- `strategy.py`: pure OHLCV validation, indicators, and the single LONG/SHORT decision rule.
+- `strategy.py`: pure OHLCV validation, indicators, per-direction setup/invalidation/RSI trigger evaluation, and risk levels.\n- `state_machine.py`: pure lifecycle transitions and PostgreSQL persistence for per-symbol/per-direction state.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
 - `candidate_store.py`: PostgreSQL schema, legacy-candidate invalidation, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
 
 ### PostgreSQL persistence design
 
 PostgreSQL is the durable source of truth for bot workflow state:
-- `signal_candidates`: pending ADX candidates, evaluated-candle checkpoint and three-follow-up-candle expiry.
+- `strategy_signal_states`: one durable IDLE/ARMED/COOLDOWN state per strategy, symbol and direction, with cycle ID, invalidation history and processed-candle checkpoint.\n- `strategy_state_events`: append-only transition audit log.\n- `signal_candidates`: legacy pending-candidate table retained for compatibility; the current state machine does not promote its rows.
 - `signal_history`: one durable record per symbol/direction/5m candle, protected by a unique idempotency key.
 - `telegram_outbox`: queued alert payloads, attempt count, retry time, delivery lease and terminal status. A worker claims rows with `FOR UPDATE SKIP LOCKED`; expired leases are recovered after restarts.
 - `signal_cooldowns`: same-direction cooldown survives service restarts. Per-symbol transaction advisory locks serialize concurrent signal creation.
 - `scanner_runtime`: last completed scan and WebSocket health checkpoint, loaded at startup for diagnostics.
 
-Signal history, candidate transition, cooldown update and outbox insertion commit in one database transaction. Telegram delivery is retried from the outbox after temporary failures. Delivery is **at-least-once**: a rare network failure after Telegram accepts a message but before PostgreSQL records the acknowledgement can still result in a duplicate Telegram message. The database idempotency key prevents duplicate signal/outbox creation; it cannot make Telegram's external API exactly-once.
+On a trigger, signal history, ARMED → TRIGGERED → COOLDOWN audit events, durable cooldown update and outbox insertion commit in one database transaction. Telegram delivery is retried from the outbox after temporary failures. Delivery is **at-least-once**: a rare network failure after Telegram accepts a message but before PostgreSQL records the acknowledgement can still result in a duplicate Telegram message. The database idempotency key prevents duplicate signal/outbox creation; it cannot make Telegram's external API exactly-once.
 
 The WebSocket candle cache and indicator calculations stay in memory; the bot does not write every tick to PostgreSQL. REST history repopulates the candle cache after a restart. This avoids excessive database writes while preserving candidates, signals, cooldowns and alert-delivery work.
 
