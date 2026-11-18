@@ -126,12 +126,12 @@ def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = Fal
     # the unchanged strict 90s freshness limit.
     return seconds_until_next_candle_scan(now_epoch)
 
-async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> None:
 def _effective_candle_clock(reference_ms: int) -> int:
     """Never validate market data against an earlier cycle-start timestamp."""
     return max(int(reference_ms), int(time.time() * 1000))
 
 
+async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> None:
     """Scan completed 5m candles; 15m EMA trend is a mandatory direction veto."""
     async with semaphore:
         rows = []
