@@ -152,6 +152,9 @@ class CoinDCXFuturesFeed:
         self._closed = False
         self._has_connected_once = False
         self._reconnect_backfill_task: asyncio.Task | None = None
+        # A failed reconnect repair leaves that pair's indicator history incomplete.
+        # Keep it out of scans until a full REST backfill succeeds.
+        self._reconnect_backfill_failed_pairs: set[str] = set()
         self.sio.on("connect", self._on_connect)
         self.sio.on("disconnect", self._on_disconnect)
         self.sio.on("candlestick", self._on_candlestick)
@@ -165,6 +168,7 @@ class CoinDCXFuturesFeed:
         self._rest_confirmed_closed_opens = {
             pair: self._rest_confirmed_closed_opens.get(pair, set()) for pair in self.pairs
         }
+        self._reconnect_backfill_failed_pairs.intersection_update(self.pairs)
         log.info("CoinDCX active futures pairs configured=%d", len(self.pairs))
 
     async def active_instruments(self) -> set[str]:
@@ -242,6 +246,19 @@ class CoinDCXFuturesFeed:
         if reconnect_task is not None and not reconnect_task.done():
             await reconnect_task
 
+        # A failed full repair must not silently degrade to a six-candle refresh:
+        # older bars in the indicator lookback may still be missing. Retry the
+        # full history for this pair and fail closed if continuity cannot be restored.
+        if pair in self._reconnect_backfill_failed_pairs:
+            try:
+                await self.fetch_history(pair, limit=320)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"reconnect history remains incomplete for {pair}; scan blocked"
+                ) from exc
+            self._reconnect_backfill_failed_pairs.discard(pair)
+            log.info("CoinDCX reconnect history repair recovered pair=%s", pair)
+
         now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         interval = 300_000
         expected_open = (now_ms // interval) * interval - interval
@@ -306,9 +323,13 @@ class CoinDCXFuturesFeed:
     async def _backfill_after_reconnect(self) -> None:
         """REST-backfill every active pair after reconnect; never trust socket continuity."""
         semaphore = asyncio.Semaphore(8)
+        pairs = list(self.pairs)
         results = await asyncio.gather(*(
-            self._backfill_pair_after_reconnect(pair, semaphore) for pair in self.pairs
+            self._backfill_pair_after_reconnect(pair, semaphore) for pair in pairs
         ))
+        self._reconnect_backfill_failed_pairs = {
+            pair for pair, succeeded in zip(pairs, results) if not succeeded
+        }
         succeeded = sum(bool(result) for result in results)
         log.info(
             "CoinDCX reconnect backfill finished pairs_ok=%d pairs_failed=%d",
