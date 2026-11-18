@@ -19,7 +19,7 @@ from pydantic import BaseModel
 load_dotenv()
 
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
-from strategy import evaluate_setup, indicators, timeframe_milliseconds, validate_ohlcv
+from strategy import evaluate_setup, evaluate_state_inputs, indicators, timeframe_milliseconds, validate_ohlcv
 from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
@@ -207,8 +207,24 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         df15 = candidate15
             except ValueError as context_error:
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
-            setup = evaluate_setup(df5, df15)
-            if not setup:
+            if candidate_store is None:
+                raise RuntimeError('persistent candidate store is required for per-symbol state')
+            state_inputs = evaluate_state_inputs(df5, df15)
+            triggered_side = None
+            for side in ("LONG", "SHORT"):
+                item = state_inputs[side]
+                action = await candidate_store.advance_symbol_state(
+                    strategy_key="coindcx_per_symbol_v1",
+                    symbol=display_symbol, direction=side,
+                    candle_open_ms=closed_ts,
+                    setup_valid=item["setup_valid"],
+                    invalidation=item["invalidation"],
+                    trigger=item["trigger"],
+                    cooldown_candles=COOLDOWN_CANDLES,
+                )
+                if action == "TRIGGER":
+                    triggered_side = side
+            if triggered_side is None:
                 if journal is not None:
                     try:
                         observation = rejected_observation(df5, df15)
@@ -216,14 +232,16 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                             observation["symbol"] = display_symbol
                             await journal.record_rejected(observation)
                     except Exception as journal_error:
-                        log.warning("rejected-candidate journal failed symbol=%s error_type=%s", display_symbol, type(journal_error).__name__)
-                if candidate_store is not None:
-                    # Retire legacy pending candidates so they can never promote later.
-                    await candidate_store.invalidate(display_symbol)
+                        log.warning('rejected-candidate journal failed symbol=%s error_type=%s', display_symbol, type(journal_error).__name__)
                 last_seen_candle[display_symbol] = closed_ts
                 state['symbols_ok'] += 1
                 return
-
+            setup = evaluate_setup(df5, df15)
+            if not setup or setup.get("side") != triggered_side:
+                log.warning("state trigger lacked matching executable signal symbol=%s side=%s", display_symbol, triggered_side)
+                last_seen_candle[display_symbol] = closed_ts
+                state['symbols_ok'] += 1
+                return
             signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
             signal['candle_close'] = five_minute_close
@@ -250,10 +268,6 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 }
             except Exception as snapshot_error:
                 log.warning("signal snapshot enrichment failed symbol=%s error_type=%s", display_symbol, type(snapshot_error).__name__)
-            # Retire pending rows created by older releases; the current engine
-            # never promotes a candidate after its crossover candle.
-            if candidate_store is not None:
-                await candidate_store.invalidate(display_symbol)
             if candidate_store is None:
                 raise RuntimeError('persistent candidate store is required to queue a signal')
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
