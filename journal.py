@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 from strategy import indicators, ADX_MIN, ATR_STOP_MULT, MIN_RR
@@ -514,6 +515,11 @@ textarea{width:95%;min-height:42px}
 <button onclick="loadAll()">Load journal</button><span id="status" class="muted"></span></section>
 <div class="grid"><section class="panel"><h2>Learning summary</h2><pre id="learning">Load journal to view.</pre></section>
 <section class="panel"><h2>Rejected candidates</h2><pre id="candidates">Load journal to view.</pre></section></div>
+<section class="panel"><h2>Teach the bot your preferred timing</h2>
+<p class="muted">Write naturally. Example: “For LONG entries, prefer the first retest after MACD turns positive with relative volume above 1.5, between 09:00 and 12:00 IST.”</p>
+<textarea id="training-instruction" placeholder="Describe the setup, direction, indicator confirmation or preferred time window..."></textarea>
+<button onclick="submitTrainingInstruction()">Save training instruction</button>
+<pre id="training-result">New instructions are saved as pending review. They do not change live signals.</pre></section>
 <h2>Delivered signals</h2><div id="entries"></div>
 <script>
 const headers=()=>({'X-Journal-Token':document.getElementById('token').value,'Content-Type':'application/json'});
@@ -529,6 +535,7 @@ async function loadAll(){const status=document.getElementById('status');status.t
  return '<article class="entry"><div><b>#'+x.id+' '+esc(x.symbol)+' '+esc(x.direction)+'</b><div class="muted">'+esc(x.delivered_at)+' · '+esc(x.outcome_status||'NO OUTCOME')+' · R='+esc(x.realized_r??'—')+' · MFE='+esc(x.best_favorable_r??'—')+' · MAE='+esc(x.worst_adverse_r??'—')+'</div><pre>'+esc(JSON.stringify({entry:p.entry,stop:p.stop,target:p.target,diagnostics:p.diagnostics},null,2))+'</pre><div>'+old+'</div><textarea id="comment-'+x.id+'" placeholder="Optional feedback comment"></textarea></div><div>'+buttons+'</div></article>'}).join('');
  status.textContent='Loaded '+e.length+' signals and '+c.length+' rejected candidates.';
  }catch(err){status.textContent='Error: '+err.message}}
+async function submitTrainingInstruction(){const box=document.getElementById('training-instruction');const out=document.getElementById('training-result');try{const result=await api('/journal/api/training-instructions',{method:'POST',body:JSON.stringify({instruction:box.value})});out.textContent=JSON.stringify(result,null,2);box.value='';}catch(err){out.textContent='Error: '+err.message}}
 async function feedback(id,category){try{await api('/journal/api/feedback',{method:'POST',body:JSON.stringify({signal_id:id,category:category,comment:document.getElementById('comment-'+id).value})});await loadAll()}catch(err){alert(err.message)}}
 async function candidateFeedback(id,category){const comment=prompt('Optional note for this rejected setup:')||'';try{await api('/journal/api/candidate-feedback',{method:'POST',body:JSON.stringify({candidate_id:id,category:category,comment:comment})});await loadAll()}catch(err){alert(err.message)}}
 </script></main></body></html>"""
