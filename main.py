@@ -136,6 +136,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
     async with semaphore:
         rows = []
         try:
+            # Require one REST-confirmed final OHLCV for the newly closed 5m
+            # candle per pair/interval. Socket.IO may have supplied only a
+            # provisional last update at the instant the candle closed.
+            confirm_closed = getattr(feed, 'refresh_latest_closed_candle', None)
+            if confirm_closed is not None:
+                await confirm_closed(pair, _effective_candle_clock(now_ms))
             rows = feed.rows(pair)
             latest_ts = int(rows[-1][0]) if rows else 0
             if len(rows) < 60 or not latest_ts:
