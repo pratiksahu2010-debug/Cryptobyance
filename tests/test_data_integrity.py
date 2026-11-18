@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 
 from strategy import has_contiguous_tail, validate_ohlcv
-from coindcx_feed import deduplicate_rest_candles
+from coindcx_feed import CoinDCXFuturesFeed, deduplicate_rest_candles
 
 
 class ContiguousIndicatorWindowTests(unittest.TestCase):
@@ -55,3 +55,42 @@ class ContiguousIndicatorWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestConfirmedCandleTests(unittest.TestCase):
+    def test_confirms_newly_closed_candle_once_per_interval(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        now_ms = 1_800_000_000_000
+        expected_open = (now_ms // 300_000) * 300_000 - 300_000
+        fetch = AsyncMock(return_value=[
+            [expected_open, 100.0, 102.0, 99.0, 101.0, 10.0],
+        ])
+        feed.fetch_history = fetch
+        try:
+            first = asyncio.run(feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms))
+            second = asyncio.run(feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms + 1_000))
+            self.assertEqual(first, expected_open)
+            self.assertEqual(second, expected_open)
+            fetch.assert_awaited_once_with("B-BTC_USDT", limit=6)
+        finally:
+            asyncio.run(feed.close())
+
+    def test_does_not_mark_interval_confirmed_when_rest_omits_latest_closed_bar(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        now_ms = 1_800_000_000_000
+        expected_open = (now_ms // 300_000) * 300_000 - 300_000
+        feed.fetch_history = AsyncMock(return_value=[
+            [expected_open - 300_000, 100.0, 102.0, 99.0, 101.0, 10.0],
+        ])
+        try:
+            with self.assertRaisesRegex(ValueError, "did not confirm latest completed"):
+                asyncio.run(feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms))
+            self.assertNotIn("B-BTC_USDT", feed._rest_confirmed_closed_open)
+        finally:
+            asyncio.run(feed.close())
