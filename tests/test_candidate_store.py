@@ -172,7 +172,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("DELETE", sql.upper())
 
     async def test_queued_signal_does_not_create_outcome_before_delivery(self):
-        conn = FakeConnection(fetchrows=[None, {"id": 101}])
+        conn = FakeConnection(fetchrows=[None, None, None, {"id": 101}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0,
