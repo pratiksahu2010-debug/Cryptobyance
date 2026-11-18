@@ -162,11 +162,14 @@ class TestRestConfirmedCandles(unittest.TestCase):
         feed.fetch_history = AsyncMock(side_effect=fetch)
 
         async def run():
-            feed._reconnect_backfill_failed_pairs.add("B-BTC_USDT")
+            # Reproduce a failed reconnect backfill; the feed records the pair
+            # as blocked, then the next scan cycle attempts a full repair.
+            await feed._backfill_after_reconnect()
+            self.assertIn("B-BTC_USDT", feed._reconnect_backfill_failed_pairs)
             now_ms = expected_open + 300_000
             confirmed = await feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms=now_ms)
             self.assertEqual(confirmed, expected_open)
-            self.assertEqual(calls, [320, 6])
+            self.assertEqual(calls, [320, 320, 6])
             self.assertNotIn("B-BTC_USDT", feed._reconnect_backfill_failed_pairs)
             await feed.close()
 
