@@ -34,7 +34,7 @@ def advance_state(
     if current_state == "IDLE":
         return StateDecision("ARMED", "ARMED") if setup_valid else StateDecision("IDLE", "NONE")
     if current_state == "ARMED":
-        if invalidation or not setup_valid:
+        if invalidation:
             return StateDecision("IDLE", "INVALIDATED", True)
         if trigger:
             # The caller must atomically create the signal and enter COOLDOWN.
@@ -45,7 +45,7 @@ def advance_state(
         return StateDecision("COOLDOWN", "COOLDOWN", invalidated_during_cooldown)
     # COOLDOWN includes COOLDOWN-WAIT: bar count may expire, but the setup
     # must also have invalidated at least once before returning to IDLE.
-    invalidated = invalidated_during_cooldown or invalidation or not setup_valid
+    invalidated = invalidated_during_cooldown or invalidation
     if cooldown_remaining > 0 or not invalidated:
         return StateDecision("COOLDOWN", "COOLDOWN", invalidated)
     return StateDecision("IDLE", "REARMED", True)
