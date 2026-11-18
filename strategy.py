@@ -40,14 +40,15 @@ def candles_to_frame(raw: list) -> pd.DataFrame:
     else:
         raise ValueError(f"unsupported OHLCV row width: {width}")
     df = pd.DataFrame(raw, columns=columns)
-    # Build a converted frame instead of assigning through a potentially
-    # view-backed column. This is safe with pandas Copy-on-Write (pandas 3.0)
-    # and avoids repeated ChainedAssignmentError FutureWarnings in production.
+    # Construct converted columns in a fresh frame. Avoid mutating the
+    # original frame through assign/setitem paths under pandas Copy-on-Write.
     numeric_columns = ("timestamp", "open", "high", "low", "close", "volume")
-    df = df.assign(**{
+    converted = pd.DataFrame({
         col: pd.to_numeric(df[col], errors="coerce")
         for col in numeric_columns
-    })
+    }, index=df.index)
+    extras = df.drop(columns=list(numeric_columns))
+    df = pd.concat([converted, extras], axis=1)
     return df.dropna(subset=["timestamp", "close", "volume"]).reset_index(drop=True)
 
 def timeframe_milliseconds(timeframe: str) -> int:
@@ -121,41 +122,73 @@ def has_contiguous_tail(df: pd.DataFrame, timeframe: str, required_bars: int) ->
 
 
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate indicators on OHLCV bars; VWAP resets at UTC day boundary."""
-    x = df.copy()
-    x["ema9"] = x.close.ewm(span=EMA_FAST, adjust=False).mean()
-    x["ema21"] = x.close.ewm(span=EMA_SLOW, adjust=False).mean()
+    """Calculate indicators without mutating a possibly view-backed input frame.
 
-    delta = x.close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
+    All derived columns are built as independent Series and concatenated once.
+    This avoids pandas Copy-on-Write chained-assignment warnings while keeping
+    the existing indicator formulas and values unchanged.
+    """
+    base = df.copy(deep=True)
+
+    close = base["close"]
+    high = base["high"]
+    low = base["low"]
+    volume = base["volume"]
+
+    ema9 = close.ewm(span=EMA_FAST, adjust=False).mean()
+    ema21 = close.ewm(span=EMA_SLOW, adjust=False).mean()
+
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(
+        alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
+    ).mean()
+    loss = (-delta.clip(upper=0)).ewm(
+        alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
+    ).mean()
     rs = gain / loss.replace(0, np.nan)
-    x["rsi"] = 100 - (100 / (1 + rs))
-    x.loc[(loss == 0) & (gain > 0), "rsi"] = 100
-    x.loc[(loss == 0) & (gain == 0), "rsi"] = 50
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100)
+    rsi = rsi.mask((loss == 0) & (gain == 0), 50)
 
-    prev_close = x.close.shift(1)
+    prev_close = close.shift(1)
     tr = pd.concat([
-        x.high - x.low, (x.high - prev_close).abs(), (x.low - prev_close).abs()
+        high - low, (high - prev_close).abs(), (low - prev_close).abs()
     ], axis=1).max(axis=1)
-    up = x.high.diff()
-    down = -x.low.diff()
+    up = high.diff()
+    down = -low.diff()
     plus_dm = up.where((up > down) & (up > 0), 0.0)
     minus_dm = down.where((down > up) & (down > 0), 0.0)
-    atr = tr.ewm(alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD).mean()
-    plus_di = 100 * plus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD).mean() / atr.replace(0, np.nan)
-    minus_di = 100 * minus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD).mean() / atr.replace(0, np.nan)
+    atr = tr.ewm(
+        alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD
+    ).mean()
+    plus_di = 100 * plus_dm.ewm(
+        alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD
+    ).mean() / atr.replace(0, np.nan)
+    minus_di = 100 * minus_dm.ewm(
+        alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD
+    ).mean() / atr.replace(0, np.nan)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    x["adx"] = dx.ewm(alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD).mean()
-    x["plus_di"] = plus_di
-    x["minus_di"] = minus_di
-    x["atr"] = atr
+    adx = dx.ewm(
+        alpha=1 / ADX_PERIOD, adjust=False, min_periods=ADX_PERIOD
+    ).mean()
 
-    typical = (x.high + x.low + x.close) / 3
-    utc_day = pd.to_datetime(x.timestamp, unit="ms", utc=True).dt.date
-    pv = typical * x.volume
-    x["vwap"] = pv.groupby(utc_day).cumsum() / x.volume.groupby(utc_day).cumsum().replace(0, np.nan)
-    return x
+    typical = (high + low + close) / 3
+    utc_day = pd.to_datetime(base["timestamp"], unit="ms", utc=True).dt.date
+    pv = typical * volume
+    vwap = pv.groupby(utc_day).cumsum() / volume.groupby(utc_day).cumsum().replace(0, np.nan)
+
+    derived = pd.DataFrame({
+        "ema9": ema9,
+        "ema21": ema21,
+        "rsi": rsi,
+        "adx": adx,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "atr": atr,
+        "vwap": vwap,
+    }, index=base.index)
+    return pd.concat([base, derived], axis=1)
+
 
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Simple completed-5m EMA/VWAP/RSI/ADX strategy with a hard 15m EMA veto.
