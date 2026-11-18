@@ -118,5 +118,35 @@ class TestRestConfirmedCandles(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_latest_candle_refresh_waits_for_reconnect_backfill(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        feed.fetch_history = AsyncMock(return_value=[_row(1_800_000_000_000, 100.0)])
+
+        async def run():
+            backfill_started = asyncio.Event()
+            release_backfill = asyncio.Event()
+
+            async def backfill():
+                backfill_started.set()
+                await release_backfill.wait()
+
+            feed._reconnect_backfill_task = asyncio.create_task(backfill())
+            refresh = asyncio.create_task(
+                feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms=1_800_000_300_000)
+            )
+            await backfill_started.wait()
+            await asyncio.sleep(0)
+            self.assertFalse(refresh.done())
+            feed.fetch_history.assert_not_awaited()
+
+            release_backfill.set()
+            result = await refresh
+            self.assertEqual(result, 1_800_000_000_000)
+            feed.fetch_history.assert_awaited_once_with("B-BTC_USDT", limit=6)
+            await feed.close()
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     unittest.main()
