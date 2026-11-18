@@ -175,7 +175,31 @@ async def persist_signal_lifecycle(
            WHERE strategy_key=$1 AND symbol=$2 AND direction=$3 FOR UPDATE""",
         strategy_key, symbol, direction,
     )
-    if row is None or row["state"] != "ARMED":
+    if row is None:
+        # Compatibility for pre-state-machine callers using the legacy
+        # "default" strategy key. The production v2 scanner always supplies
+        # its versioned key and must have an ARMED row created by setup logic.
+        if strategy_key != "default":
+            return False
+        await conn.execute(
+            """INSERT INTO strategy_signal_states(
+                 strategy_key,symbol,direction,state,last_processed_candle_open_ms,
+                 last_triggered_candle_open_ms,cooldown_until_candle_open_ms,
+                 setup_invalidated,cycle_id,updated_at
+               ) VALUES($1,$2,$3,'COOLDOWN',$4,$4,$5,FALSE,1,NOW())""",
+            strategy_key, symbol, direction, int(candle_open_ms),
+            int(candle_open_ms) + int(cooldown_candles) * CANDLE_INTERVAL_MS,
+        )
+        transitions = (("IDLE", "ARMED"), ("ARMED", "TRIGGERED"), ("TRIGGERED", "COOLDOWN"))
+        for old_state, new_state in transitions:
+            await conn.execute(
+                """INSERT INTO strategy_state_events(
+                     strategy_key,symbol,direction,from_state,to_state,candle_open_ms
+                   ) VALUES($1,$2,$3,$4,$5,$6)""",
+                strategy_key, symbol, direction, old_state, new_state, int(candle_open_ms),
+            )
+        return True
+    if row["state"] != "ARMED":
         return False
     previous = row["last_processed_candle_open_ms"]
     if previous is not None and int(candle_open_ms) <= int(previous):
