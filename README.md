@@ -101,6 +101,21 @@ Render Free instances can spin down and restart; scanning is not continuous whil
 
 No indicator recipe guarantees a particular win rate. Backtest this exact rule set out of sample with fees, funding, spread and realistic slippage. Forward-test alerts before risking capital.
 
+### Global stop-loss / target research
+
+The current planning levels remain an ATR-derived stop (default 1.5 ATR) and a 1.5R target. They are not being widened, tightened, trailed, or moved to breakeven by this diagnostic release.
+
+The performance report now includes global (all symbols combined) TARGET and STOP_LOSS excursion profiles:
+- Average, median, 75th and 90th percentile MFE/MAE in R.
+- Average bars observed until resolution.
+- Counts of STOP_LOSS outcomes that achieved at least +0.5R / +1.0R MFE on a candle strictly before the stop candle.
+- Counts of TARGET outcomes that experienced at least 0.5R / 1.0R MAE on a candle strictly before the target candle.
+- Separate LONG/SHORT outcome summaries, without symbol-specific strategy parameters.
+
+The tracker stores the candle timestamp at which the maximum favourable/adverse excursion was observed. Excursions on the exit candle are deliberately not counted as occurring before the exit because OHLC candles cannot reveal the order of their high and low. Historical closed outcomes cannot be retroactively assigned these timestamps; the timed-excursion sample grows from the deployment forward. Existing outcomes remain intact.
+
+Use this evidence to decide whether a global fixed stop, ATR stop, breakeven rule, trailing stop, partial target, or time-based exit deserves a controlled backtest. Do not infer a profitable management rule from aggregate MFE/MAE alone: each candidate must be replayed candle-by-candle with chronological ordering, the same entry assumptions, and realistic fees/funding/slippage. This release is diagnostic only and does not change any live stop or target level.
+
 ## Signal diagnostics (research-only)
 
 Every emitted signal stores a versioned `diagnostics` snapshot inside its persisted signal payload. It records the 5m EMA spread and slopes normalized by ATR, consecutive EMA-alignment age (capped at six bars), price-to-VWAP distance and VWAP slope normalized by ATR, RSI14, ADX14, directional-indicator spread, ATR as a percentage of price, and the 15m EMA spread/slope.

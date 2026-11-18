@@ -103,6 +103,10 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
             [{"symbol": "BTC/USDT", "direction": "LONG", "tracked": 4,
               "targets": 2, "stop_losses": 1, "open": 1, "ambiguous": 0,
               "avg_realized_r": 0.75, "avg_mfe_r": 1.4, "avg_mae_r": 0.5}],
+            [{"status": "STOP_LOSS", "count": 2, "avg_mfe_r": 0.4,
+              "median_mfe_r": 0.3, "avg_mae_r": 1.0,
+              "stop_mfe_050r_before_exit": 1}],
+            [{"direction": "LONG", "status": "STOP_LOSS", "count": 2}],
             [{"status": "SENT", "count": 12}, {"status": "DEAD", "count": 1}],
         ])
         store = CandidateStore(FakePool(conn))
@@ -110,6 +114,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["totals"]["delivered_signals"], 12)
         self.assertEqual(report["totals"]["sent_without_outcome"], 2)
         self.assertEqual(report["by_symbol_direction"][0]["symbol"], "BTC/USDT")
+        self.assertEqual(report["risk_by_outcome"][0]["stop_mfe_050r_before_exit"], 1)
+        self.assertEqual(report["by_direction"][0]["direction"], "LONG")
         self.assertEqual(report["outbox"][1]["status"], "DEAD")
         self.assertIn("AVG(o.realized_r)", conn.fetchrow.await_args.args[0])
 
@@ -190,6 +196,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
             "entry": 100.0, "stop": 98.0, "target": 103.0, "risk_per_unit": 2.0,
             "best_favorable_r": 0.0, "worst_adverse_r": 0.0, "bars_observed": 0,
             "last_observed_candle_open_ms": 1_800_000, "data_gap": False,
+            "best_favorable_candle_open_ms": None, "worst_adverse_candle_open_ms": None,
         }]
         store = CandidateStore(FakePool(conn))
         updated = await store.update_open_outcomes("BTC/USDT", [
@@ -206,6 +213,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[8], 103.0)
         self.assertAlmostEqual(args[9], 1.5)
         self.assertFalse(args[10])
+        self.assertEqual(args[11], 2_100_000)
+        self.assertEqual(args[12], 2_100_000)
 
     async def test_same_bar_stop_and_target_is_ambiguous_not_a_win(self):
         conn = FakeConnection()
@@ -214,6 +223,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
             "entry": 100.0, "stop": 98.0, "target": 103.0, "risk_per_unit": 2.0,
             "best_favorable_r": 0.0, "worst_adverse_r": 0.0, "bars_observed": 0,
             "last_observed_candle_open_ms": 1_800_000, "data_gap": False,
+            "best_favorable_candle_open_ms": None, "worst_adverse_candle_open_ms": None,
         }]
         store = CandidateStore(FakePool(conn))
         await store.update_open_outcomes("BTC/USDT", [
@@ -231,6 +241,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
             "entry": 100.0, "stop": 102.0, "target": 97.0, "risk_per_unit": 2.0,
             "best_favorable_r": 0.0, "worst_adverse_r": 0.0, "bars_observed": 0,
             "last_observed_candle_open_ms": 1_800_000, "data_gap": False,
+            "best_favorable_candle_open_ms": None, "worst_adverse_candle_open_ms": None,
         }]
         store = CandidateStore(FakePool(conn))
         await store.update_open_outcomes("ETH/USDT", [
@@ -246,6 +257,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         for table in ("signal_history", "signal_outcomes", "telegram_outbox", "signal_cooldowns", "scanner_runtime", "schema_migrations"):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", DDL)
         self.assertIn("UNIQUE(symbol,direction,candle_open_ms)", DDL)
+        self.assertIn("best_favorable_candle_open_ms", DDL)
+        self.assertIn("worst_adverse_candle_open_ms", DDL)
         self.assertIn("ON DELETE RESTRICT", DDL)
 
 

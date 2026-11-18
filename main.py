@@ -379,6 +379,26 @@ async def scanner_session() -> None:
                     totals.get("avg_realized_r"), totals.get("data_gaps", 0),
                     totals.get("sent_without_outcome", 0),
                 )
+                risk_rows = {
+                    row.get("status"): row
+                    for row in state["performance_summary"].get("risk_by_outcome", [])
+                }
+                stop_profile = risk_rows.get("STOP_LOSS", {})
+                target_profile = risk_rows.get("TARGET", {})
+                log.info(
+                    "GLOBAL STOP_TARGET PROFILE stop_n=%s stop_avg_mfe_r=%s stop_median_mfe_r=%s "
+                    "stop_mfe_050r_before_exit=%s stop_mfe_100r_before_exit=%s "
+                    "target_n=%s target_avg_mae_r=%s target_median_mae_r=%s "
+                    "target_mae_050r_before_exit=%s target_mae_100r_before_exit=%s",
+                    stop_profile.get("count", 0), stop_profile.get("avg_mfe_r"),
+                    stop_profile.get("median_mfe_r"),
+                    stop_profile.get("stop_mfe_050r_before_exit", 0),
+                    stop_profile.get("stop_mfe_100r_before_exit", 0),
+                    target_profile.get("count", 0), target_profile.get("avg_mae_r"),
+                    target_profile.get("median_mae_r"),
+                    target_profile.get("target_mae_050r_before_exit", 0),
+                    target_profile.get("target_mae_100r_before_exit", 0),
+                )
             except Exception as report_error:
                 state["performance_report_errors"] = state.get("performance_report_errors", 0) + 1
                 log.warning("Performance summary refresh failed error_type=%s", type(report_error).__name__)
