@@ -9,10 +9,9 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-CATEGORIES = {"PREFER_ENTRY", "AVOID_SETUP", "MISSED_OPPORTUNITY", "GENERAL"}
-TIME_RE = re.compile(r"(?<!\\d)([01]?\\d|2[0-3]):([0-5]\\d)\\s*(?:-|to|until)\\s*([01]?\\d|2[0-3]):([0-5]\\d)(?!\\d)", re.I)
-NUMBER_RE = re.compile(r"\\b(?:rvol|relative\\s+volume)\\s*(?:>=|>|at\\s+least)\\s*(\\d+(?:\\.\\d+)?)", re.I)
-SYMBOL_RE = re.compile(r"\\b([A-Z0-9]{2,18})\\s*(?:/|-)??USDT\\b", re.I)
+TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)\s*(?:-|to|until)\s*([01]?\d|2[0-3]):([0-5]\d)(?!\d)", re.I)
+NUMBER_RE = re.compile(r"\b(?:rvol|relative\s+volume)\s*(?:>=|>|at\s+least)\s*(\d+(?:\.\d+)?)", re.I)
+SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,18})(?:/|-)?USDT\b", re.I)
 
 
 def parse_instruction(raw_text: str) -> dict[str, Any]:
@@ -34,13 +33,18 @@ def parse_instruction(raw_text: str) -> dict[str, Any]:
     indicators = [name for name in ("macd", "rvol", "relative volume", "vwap", "ema", "rsi", "adx", "atr", "roc", "retest", "breakout", "volume") if name in lower]
     timing = None
     if time_match:
-        timing = {"start_local": f"{int(time_match.group(1)):02d}:{time_match.group(2)}",
-                  "end_local": f"{int(time_match.group(3)):02d}:{time_match.group(4)}",
-                  "timezone": "Asia/Kolkata"}
+        timing = {
+            "start_local": f"{int(time_match.group(1)):02d}:{time_match.group(2)}",
+            "end_local": f"{int(time_match.group(3)):02d}:{time_match.group(4)}",
+            "timezone": "Asia/Kolkata",
+        }
     return {
-        "schema_version": 1, "category": category, "symbols": symbols,
+        "schema_version": 1,
+        "category": category,
+        "symbols": symbols,
         "direction": "LONG" if "long" in lower or "call" in lower else "SHORT" if "short" in lower or "put" in lower else "ANY",
-        "time_window": timing, "min_relative_volume": float(rvol_match.group(1)) if rvol_match else None,
+        "time_window": timing,
+        "min_relative_volume": float(rvol_match.group(1)) if rvol_match else None,
         "indicators_mentioned": indicators,
         "entry_terms": [term for term in ("first retest", "pullback", "breakout", "crossover", "reclaim", "rejection", "expansion") if term in lower],
         "requires_human_review": True,
