@@ -79,6 +79,28 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
         self.assertTrue(await store.enqueue_signal(signal, None, cooldown_candles=3))
 
+    async def test_performance_summary_returns_aggregate_and_symbol_breakdown(self):
+        conn = FakeConnection(fetchrows=[{
+            "delivered_signals": 12, "delivery_failed": 1, "queued": 2,
+            "tracked_outcomes": 10, "open": 4, "targets": 3,
+            "stop_losses": 2, "ambiguous": 1, "data_gaps": 1,
+            "sent_without_outcome": 2, "avg_realized_r": 0.5,
+            "avg_mfe_r": 1.2, "avg_mae_r": 0.7,
+        }])
+        conn.fetch = AsyncMock(side_effect=[
+            [{"symbol": "BTC/USDT", "direction": "LONG", "tracked": 4,
+              "targets": 2, "stop_losses": 1, "open": 1, "ambiguous": 0,
+              "avg_realized_r": 0.75, "avg_mfe_r": 1.4, "avg_mae_r": 0.5}],
+            [{"status": "SENT", "count": 12}, {"status": "DEAD", "count": 1}],
+        ])
+        store = CandidateStore(FakePool(conn))
+        report = await store.performance_summary()
+        self.assertEqual(report["totals"]["delivered_signals"], 12)
+        self.assertEqual(report["totals"]["sent_without_outcome"], 2)
+        self.assertEqual(report["by_symbol_direction"][0]["symbol"], "BTC/USDT")
+        self.assertEqual(report["outbox"][1]["status"], "DEAD")
+        self.assertIn("AVG(o.realized_r)", conn.fetchrow.await_args.args[0])
+
     async def test_outbox_claim_uses_skip_locked_and_lease(self):
         conn = FakeConnection(fetchrows=[{
             "id": 5, "payload": '{"symbol":"BTC/USDT","side":"LONG"}', "attempts": 1
