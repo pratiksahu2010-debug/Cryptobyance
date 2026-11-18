@@ -297,6 +297,7 @@ class CandidateStore:
             async with conn.transaction():
                 # Serialize competing signal writers for this symbol even when
                 # no cooldown row exists yet (SELECT FOR UPDATE cannot lock absence).
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", symbol)
                 lock_key = f"{strategy_key}:{symbol}:{direction}"
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
                 cooldown = await conn.fetchrow(
