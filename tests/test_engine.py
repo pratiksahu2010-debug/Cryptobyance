@@ -719,13 +719,13 @@ class EngineTests(unittest.TestCase):
         # Last three bars are directionally aligned and both EMAs slope in the
         # trade direction; the preceding bar is not aligned (fresh, not late).
         if side == "LONG":
-            ema9 = np.full(n, 99.8)
-            ema21 = np.full(n, 100.0)
+            ema9 = np.full(n, 99.0)
+            ema21 = np.full(n, 99.5)
             ema9[-3:] = [100.2, 100.6, 101.0]
             ema21[-3:] = [99.6, 99.8, 100.0]
         else:
-            ema9 = np.full(n, 100.2)
-            ema21 = np.full(n, 100.0)
+            ema9 = np.full(n, 101.0)
+            ema21 = np.full(n, 100.5)
             ema9[-3:] = [99.8, 99.4, 99.0]
             ema21[-3:] = [100.4, 100.2, 100.0]
         frame = pd.DataFrame({
