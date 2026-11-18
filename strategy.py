@@ -90,6 +90,18 @@ def validate_ohlcv(
         raise ValueError(f"missing interval in latest {timeframe} candles")
     return df
 
+def has_contiguous_tail(df: pd.DataFrame, timeframe: str, required_bars: int) -> bool:
+    """Require an uninterrupted, exchange-aligned tail for indicator calculations."""
+    if required_bars < 2 or len(df) < required_bars or "timestamp" not in df:
+        return False
+    interval_ms = timeframe_milliseconds(timeframe)
+    timestamps = pd.to_numeric(df["timestamp"].tail(required_bars), errors="coerce")
+    if timestamps.isna().any():
+        return False
+    values = timestamps.to_numpy(dtype="int64")
+    return bool((values[1:] - values[:-1] == interval_ms).all())
+
+
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate indicators on OHLCV bars; VWAP resets at UTC day boundary."""
     x = df.copy()
@@ -133,7 +145,9 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     EMA alignment (not a fresh crossover) is the entry rule on both timeframes.
     A signal is impossible without at least 35 valid 15m candles.
     """
-    if len(df5) < 60 or df15 is None or len(df15) < 35:
+    if (not has_contiguous_tail(df5, "5m", 60)
+            or df15 is None
+            or not has_contiguous_tail(df15, "15m", 35)):
         return None
 
     a = indicators(df5.copy())
