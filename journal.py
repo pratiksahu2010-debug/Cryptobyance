@@ -8,7 +8,7 @@ import json
 import math
 from typing import Any
 
-from strategy import indicators, has_contiguous_tail, ADX_MIN, ATR_STOP_MULT, MIN_RR
+from strategy import indicators, ADX_MIN, ATR_STOP_MULT, MIN_RR
 
 JOURNAL_DDL = """
 CREATE TABLE IF NOT EXISTS journal_feedback (
@@ -109,7 +109,7 @@ def rejected_observation(df5, df15) -> dict[str, Any] | None:
     if abs(extension) > 1.0:
         reasons.append("entry_extended_from_vwap")
     context = None
-    if df15 is None or not has_contiguous_tail(df15, "15m", 35):
+    if df15 is None or len(df15) < 35:
         reasons.append("15m_context_unavailable")
     else:
         ctx = indicators(df15.copy()).iloc[-1]
@@ -128,8 +128,13 @@ def rejected_observation(df5, df15) -> dict[str, Any] | None:
     stop = entry - risk if side == "LONG" else entry + risk
     target = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
     timestamp = int(c.timestamp)
+    close_series = df5["close"].astype(float)
+    macd_line = close_series.ewm(span=12, adjust=False).mean() - close_series.ewm(span=26, adjust=False).mean()
+    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+    volume_average = df5["volume"].rolling(20, min_periods=20).mean().iloc[-1]
+    relative_volume = float(df5["volume"].iloc[-1] / volume_average) if math.isfinite(float(volume_average)) and volume_average > 0 else None
     snapshot = {
-        "version": 1, **values, "relative_volume": None,
+        "version": 1, **values, "relative_volume_20": relative_volume,
         "macd_line": float(macd_line.iloc[-1]), "macd_signal": float(macd_signal.iloc[-1]),
         "macd_histogram": float(macd_line.iloc[-1] - macd_signal.iloc[-1]),
         "ema_alignment_age_bars": alignment_age,
@@ -296,7 +301,7 @@ class SignalJournal:
         return await self.add_feedback(signal_id, category, "", "telegram")
 
     async def entries(self, limit: int = 100) -> list[dict]:
-        limit = max(1, min(int(limit), 5000))
+        limit = max(1, min(int(limit), 250))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
@@ -317,6 +322,9 @@ class SignalJournal:
             item["created_at"] = item["created_at"].isoformat() if item["created_at"] else None
             item["delivered_at"] = item["delivered_at"].isoformat() if item["delivered_at"] else None
             item["feedback"] = json.loads(item["feedback"]) if item["feedback"] else []
+            for feedback in item["feedback"]:
+                if feedback.get("created_at"):
+                    feedback["created_at"] = feedback["created_at"].isoformat()
             result.append(item)
         return result
 
