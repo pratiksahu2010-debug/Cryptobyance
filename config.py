@@ -65,7 +65,7 @@ class Settings:
         return cls(
             scan_interval_seconds=_integer("SCAN_INTERVAL_SECONDS", "60", 20, 600),
             concurrency=_integer("CONCURRENCY", "8", 1, 16),
-            signal_cooldown_candles=_integer("SIGNAL_COOLDOWN_CANDLES", "3", 1, 100),
+            signal_cooldown_candles=_integer("SIGNAL_COOLDOWN_CANDLES", "4", 1, 100),
             timeframe=timeframe,
             context_timeframe=context_timeframe,
             adx_min=_number("ADX_MIN", "20", 0.01, 100),
