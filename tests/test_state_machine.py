@@ -26,6 +26,13 @@ class SignalLifecycleTests(unittest.TestCase):
              ("ARMED", "TRIGGERED"), ("TRIGGERED", "COOLDOWN")],
         )
 
+    def test_cooldown_expires_at_existing_configured_bar_boundary(self):
+        self.assertEqual(
+            signal_transition_path("COOLDOWN", 2_700_000, 2_700_000),
+            [("COOLDOWN", "IDLE"), ("IDLE", "ARMED"),
+             ("ARMED", "TRIGGERED"), ("TRIGGERED", "COOLDOWN")],
+        )
+
     def test_invalid_state_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unknown strategy state"):
             signal_transition_path("BROKEN", 1_800_000, None)
