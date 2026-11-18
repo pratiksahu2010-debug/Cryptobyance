@@ -165,9 +165,9 @@ class CandidateStore:
                        COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
                        COUNT(o.signal_id) FILTER (WHERE o.data_gap) AS data_gaps,
                        COUNT(*) FILTER (WHERE s.status='SENT' AND o.signal_id IS NULL) AS sent_without_outcome,
-                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS'))::numeric, 3) AS avg_realized_r,
-                       ROUND(AVG(o.best_favorable_r)::numeric, 3) AS avg_mfe_r,
-                       ROUND(AVG(o.worst_adverse_r)::numeric, 3) AS avg_mae_r
+                       ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS')))::numeric, 3) AS avg_realized_r,
+                       ROUND((AVG(o.best_favorable_r))::numeric, 3) AS avg_mfe_r,
+                       ROUND((AVG(o.worst_adverse_r))::numeric, 3) AS avg_mae_r
                    FROM signal_history s
                    LEFT JOIN signal_outcomes o ON o.signal_id=s.id"""
             )
