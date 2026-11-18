@@ -716,14 +716,25 @@ class EngineTests(unittest.TestCase):
             state.update(previous)
 
     def _indicator_frame(self, side="LONG", adx=22.0, n=60):
+        # Last three bars are directionally aligned and both EMAs slope in the
+        # trade direction; the preceding bar is not aligned (fresh, not late).
+        if side == "LONG":
+            ema9 = np.full(n, 99.8)
+            ema21 = np.full(n, 100.0)
+            ema9[-3:] = [100.2, 100.6, 101.0]
+            ema21[-3:] = [99.6, 99.8, 100.0]
+        else:
+            ema9 = np.full(n, 100.2)
+            ema21 = np.full(n, 100.0)
+            ema9[-3:] = [99.8, 99.4, 99.0]
+            ema21[-3:] = [100.4, 100.2, 100.0]
         frame = pd.DataFrame({
             "timestamp": 1_800_000_000_000 + np.arange(n) * 300_000,
             "open": np.full(n, 100.0), "high": np.full(n, 103.0),
             "low": np.full(n, 97.0),
             "close": np.full(n, 102.0 if side == "LONG" else 98.0),
             "volume": np.full(n, 100.0),
-            "ema9": np.full(n, 101.0 if side == "LONG" else 99.0),
-            "ema21": np.full(n, 100.0),
+            "ema9": ema9, "ema21": ema21,
             "vwap": np.full(n, 100.0), "rsi": np.full(n, 60.0 if side == "LONG" else 40.0),
             "adx": np.full(n, adx), "atr": np.full(n, 2.0),
             "plus_di": np.full(n, 30.0 if side == "LONG" else 10.0),
@@ -747,7 +758,7 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         diagnostics = signal["diagnostics"]
         self.assertEqual(diagnostics["version"], 1)
-        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 6)
+        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 3)
         self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
         self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
         self.assertAlmostEqual(diagnostics["di_spread"], 20.0)
@@ -832,6 +843,37 @@ class EngineTests(unittest.TestCase):
         fifteen.loc[fifteen.index[-1], "ema9"] = np.nan
         with patch("strategy.indicators", side_effect=[five, fifteen]):
             self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+
+    def test_global_gate_rejects_old_ema_alignment(self):
+        from unittest.mock import patch
+        five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
+        five.loc[five.index[-4], "ema9"] = 100.1
+        five.loc[five.index[-4], "ema21"] = 100.0
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+
+    def test_global_gate_rejects_flat_or_counter_directional_ema_slopes(self):
+        from unittest.mock import patch
+        five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
+        five.loc[five.index[-4], "ema9"] = five.iloc[-1].ema9
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+
+    def test_global_gate_rejects_entry_extended_more_than_one_atr_from_vwap(self):
+        from unittest.mock import patch
+        five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
+        five.loc[five.index[-1], "close"] = 104.1
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+
+    def test_global_early_entry_gates_apply_to_short_side(self):
+        from unittest.mock import patch
+        five, fifteen = self._indicator_frame("SHORT"), self._context_frame(False)
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "SHORT")
+        self.assertEqual(signal["diagnostics"]["ema_alignment_age_bars_capped_6"], 3)
 
     def test_adx_below_20_rejects_immediately(self):
         from unittest.mock import patch
