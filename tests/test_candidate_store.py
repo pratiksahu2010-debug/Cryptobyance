@@ -47,13 +47,13 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ON CONFLICT(signal_id) DO NOTHING", statements)
 
     async def test_signal_is_atomically_recorded_and_queued(self):
-        conn = FakeConnection(fetchrows=[None, None, {"id": 71}])
+        conn = FakeConnection(fetchrows=[None, None, None, {"id": 71}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
         queued = await store.enqueue_signal(signal, candidate_id=9, cooldown_candles=3)
         self.assertTrue(queued)
-        self.assertEqual(len(conn.fetchrow_calls), 3)
+        self.assertEqual(len(conn.fetchrow_calls), 4)
         sql = "\n".join(call[0] for call in conn.fetchrow_calls)
         self.assertIn("signal_cooldowns", sql)
         self.assertIn("signal_history", sql)
@@ -63,7 +63,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("signal_cooldowns", executed)
 
     async def test_duplicate_signal_is_not_queued_twice(self):
-        conn = FakeConnection(fetchrows=[None, None, None])
+        conn = FakeConnection(fetchrows=[None, {"id": 72}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "ETH/USDT", "side": "SHORT", "candle": 2_100_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
@@ -84,6 +84,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
     async def test_opposite_direction_is_not_blocked_by_same_direction_cooldown(self):
         conn = FakeConnection(fetchrows=[
             {"last_direction": "LONG", "last_candle_open_ms": 3_000_000},
+            None,
             None,
             {"id": 81},
         ])
