@@ -1,7 +1,11 @@
 fastapi==0.115.12
-uvicorn[standard]==0.34.2
+# Use Uvicorn's pure-Python asyncio + h11 runtime on Render. The [standard]
+# extra installs uvloop/httptools native event-loop/parser extensions.
+uvicorn==0.34.2
 pandas==2.2.3
-numpy==2.2.5
+# Keep the NumPy 1.x ABI with the pinned pandas build; avoid an unneeded
+# major native-runtime upgrade while stabilizing the production worker.
+numpy==1.26.4
 httpx==0.28.1
 python-dotenv==1.1.0
 python-socketio[asyncio_client]==4.6.1
