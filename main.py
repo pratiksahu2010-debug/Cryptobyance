@@ -127,6 +127,11 @@ def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = Fal
     return seconds_until_next_candle_scan(now_epoch)
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> None:
+def _effective_candle_clock(reference_ms: int) -> int:
+    """Never validate market data against an earlier cycle-start timestamp."""
+    return max(int(reference_ms), int(time.time() * 1000))
+
+
     """Scan completed 5m candles; 15m EMA trend is a mandatory direction veto."""
     async with semaphore:
         rows = []
@@ -140,13 +145,13 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # A completed candle older than 90 seconds is too late for an
             # actionable alert. Refresh once from REST before rejecting it.
             try:
-                df5 = validate_ohlcv(rows, '5m', now_ms, max_age_ms=90_000)
+                df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
             except ValueError as exc:
                 if 'stale 5m candles' not in str(exc).lower():
                     raise
                 await feed.fetch_history(pair, limit=6)
                 rows = feed.rows(pair)
-                df5 = validate_ohlcv(rows, '5m', now_ms, max_age_ms=90_000)
+                df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
             if len(df5) < 60:
                 raise ValueError(f'insufficient completed 5m candles: {len(df5)}')
             closed_ts = int(df5.iloc[-1].timestamp)
@@ -183,9 +188,15 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # passed as None and the strategy safely vetoes every signal.
             df15 = None
             try:
-                rows15 = aggregate_5m_to_15m(rows, now_ms)
+                validation_now_ms = _effective_candle_clock(now_ms)
+                # Revalidate the primary candle after any awaited outcome work.
+                # This prevents a slow symbol scan from using the cycle-start clock.
+                df5 = validate_ohlcv(rows, '5m', validation_now_ms, max_age_ms=90_000)
+                if int(df5.iloc[-1].timestamp) != closed_ts:
+                    raise ValueError('latest 5m candle changed during scan; defer to next cycle')
+                rows15 = aggregate_5m_to_15m(rows, validation_now_ms)
                 if len(rows15) >= 35:
-                    candidate15 = validate_ohlcv(rows15, '15m', now_ms)
+                    candidate15 = validate_ohlcv(rows15, '15m', validation_now_ms)
                     if len(candidate15) >= 35:
                         df15 = candidate15
             except ValueError as context_error:
@@ -240,6 +251,11 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             if candidate_store is None:
                 raise RuntimeError('persistent candidate store is required to queue a signal')
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
+            # DB work above may also take time. Recheck immediately before the
+            # durable enqueue so a candle that aged out during processing cannot alert.
+            final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
+            if int(final_df5.iloc[-1].timestamp) != closed_ts:
+                raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
             queued = await candidate_store.enqueue_signal(
                 signal, None, COOLDOWN_CANDLES,
                 strategy_key="ema_vwap_rsi_adx_15m_v1",
