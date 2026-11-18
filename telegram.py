@@ -76,7 +76,7 @@ class TelegramNotifier:
             "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
-    async def send(self, signal: dict) -> bool:
+    async def send(self, signal: dict, signal_id: int | None = None) -> bool:
         if not self.configured:
             if not self._missing_config_logged:
                 log.error(
@@ -92,6 +92,19 @@ class TelegramNotifier:
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if signal_id is not None:
+            body["reply_markup"] = {
+                "inline_keyboard": [
+                    [
+                        {"text": "👍 Good entry", "callback_data": f"jfb|{int(signal_id)}|GOOD_ENTRY"},
+                        {"text": "👎 Bad signal", "callback_data": f"jfb|{int(signal_id)}|BAD_SIGNAL"},
+                    ],
+                    [
+                        {"text": "⏰ Late entry", "callback_data": f"jfb|{int(signal_id)}|LATE_ENTRY"},
+                        {"text": "🔎 Review", "callback_data": f"jfb|{int(signal_id)}|NEEDS_REVIEW"},
+                    ],
+                ]
+            }
 
         for attempt in range(1, self.attempts + 1):
             try:

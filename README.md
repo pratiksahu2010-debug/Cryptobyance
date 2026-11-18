@@ -160,3 +160,53 @@ ORDER BY symbol, direction, status;
 ### Performance report interpretation
 
 `/performance` reads aggregate metrics from the same internal PostgreSQL connection used by the scanner and refreshes after each completed scan. `avg_realized_r` includes only TARGET and STOP_LOSS outcomes; OPEN and AMBIGUOUS rows are excluded. MFE/MAE are descriptive excursions, not realized returns. A candle gap or a bar touching both stop and target is AMBIGUOUS and is excluded from the realized-R average. These are candle-based research estimates assuming entry at the signal candle close; they are not actual exchange fills and do not include fees, slippage, funding or liquidation effects. Treat small samples as descriptive only, not proof of an edge.
+
+
+## Self-learning signal journal
+
+This release adds a research journal alongside the existing CoinDCX signal engine. It does not change signal eligibility, cooldowns, stop/target calculations, or order execution (the bot remains signal-only).
+
+### What is recorded
+
+- Every Telegram-delivered signal already has a permanent `signal_history` row and delivered-signal outcome tracking. The journal exposes these records with their entry/stop/target, point-in-time indicator snapshot, outcome, MFE/MAE and feedback history.
+- Signal snapshots include EMA 9/21, RSI 14, ADX 14, +DI/-DI, VWAP, ATR, relative volume, MACD and candle OHLCV. Snapshot fields are observational only.
+- Meaningful directional setups rejected by the current strategy are stored separately in `journal_candidates`, with the available indicator snapshot and explicit rejection reasons. Their hypothetical outcome tracker uses later completed 5m candles, excludes the candidate candle, marks gaps ambiguous, and never treats a same-candle stop/target collision as a win.
+- Manual feedback is append-only. Signal feedback categories include Good Entry, Bad Signal, Late Entry, Stop-Loss Too Tight, Target Too Close, Wrong Direction and Needs Review. Rejected candidates can be labelled Missed Opportunity or Needs Review. A manual observation endpoint is also available for a candidate you identify during backtesting.
+
+### Render environment
+
+Set these additional environment variables in Render:
+- `JOURNAL_API_TOKEN`: a long random private token used to protect journal data and feedback APIs.
+- `TELEGRAM_WEBHOOK_SECRET`: a random secret (1–256 characters) used to authenticate Telegram callback updates.
+
+After deployment, open `/journal` and enter `JOURNAL_API_TOKEN`. The dashboard shows delivered signals, feedback, rejected candidates and the learning summary. The data endpoints are protected by the token. Export the collected journal as JSON from `/journal/export`.
+
+### Telegram feedback buttons
+
+Signal messages include inline feedback buttons. To receive button presses, configure Telegram's webhook once after deployment (replace the service URL with your Render URL):
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -d "url=https://YOUR-SERVICE.onrender.com/telegram/webhook" \
+  -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
+```
+
+Telegram must be able to reach the public HTTPS webhook. Dashboard feedback works independently of webhook configuration.
+
+### API
+
+- `GET /journal`: dashboard.
+- `GET /journal/api/entries`: delivered signal journal (header `X-Journal-Token`).
+- `GET /journal/api/candidates`: rejected/manual candidate journal.
+- `POST /journal/api/feedback`: append feedback to a delivered signal.
+- `POST /journal/api/candidate-feedback`: label a rejected candidate as Missed Opportunity or Needs Review.
+- `POST /journal/api/observation`: add a manually observed setup. Required JSON fields: `symbol`, `direction`, `candle_open_ms` (UTC-aligned 5m candle-open timestamp), `entry`, `stop`, `target`; optional `comment`.
+- `GET /learning`: aggregate feedback, outcome and rejection-reason analysis.
+- `GET /journal/export`: JSON export of signals, candidates and learning summary.
+- `POST /telegram/webhook`: Telegram inline feedback callback; authenticated by Telegram's webhook secret header.
+
+All journal API routes except the dashboard and Telegram webhook require `X-Journal-Token: YOUR_TOKEN`. Manual observation and feedback are audit records, not trade orders.
+
+### Learning safeguards
+
+The learning endpoint reports sample sizes, outcomes, feedback and rejected-candidate statistics. It can recommend further testing but never changes live thresholds or strategy code. Only accept a strategy adjustment after chronological walk-forward replay with realistic fees, funding, spread and slippage. The illustrative “Good Entry” example discussed during design is not inserted as a real trade or feedback record.

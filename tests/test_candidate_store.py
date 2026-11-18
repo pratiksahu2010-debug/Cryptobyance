@@ -121,7 +121,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_outbox_claim_uses_skip_locked_and_lease(self):
         conn = FakeConnection(fetchrows=[{
-            "id": 5, "payload": '{"symbol":"BTC/USDT","side":"LONG"}', "attempts": 1
+            "id": 5, "signal_id": 55, "payload": '{"symbol":"BTC/USDT","side":"LONG"}', "attempts": 1
         }])
         store = CandidateStore(FakePool(conn))
         item = await store.claim_outbox()
