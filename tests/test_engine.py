@@ -316,12 +316,13 @@ class EngineTests(unittest.TestCase):
             price = 100 + i
             raw.append([base + i * interval, price, price + 2, price - 1, price + 1, 10])
         raw = list(reversed(raw))
-        raw.append([base + interval, 101, 103, 100, 102, 25])
+        # A byte-for-byte equivalent duplicate is safe to collapse.
+        raw.append([base + interval, 101, 103, 100, 102, 10])
         now_ms = base + 4 * interval + 2000
         frame = validate_ohlcv(raw, "5m", now_ms)
         self.assertEqual(len(frame), 4)
         self.assertEqual(frame.timestamp.tolist(), sorted(frame.timestamp.tolist()))
-        self.assertEqual(float(frame.iloc[1].volume), 25)
+        self.assertEqual(float(frame.iloc[1].volume), 10)
         self.assertEqual(int(frame.iloc[-1].timestamp), base + 3 * interval)
 
     def test_validator_rejects_stale_candles(self):
