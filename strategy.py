@@ -252,7 +252,15 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
     entry = float(c.close)
     atr_value = float(c.atr)
-    risk = atr_value * ATR_STOP_MULT
+    swing = df5.iloc[-(settings.swing_lookback_bars + 1):-1]
+    if len(swing) < settings.swing_lookback_bars:
+        return None
+    stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
+    risk = entry - stop if side == "LONG" else stop - entry
+    if not np.isfinite(risk) or risk <= 0:
+        return None
+    target1 = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
+    target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
     diagnostics = {
@@ -271,10 +279,10 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         return None
 
     return {
-        "side": side, "entry": entry,
-        "stop": entry - risk if side == "LONG" else entry + risk,
-        "target": entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR,
-        "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
+        "side": side, "entry": entry, "stop": stop,
+        "target": target2, "target1": target1, "target2": target2,
+        "rr": settings.tp2_r, "rsi": float(c.rsi), "adx": float(c.adx),
+        "ema9": float(c.ema9), "ema21": float(c.ema21), "vwap": float(c.vwap),
         "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
         "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
         "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
