@@ -83,6 +83,18 @@ def candle_to_row(item: dict[str, Any]) -> list[float | int]:
     ]
 
 
+def deduplicate_rest_candles(rows: list[list]) -> list[list]:
+    """Collapse identical REST duplicates; reject conflicting bars at one timestamp."""
+    by_timestamp: dict[int, list] = {}
+    for row in rows:
+        timestamp = int(row[0])
+        previous = by_timestamp.get(timestamp)
+        if previous is not None and previous != row:
+            raise ValueError(f"conflicting CoinDCX REST candles for timestamp {timestamp}")
+        by_timestamp[timestamp] = row
+    return [by_timestamp[timestamp] for timestamp in sorted(by_timestamp)]
+
+
 def aggregate_5m_to_15m(rows: list[list], now_ms: int | None = None) -> list[list]:
     """Build aligned 15m bars from three contiguous, fully closed 5m candles."""
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
@@ -200,9 +212,7 @@ class CoinDCXFuturesFeed:
         if not isinstance(data, list) or not data:
             raise ValueError(f"empty CoinDCX 5m history for {pair}")
         rows = [candle_to_row(item) for item in data]
-        rows.sort(key=lambda row: int(row[0]))
-        deduped = {int(row[0]): row for row in rows}
-        rows = [deduped[key] for key in sorted(deduped)]
+        rows = deduplicate_rest_candles(rows)
         self._merge_rows(pair, rows)
         return rows
 

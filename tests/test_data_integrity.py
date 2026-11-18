@@ -2,7 +2,8 @@ import unittest
 
 import pandas as pd
 
-from strategy import has_contiguous_tail
+from strategy import has_contiguous_tail, validate_ohlcv
+from coindcx_feed import deduplicate_rest_candles
 
 
 class ContiguousIndicatorWindowTests(unittest.TestCase):
@@ -27,6 +28,29 @@ class ContiguousIndicatorWindowTests(unittest.TestCase):
         self.assertFalse(has_contiguous_tail(frame, "15m", 35))
         frame = pd.DataFrame({"timestamp": [i * 900_000 for i in range(35)]})
         self.assertTrue(has_contiguous_tail(frame, "15m", 35))
+
+
+    def test_conflicting_duplicate_timestamp_is_rejected(self):
+        start = 1_800_000_000_000
+        rows = [
+            [start + i * 300_000, 100.0, 102.0, 99.0, 101.0, 10.0]
+            for i in range(5)
+        ]
+        rows.append([rows[-1][0], 100.0, 104.0, 99.0, 103.0, 12.0])
+        with self.assertRaisesRegex(ValueError, "conflicting duplicate timestamps"):
+            validate_ohlcv(rows, "5m", now_ms=rows[-1][0] + 300_000 + 5_000)
+
+    def test_identical_duplicate_timestamp_is_collapsed_safely(self):
+        start = 1_800_000_000_000
+        row = [start, 100.0, 102.0, 99.0, 101.0, 10.0]
+        result = deduplicate_rest_candles([row, row.copy()])
+        self.assertEqual(result, [row])
+
+    def test_conflicting_rest_duplicate_timestamp_is_rejected(self):
+        row = [1_800_000_000_000, 100.0, 102.0, 99.0, 101.0, 10.0]
+        conflicting = [1_800_000_000_000, 100.0, 104.0, 99.0, 103.0, 12.0]
+        with self.assertRaisesRegex(ValueError, "conflicting CoinDCX REST candles"):
+            deduplicate_rest_candles([row, conflicting])
 
 
 if __name__ == "__main__":
