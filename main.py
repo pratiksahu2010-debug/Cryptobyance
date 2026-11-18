@@ -65,6 +65,7 @@ state: dict[str, Any] = {
     "websocket_candle_fresh": False, "scanner_restarts": 0,
     "telegram_configured": False, "database_connected": False,
     "outcome_tracking_errors": 0, "outcome_rows_updated": 0,
+    "performance_report_errors": 0, "performance_summary": None,
 }
 # In-process deduplication only. Startup cutoff prevents replaying candles that
 # closed before the current scanner session began; state is not durable across restarts.
@@ -274,6 +275,11 @@ async def scanner_session() -> None:
     candidate_store = await CandidateStore.connect(settings.database_url)
     state['database_connected'] = True
     try:
+        state["performance_summary"] = await candidate_store.performance_summary()
+    except Exception as report_error:
+        state["performance_report_errors"] = state.get("performance_report_errors", 0) + 1
+        log.warning("Initial performance summary unavailable error_type=%s", type(report_error).__name__)
+    try:
         previous_checkpoint = await candidate_store.load_runtime()
         state["previous_runtime_checkpoint"] = previous_checkpoint
         if previous_checkpoint:
@@ -362,6 +368,20 @@ async def scanner_session() -> None:
             state['websocket_connect_errors'] = feed.ws_connect_errors
             state['last_websocket_error'] = feed.last_ws_error
             state['websocket_disconnects'] = feed.ws_disconnects
+            try:
+                state["performance_summary"] = await candidate_store.performance_summary()
+                totals = state["performance_summary"].get("totals", {})
+                log.info(
+                    "PERFORMANCE REPORT delivered=%s tracked=%s target=%s stop_loss=%s ambiguous=%s open=%s avg_realized_r=%s data_gaps=%s sent_without_outcome=%s",
+                    totals.get("delivered_signals", 0), totals.get("tracked_outcomes", 0),
+                    totals.get("targets", 0), totals.get("stop_losses", 0),
+                    totals.get("ambiguous", 0), totals.get("open", 0),
+                    totals.get("avg_realized_r"), totals.get("data_gaps", 0),
+                    totals.get("sent_without_outcome", 0),
+                )
+            except Exception as report_error:
+                state["performance_report_errors"] = state.get("performance_report_errors", 0) + 1
+                log.warning("Performance summary refresh failed error_type=%s", type(report_error).__name__)
             if unexpected:
                 state['last_error'] = '; '.join(unexpected[:3])
             elif state['symbols_failed'] == 0:
@@ -488,6 +508,7 @@ def build_health_payload() -> dict[str, Any]:
         "signals_queued": state.get("signals_queued", 0),
         "outcome_rows_updated": state.get("outcome_rows_updated", 0),
         "outcome_tracking_errors": state.get("outcome_tracking_errors", 0),
+        "performance_report_errors": state.get("performance_report_errors", 0),
         "previous_runtime_checkpoint": state.get("previous_runtime_checkpoint"),
         "last_scan": state["last_scan"], "last_scan_age_seconds": scan_age,
         "last_scan_seconds": state["last_scan_seconds"],
@@ -500,6 +521,17 @@ def build_health_payload() -> dict[str, Any]:
 @app.get("/health")
 async def health():
     return build_health_payload()
+
+
+@app.get("/performance")
+async def performance():
+    """Aggregate signal outcomes only; never return entries, stops, targets or Telegram payloads."""
+    return {
+        "available": state.get("performance_summary") is not None,
+        "updated_at": state.get("last_scan"),
+        "report_errors": state.get("performance_report_errors", 0),
+        "summary": state.get("performance_summary"),
+    }
 
 
 @app.get("/ping", response_class=Response)

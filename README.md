@@ -86,6 +86,7 @@ The existing Render web service remains attached to this repository's `main` bra
 
 Check:
 - `/health`: market metadata ready, active/unavailable symbols, websocket status, last websocket event, scan counters and errors.
+- `/performance`: aggregate delivered-signal outcomes, OPEN/TARGET/STOP_LOSS/AMBIGUOUS counts, average realized R, MFE/MAE, data gaps, sent-without-outcome integrity count, per-symbol/direction breakdown and Telegram outbox status. It never returns individual entry/stop/target payloads.
 - `/ping`: lightweight keepalive.
 - Render logs: look for CoinDCX instrument validation, per-symbol history bootstrap, websocket subscription, and completed scan-cycle messages.
 
@@ -103,7 +104,7 @@ These fields are **observability data only**. They do not add entry filters, cha
 
 ## Delivered-signal outcome tracking
 
-Only Telegram-confirmed delivered alerts are inserted into PostgreSQL `signal_outcomes`; queued, retrying, or permanently failed alerts are excluded. Outcome-row creation is committed atomically with the signal-history transition to `SENT`. For each delivered signal, subsequent completed 5m candles update maximum favourable excursion (MFE) and maximum adverse excursion (MAE), both in units of initial risk (R). The first stop/target resolution is recorded; a candle touching both levels is labelled `AMBIGUOUS` because OHLC data cannot establish which level traded first. A missing 5m interval sets `data_gap=true` and ends that outcome as `AMBIGUOUS`, because the bot cannot prove whether the stop or target was reached during the missing interval.
+Only Telegram-confirmed delivered alerts belong in PostgreSQL `signal_outcomes`; queued, retrying, or permanently failed alerts are excluded. On startup, the store repairs legacy rows by deleting outcomes for non-`SENT` alerts and backfilling missing outcome rows for delivered alerts. Outcome-row creation is committed atomically with the signal-history transition to `SENT`. For each delivered signal, subsequent completed 5m candles update maximum favourable excursion (MFE) and maximum adverse excursion (MAE), both in units of initial risk (R). The first stop/target resolution is recorded; a candle touching both levels is labelled `AMBIGUOUS` because OHLC data cannot establish which level traded first. A missing 5m interval sets `data_gap=true` and ends that outcome as `AMBIGUOUS`, because the bot cannot prove whether the stop or target was reached during the missing interval.
 
 Only alerts with `signal_history.status='SENT'` are included. The signal candle is excluded from outcome measurement because the assumed entry is its close. Open outcomes remain open until a stop or target is reached; there is no invented time-based exit. This is research telemetry, not simulated exchange fills, and it does not change signals or execute orders.
 
@@ -134,3 +135,8 @@ FROM signal_outcomes
 GROUP BY symbol, direction, status
 ORDER BY symbol, direction, status;
 ```
+
+
+### Performance report interpretation
+
+`/performance` reads aggregate metrics from the same internal PostgreSQL connection used by the scanner and refreshes after each completed scan. `avg_realized_r` includes only TARGET and STOP_LOSS outcomes; OPEN and AMBIGUOUS rows are excluded. MFE/MAE are descriptive excursions, not realized returns. A candle gap or a bar touching both stop and target is AMBIGUOUS and is excluded from the realized-R average. These are candle-based research estimates assuming entry at the signal candle close; they are not actual exchange fills and do not include fees, slippage, funding or liquidation effects. Treat small samples as descriptive only, not proof of an edge.
