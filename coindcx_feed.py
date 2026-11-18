@@ -336,6 +336,21 @@ class CoinDCXFuturesFeed:
             succeeded, len(results) - succeeded,
         )
 
+    async def _backfill_after_previous_reconnect(self, previous_task: asyncio.Task) -> None:
+        """Run this reconnect's repair after any still-running earlier repair."""
+        try:
+            await previous_task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A prior repair must not prevent the newest reconnect from getting
+            # its own independent REST history refresh.
+            log.warning(
+                "Previous CoinDCX reconnect backfill ended unexpectedly error=%s",
+                type(exc).__name__,
+            )
+        await self._backfill_after_reconnect()
+
     async def _on_connect(self):
         self.websocket_connected = True
         reconnected = self._has_connected_once
@@ -349,7 +364,16 @@ class CoinDCXFuturesFeed:
             # The initial connection follows a full 320-candle bootstrap in
             # scanner_session. Every later connection must repair bars missed
             # while disconnected before indicators can use the cached history.
-            if self._reconnect_backfill_task is None or self._reconnect_backfill_task.done():
+            # If another disconnect/reconnect happens before the previous repair
+            # finishes, queue a fresh repair behind it rather than silently
+            # treating the older task as sufficient for the newer outage.
+            previous_task = self._reconnect_backfill_task
+            if previous_task is not None and not previous_task.done():
+                self._reconnect_backfill_task = asyncio.create_task(
+                    self._backfill_after_previous_reconnect(previous_task),
+                    name="coindcx-reconnect-history-backfill",
+                )
+            else:
                 self._reconnect_backfill_task = asyncio.create_task(
                     self._backfill_after_reconnect(),
                     name="coindcx-reconnect-history-backfill",
