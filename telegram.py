@@ -51,7 +51,7 @@ class TelegramNotifier:
         return f"https://www.tradingview.com/symbols/{base}USDT/markets/"
 
     @staticmethod
-    def format_message(signal: dict) -> str:
+    def format_message(signal: dict, signal_id: int | None = None) -> str:
         emoji = "🟢" if signal["side"] == "LONG" else "🔴"
         # Exchange timestamps identify candle OPEN; show the true close time.
         candle_close_ms = signal.get("candle_close", signal["candle"] + 300_000)
@@ -63,19 +63,27 @@ class TelegramNotifier:
             f'<a href="{escape(chart_url, quote=True)}">📊 OPEN TRADINGVIEW MARKET LIST · SELECT EXCHANGE</a>\n\n'
             if chart_url else ""
         )
+        snapshot = signal.get("indicator_snapshot") or {}
+        ema9 = signal.get("ema9", snapshot.get("ema9"))
+        ema21 = signal.get("ema21", snapshot.get("ema21"))
+        vwap = signal.get("vwap", snapshot.get("vwap"))
+        target1 = signal.get("target1", signal.get("target"))
+        target2 = signal.get("target2", signal.get("target"))
+        signal_ref = f"\\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
         return (
-            f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
-            f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
+            f"{emoji} <b>{signal['symbol']} / {signal['side']}</b>\\n"
             + chart_link
-            + f"Entry: <code>{fmt_price(signal['entry'])}</code>\n"
-            f"Stop loss: <code>{fmt_price(signal['stop'])}</code>\n"
-            f"Target: <code>{fmt_price(signal['target'])}</code>\n"
-            f"Risk/Reward: 1:{signal['rr']:.2f}\n\n"
-            f"EMA 9/21: aligned with signal direction\nVWAP: correct side\n"
-            f"RSI(14): {signal['rsi']:.1f}\nADX(14): {signal['adx']:.1f}\n"
-            f"15m trend filter: {escape(str(signal.get('context', 'unavailable')))} (mandatory direction confirmation)\n"
-            f"5m candle close: {candle_time}\n\n"
-            "<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
+            + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\\n"
+            + f"<b>Bar time: <code>{candle_time}</code></b>\\n"
+            + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\\n"
+            + f"<b>EMA 9/21: <code>{fmt_price(float(ema9))}</code> / <code>{fmt_price(float(ema21))}</code></b>\\n"
+            + f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\\n"
+            + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\\n"
+            + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\\n"
+            + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\\n"
+            + f"<b>15m trend: {escape(str(signal.get('context', 'unavailable')))}</b>"
+            + signal_ref
+            + "\\n\\n<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
     async def send(self, signal: dict, signal_id: int | None = None) -> bool:
@@ -90,7 +98,7 @@ class TelegramNotifier:
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         body = {
             "chat_id": self.chat_id,
-            "text": self.format_message(signal),
+            "text": self.format_message(signal, signal_id=signal_id),
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
