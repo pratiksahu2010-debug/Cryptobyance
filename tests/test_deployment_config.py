@@ -11,6 +11,10 @@ class DeploymentDefaultsTests(unittest.TestCase):
         self.assertIn('      - key: ADX_MIN\n        value: "20"', render)
         self.assertNotIn('      - key: ADX_MIN\n        value: "25"', render)
 
+    def test_render_blueprint_configures_health_check_endpoint(self):
+        render = (ROOT / "render.yaml").read_text()
+        self.assertIn("    healthCheckPath: /health", render)
+
     def test_example_environment_uses_adx_minimum_20(self):
         example = (ROOT / ".env.example").read_text()
         self.assertIn("ADX_MIN=20", example)
