@@ -130,6 +130,7 @@ async def advance_persisted_state(
     if decision.action == "TRIGGER":
         # Keep ARMED and its prior-candle checkpoint unchanged until enqueue_signal
         # atomically commits signal history, outbox and cooldown.
+        return "TRIGGER"
 
     next_state = decision.state
     if row is None:
