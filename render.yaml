@@ -25,5 +25,9 @@ services:
         value: "20"
       - key: DATABASE_URL
         sync: false
+      - key: JOURNAL_API_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
       - key: SIGNAL_COOLDOWN_CANDLES
         value: "3"

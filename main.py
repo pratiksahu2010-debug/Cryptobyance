@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
+import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -10,12 +13,14 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from pydantic import BaseModel
 
 load_dotenv()
 
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
-from strategy import evaluate_setup, timeframe_milliseconds, validate_ohlcv
+from strategy import evaluate_setup, indicators, timeframe_milliseconds, validate_ohlcv
+from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
 
@@ -71,6 +76,28 @@ state: dict[str, Any] = {
 # closed before the current scanner session began; state is not durable across restarts.
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
+journal_service: SignalJournal | None = None
+
+
+class FeedbackRequest(BaseModel):
+    signal_id: int
+    category: str
+    comment: str = ""
+
+class CandidateFeedbackRequest(BaseModel):
+    candidate_id: int
+    category: str = "MISSED_OPPORTUNITY"
+    comment: str = ""
+
+
+class ManualObservationRequest(BaseModel):
+    symbol: str
+    direction: str
+    candle_open_ms: int
+    entry: float
+    stop: float
+    target: float
+    comment: str = ""
 
 
 def seconds_until_next_candle_scan(now_epoch: float | None = None) -> float:
@@ -90,7 +117,7 @@ def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = Fal
     # the unchanged strict 90s freshness limit.
     return seconds_until_next_candle_scan(now_epoch)
 
-async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None) -> None:
+async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> None:
     """Scan completed 5m candles; 15m EMA trend is a mandatory direction veto."""
     async with semaphore:
         rows = []
@@ -124,6 +151,8 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         display_symbol, df5.to_dict("records")
                     )
                     state["outcome_rows_updated"] += int(updated_outcomes)
+                    if journal is not None:
+                        await journal.update_rejected_outcomes(display_symbol, df5.to_dict("records"))
                 except Exception as outcome_error:
                     state["outcome_tracking_errors"] = state.get("outcome_tracking_errors", 0) + 1
                     log.warning(
@@ -154,6 +183,14 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
             setup = evaluate_setup(df5, df15)
             if not setup:
+                if journal is not None:
+                    try:
+                        observation = rejected_observation(df5, df15)
+                        if observation:
+                            observation["symbol"] = display_symbol
+                            await journal.record_rejected(observation)
+                    except Exception as journal_error:
+                        log.warning("rejected-candidate journal failed symbol=%s error_type=%s", display_symbol, type(journal_error).__name__)
                 if candidate_store is not None:
                     # Retire legacy pending candidates so they can never promote later.
                     await candidate_store.invalidate(display_symbol)
@@ -165,6 +202,28 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             signal['symbol'] = display_symbol
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
+            # Point-in-time research snapshot: telemetry only; never feeds back into entry rules.
+            try:
+                ind = indicators(df5.copy())
+                current = ind.iloc[-1]
+                close_series = df5["close"].astype(float)
+                macd_line = close_series.ewm(span=12, adjust=False).mean() - close_series.ewm(span=26, adjust=False).mean()
+                macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+                volume_mean = df5["volume"].rolling(20, min_periods=20).mean().iloc[-1]
+                signal["indicator_snapshot"] = {
+                    "version": 1, "ema9": float(current.ema9), "ema21": float(current.ema21),
+                    "rsi14": float(current.rsi), "adx14": float(current.adx),
+                    "plus_di": float(current.plus_di), "minus_di": float(current.minus_di),
+                    "vwap": float(current.vwap), "atr14": float(current.atr),
+                    "relative_volume_20": float(df5["volume"].iloc[-1] / volume_mean) if volume_mean and volume_mean > 0 else None,
+                    "macd_line": float(macd_line.iloc[-1]), "macd_signal": float(macd_signal.iloc[-1]),
+                    "macd_histogram": float(macd_line.iloc[-1] - macd_signal.iloc[-1]),
+                    "open": float(current.open), "high": float(current.high),
+                    "low": float(current.low), "close": float(current.close),
+                    "volume": float(current.volume), "context_15m": signal.get("context"),
+                }
+            except Exception as snapshot_error:
+                log.warning("signal snapshot enrichment failed symbol=%s error_type=%s", display_symbol, type(snapshot_error).__name__)
             # Retire pending rows created by older releases; the current engine
             # never promotes a candidate after its crossover candle.
             if candidate_store is not None:
@@ -217,7 +276,7 @@ async def telegram_outbox_loop(candidate_store: CandidateStore, notifier: Telegr
             if item is None:
                 await asyncio.sleep(1.0)
                 continue
-            delivered = await notifier.send(item["payload"])
+            delivered = await notifier.send(item["payload"], signal_id=item.get("signal_id"))
             if delivered:
                 await candidate_store.finish_outbox(item["id"])
                 state["signals_sent"] += 1
@@ -265,6 +324,7 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
 
 
 async def scanner_session() -> None:
+    global journal_service
     session_started_ms = int(time.time() * 1000)
     state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
@@ -273,6 +333,12 @@ async def scanner_session() -> None:
     # Connect persistence before allocating network clients so a missing or
     # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
     candidate_store = await CandidateStore.connect(settings.database_url)
+    try:
+        journal_service = SignalJournal(candidate_store)
+        await journal_service.initialize()
+    except BaseException:
+        await candidate_store.close()
+        raise
     state['database_connected'] = True
     try:
         state["performance_summary"] = await candidate_store.performance_summary()
@@ -352,7 +418,7 @@ async def scanner_session() -> None:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0, stale_candle_failures=0, stale_candle_sample=None)
             cycle_now_ms = int(time.time() * 1000)
-            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store) for symbol, pair in valid), return_exceptions=True)
+            results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store, journal_service) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
             state['scans'] += 1
             state['last_scan'] = datetime.now(timezone.utc).isoformat()
@@ -445,6 +511,7 @@ async def scanner_session() -> None:
                 pass
         await telegram_client.aclose()
         await candidate_store.close()
+        journal_service = None
         await feed.close()
 
 async def scanner() -> None:
@@ -554,7 +621,140 @@ async def performance():
     }
 
 
+@app.get("/journal", response_class=Response)
+async def journal_dashboard() -> Response:
+    return Response(content=DASHBOARD_HTML, media_type="text/html")
+
+
+def require_journal_token(request: Request) -> None:
+    expected = os.getenv("JOURNAL_API_TOKEN", "").strip()
+    supplied = request.headers.get("x-journal-token", "")
+    authorization = request.headers.get("authorization", "")
+    if not supplied and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="JOURNAL_API_TOKEN is not configured")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid journal token")
+
+
+def get_journal() -> SignalJournal:
+    if journal_service is None:
+        raise HTTPException(status_code=503, detail="Signal journal is starting or temporarily unavailable")
+    return journal_service
+
+
+@app.get("/journal/api/entries")
+async def journal_entries(request: Request, limit: int = 100):
+    require_journal_token(request)
+    return await get_journal().entries(limit)
+
+
+@app.get("/journal/api/candidates")
+async def journal_candidates(request: Request, limit: int = 100):
+    require_journal_token(request)
+    return await get_journal().candidates(limit)
+
+
+@app.post("/journal/api/feedback")
+async def journal_feedback(payload: FeedbackRequest, request: Request):
+    require_journal_token(request)
+    try:
+        feedback_id = await get_journal().add_feedback(payload.signal_id, payload.category, payload.comment, "dashboard")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"saved": True, "feedback_id": feedback_id}
+
+
+@app.post("/journal/api/candidate-feedback")
+async def journal_candidate_feedback(payload: CandidateFeedbackRequest, request: Request):
+    require_journal_token(request)
+    try:
+        feedback_id = await get_journal().add_candidate_feedback(
+            payload.candidate_id, payload.category, payload.comment, "dashboard"
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"saved": True, "feedback_id": feedback_id}
+
+
+@app.post("/journal/api/observation")
+async def journal_manual_observation(payload: ManualObservationRequest, request: Request):
+    require_journal_token(request)
+    try:
+        candidate_id = await get_journal().record_manual_opportunity(
+            payload.symbol, payload.direction, payload.candle_open_ms,
+            payload.entry, payload.stop, payload.target, payload.comment
+        )
+        await get_journal().add_candidate_feedback(candidate_id, "MISSED_OPPORTUNITY", payload.comment, "dashboard")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"saved": True, "candidate_id": candidate_id}
+
+
+@app.get("/journal/export")
+async def journal_export(request: Request):
+    require_journal_token(request)
+    journal = get_journal()
+    payload = {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "signals": await journal.entries(5000),
+        "rejected_candidates": await journal.candidates(5000),
+        "learning": await journal.learning_summary(),
+    }
+    return Response(
+        content=json.dumps(payload, default=str, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="cryptobyance-journal.json"'},
+    )
+
+
+@app.get("/learning")
+async def learning_summary(request: Request):
+    require_journal_token(request)
+    return await get_journal().learning_summary()
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    expected = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    supplied = request.headers.get("x-telegram-bot-api-secret-token", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="TELEGRAM_WEBHOOK_SECRET is not configured")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
+    update = await request.json()
+    callback = update.get("callback_query") if isinstance(update, dict) else None
+    if not isinstance(callback, dict):
+        return {"ok": True, "ignored": True}
+    parts = str(callback.get("data", "")).split("|")
+    if len(parts) != 3 or parts[0] != "jfb":
+        return {"ok": True, "ignored": True}
+    try:
+        signal_id = int(parts[1])
+        feedback_id = await get_journal().add_telegram_feedback(signal_id, parts[2])
+    except (ValueError, LookupError):
+        feedback_id = None
+    token = settings.telegram_bot_token
+    callback_id = callback.get("id")
+    if token and callback_id:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                    json={"callback_query_id": callback_id, "text": "Feedback saved" if feedback_id else "Feedback not saved"},
+                )
+        except Exception:
+            log.warning("Telegram callback acknowledgement failed")
+    return {"ok": True, "feedback_id": feedback_id}
+
+
 @app.get("/ping", response_class=Response)
 async def ping() -> Response:
     """Return an empty 204 response; do not perform scanner or external work."""
     return Response(status_code=204)
+

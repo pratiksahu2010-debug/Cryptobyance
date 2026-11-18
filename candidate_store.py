@@ -452,7 +452,7 @@ class CandidateStore:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
-                    """SELECT id,payload::text AS payload,attempts FROM telegram_outbox
+                    """SELECT id,signal_id,payload::text AS payload,attempts FROM telegram_outbox
                        WHERE ((status='PENDING' AND next_attempt_at<=NOW())
                            OR (status='DELIVERING' AND lease_until<NOW()))
                        ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1""")
@@ -461,8 +461,8 @@ class CandidateStore:
                 await conn.execute(
                     """UPDATE telegram_outbox SET status='DELIVERING',attempts=attempts+1,
                        lease_until=NOW()+INTERVAL '90 seconds' WHERE id=$1""", row["id"])
-                return {"id":int(row["id"]),"payload":json.loads(row["payload"]),
-                        "attempts":int(row["attempts"])+1}
+                return {"id":int(row["id"]),"signal_id":int(row["signal_id"]),
+                        "payload":json.loads(row["payload"]),"attempts":int(row["attempts"])+1}
 
     async def finish_outbox(self, outbox_id: int):
         async with self.pool.acquire() as conn:
