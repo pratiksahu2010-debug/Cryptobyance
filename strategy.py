@@ -248,7 +248,9 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
     entry = float(c.close)
     atr_value = float(c.atr)
-    swing = df5.iloc[-(settings.swing_lookback_bars + 1):-1]
+    # Use the validated indicator frame so callers that inject precomputed
+    # indicator rows (e.g. deterministic replay/tests) keep price fields aligned.
+    swing = a.iloc[-(settings.swing_lookback_bars + 1):-1]
     if len(swing) < settings.swing_lookback_bars:
         return None
     stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
