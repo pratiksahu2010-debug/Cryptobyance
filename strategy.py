@@ -219,13 +219,11 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     long_ok = (
         float(c.ema9) > float(c.ema21)
         and float(c.close) > float(c.vwap)
-        and float(c.rsi) > 50.0
         and float(c.adx) >= ADX_MIN
     )
     short_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
-        and float(c.rsi) < 50.0
         and float(c.adx) >= ADX_MIN
     )
     if not (long_ok or short_ok):
