@@ -11,8 +11,13 @@ LONG requires all conditions on the latest completed 5m candle:
 - 5m close above UTC-day cumulative VWAP.
 - 5m RSI(14) above 50.
 - 5m ADX(14) at or above `ADX_MIN` (default 20), with +DI greater than -DI.
+- EMA(9) and EMA(21) both rising over the preceding three-bar window.
+- Current EMA alignment age is no more than three completed 5m candles.
+- The close is no more than 1 ATR above VWAP, to avoid chasing an extended move.
 
-SHORT is the exact inverse: EMA(9) < EMA(21), close below VWAP, RSI below 50, ADX at/above the threshold, and -DI greater than +DI. ADX below threshold rejects immediately; the engine never waits for ADX to rise on later candles. A mandatory 15m trend veto permits LONG only when 15m EMA(9) > EMA(21), and SHORT only when 15m EMA(9) < EMA(21); missing, stale, invalid, insufficient or neutral 15m data blocks signals. Both timeframes use completed candles only. No ORB, breakout, momentum, or secondary signal module is included.
+SHORT is the exact inverse: EMA(9) < EMA(21), close below VWAP, RSI below 50, ADX at/above the threshold, -DI greater than +DI, both EMAs falling over the preceding three-bar window, alignment age no more than three candles, and the close no more than 1 ATR below VWAP. ADX below threshold rejects immediately; the engine never waits for ADX to rise on later candles. A mandatory 15m trend veto permits LONG only when 15m EMA(9) > EMA(21), and SHORT only when 15m EMA(9) < EMA(21); missing, stale, invalid, insufficient or neutral 15m data blocks signals. Both timeframes use completed candles only. These are global rules applied equally to every configured symbol; there are no symbol-specific thresholds or exceptions. No ORB, breakout, momentum, or secondary signal module is included.
+
+The new early-entry and extension guards are conservative strategy changes, not a proven profitability guarantee. They must be forward-observed and independently backtested before any claim that expectancy improved.
 
 ATR(14) is used only to calculate the informational stop distance (1.5 ATR by default); it is not an entry filter. Target is 1.5R by default. These are planning levels, not exchange orders or guaranteed fills.
 

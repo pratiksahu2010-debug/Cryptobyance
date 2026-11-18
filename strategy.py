@@ -19,6 +19,10 @@ ADX_PERIOD = settings.adx_period
 ATR_STOP_MULT = settings.atr_stop_multiplier
 MIN_RR = settings.min_risk_reward
 
+# Global entry-quality guards: avoid chasing an established/extended move.
+MAX_EMA_ALIGNMENT_AGE_BARS = 3
+MAX_ENTRY_EXTENSION_ATR = 1.0
+
 
 def candles_to_frame(raw: list) -> pd.DataFrame:
     # CoinDCX futures REST and socket candles are normalized to six OHLCV fields.
@@ -159,13 +163,37 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
 
-    # The requested rule is EMA alignment, not a one-candle crossover.
+    # The base rule remains EMA alignment, not a mandatory fresh crossover.
     long_ok = (c.ema9 > c.ema21 and c.close > c.vwap and c.rsi > 50
                and c.adx >= ADX_MIN and c.plus_di > c.minus_di)
     short_ok = (c.ema9 < c.ema21 and c.close < c.vwap and c.rsi < 50
                 and c.adx >= ADX_MIN and c.minus_di > c.plus_di)
     if not (long_ok or short_ok):
         return None
+    side = "LONG" if long_ok else "SHORT"
+
+    # Global anti-late-entry checks. EMA alignment alone can remain true for
+    # many candles, so require a recent alignment and rising/falling fast+slow
+    # EMA structure. Also reject entries already stretched more than 1 ATR
+    # from VWAP; these checks apply identically to every symbol and direction.
+    alignment_age = 0
+    for row in a.tail(6).iloc[::-1].itertuples(index=False):
+        aligned = row.ema9 > row.ema21 if side == "LONG" else row.ema9 < row.ema21
+        if not bool(aligned):
+            break
+        alignment_age += 1
+    prev5 = a.iloc[-4]
+    ema9_slope = float(c.ema9) - float(prev5.ema9)
+    ema21_slope = float(c.ema21) - float(prev5.ema21)
+    vwap_extension_atr = (float(c.close) - float(c.vwap)) / float(c.atr)
+    if alignment_age > MAX_EMA_ALIGNMENT_AGE_BARS:
+        return None
+    if side == "LONG":
+        if ema9_slope <= 0 or ema21_slope <= 0 or vwap_extension_atr > MAX_ENTRY_EXTENSION_ATR:
+            return None
+    else:
+        if ema9_slope >= 0 or ema21_slope >= 0 or vwap_extension_atr < -MAX_ENTRY_EXTENSION_ATR:
+            return None
 
     # 15m is a hard direction veto. Missing, invalid, or neutral context blocks.
     context_frame = indicators(df15.copy())
@@ -182,7 +210,6 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     else:
         return None
 
-    side = "LONG" if long_ok else "SHORT"
     if (side == "LONG" and context != "15m bullish") or (side == "SHORT" and context != "15m bearish"):
         return None
 
@@ -193,14 +220,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
     # Research telemetry only: these measurements are stored with each signal
     # but never alter eligibility, sizing, stop placement, or Telegram delivery.
-    prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
-    alignment_age = 0
-    for row in a.tail(6).iloc[::-1].itertuples(index=False):
-        aligned = row.ema9 > row.ema21 if side == "LONG" else row.ema9 < row.ema21
-        if not bool(aligned):
-            break
-        alignment_age += 1
     diagnostics = {
         "version": 1,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
