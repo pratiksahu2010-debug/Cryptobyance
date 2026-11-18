@@ -308,6 +308,11 @@ class CandidateStore:
                             "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
                             candidate_id)
                     return False
+                existing = await conn.fetchrow(
+                    "SELECT id FROM signal_history WHERE idempotency_key=$1", key
+                )
+                if existing is not None:
+                    return False
                 lifecycle_recorded = await persist_signal_lifecycle(
                     conn, strategy_key=strategy_key, symbol=symbol, direction=direction,
                     candle_open_ms=candle_ms, cooldown_candles=cooldown_candles,
