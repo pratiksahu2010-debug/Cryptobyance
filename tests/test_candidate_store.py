@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from candidate_store import CandidateStore, DDL
+from state_machine import STATE_DDL
 
 
 class _Context:
@@ -61,6 +62,9 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("telegram_outbox", executed)
         self.assertIn("TRIGGERED", executed)
         self.assertIn("signal_cooldowns", executed)
+        self.assertIn("strategy_state_events", executed)
+        self.assertIn("strategy_signal_states", executed)
+        self.assertTrue(any("strategy_signal_states" in query for query, _ in conn.fetchrow_calls))
 
     async def test_duplicate_signal_is_not_queued_twice(self):
         conn = FakeConnection(fetchrows=[None, {"id": 72}])
@@ -262,6 +266,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("best_favorable_candle_open_ms", DDL)
         self.assertIn("worst_adverse_candle_open_ms", DDL)
         self.assertIn("ON DELETE RESTRICT", DDL)
+        self.assertIn("strategy_signal_states", STATE_DDL)
+        self.assertIn("strategy_state_events", STATE_DDL)
 
 
 if __name__ == "__main__":
