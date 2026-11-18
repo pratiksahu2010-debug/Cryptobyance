@@ -209,7 +209,16 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
             if candidate_store is None:
                 raise RuntimeError('persistent candidate store is required for per-symbol state')
-            state_inputs = evaluate_state_inputs(df5, df15)
+            persisted_states = await candidate_store.load_symbol_states(
+                "coindcx_per_symbol_v1", display_symbol
+            )
+            armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
+            state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+            if state_inputs is None:
+                log.warning("state scan deferred because indicator context is incomplete symbol=%s", display_symbol)
+                last_seen_candle[display_symbol] = closed_ts
+                state['symbols_ok'] += 1
+                return
             triggered_side = None
             for side in ("LONG", "SHORT"):
                 item = state_inputs[side]
