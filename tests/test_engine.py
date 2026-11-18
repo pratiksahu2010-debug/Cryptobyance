@@ -757,8 +757,7 @@ class EngineTests(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         diagnostics = signal["diagnostics"]
-        self.assertEqual(diagnostics["version"], 1)
-        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 3)
+        self.assertEqual(diagnostics["version"], 2)
         self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
         self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
         self.assertAlmostEqual(diagnostics["di_spread"], 20.0)
@@ -777,7 +776,7 @@ class EngineTests(unittest.TestCase):
         self.assertLess(diagnostics["ema_spread_atr"], 0)
         self.assertLess(diagnostics["price_vwap_distance_atr"], 0)
         self.assertLess(diagnostics["di_spread"], 0)
-        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 3)
+        self.assertIn("ema9_slope_atr_3bars", diagnostics)
 
     def test_ema_alignment_with_all_gates_and_bullish_15m_emits_long(self):
         from unittest.mock import patch
@@ -844,28 +843,28 @@ class EngineTests(unittest.TestCase):
         with patch("strategy.indicators", side_effect=[five, fifteen]):
             self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
 
-    def test_global_gate_rejects_old_ema_alignment(self):
+    def test_simple_strategy_allows_older_ema_alignment(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         five.loc[five.index[-4], "ema9"] = 100.1
         five.loc[five.index[-4], "ema21"] = 100.0
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+            self.assertEqual(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))["side"], "LONG")
 
-    def test_global_gate_rejects_flat_or_counter_directional_ema_slopes(self):
+    def test_simple_strategy_does_not_require_ema_slope_gate(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         five.loc[five.index[-4], "ema9"] = five.iloc[-1].ema9
         five.loc[five.index[-4], "ema21"] = five.iloc[-1].ema9 + 0.1
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+            self.assertEqual(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))["side"], "LONG")
 
-    def test_global_gate_rejects_entry_extended_more_than_one_atr_from_vwap(self):
+    def test_simple_strategy_does_not_add_vwap_extension_gate(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         five.loc[five.index[-1], "close"] = 104.1
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+            self.assertEqual(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))["side"], "LONG")
 
     def test_global_early_entry_gates_apply_to_short_side(self):
         from unittest.mock import patch
