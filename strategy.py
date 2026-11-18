@@ -288,8 +288,22 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
 
 def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Strict same-candle 5m signal evaluator; never queues delayed candidates."""
-    return evaluate_setup(df5, df15)
+    """Backward-compatible standalone evaluator; the scanner uses the staged state machine.
+
+    Keep the pre-v2 public helper's ATR stop and configured risk/reward contract
+    for existing integrations. Production alerts are built by evaluate_setup
+    only after a persisted ARMED RSI trigger and use swing-based TP1/TP2 levels.
+    """
+    signal = evaluate_setup(df5, df15)
+    if signal is None:
+        return None
+    risk = float(signal["atr"]) * ATR_STOP_MULT
+    entry = float(signal["entry"])
+    side = signal["side"]
+    signal["stop"] = entry - risk if side == "LONG" else entry + risk
+    signal["target"] = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
+    signal["rr"] = MIN_RR
+    return signal
 
 
 def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict:
@@ -308,8 +322,9 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
     c, p = a.iloc[-1], a.iloc[-2]
     required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di)
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
-        return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
-                "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
+        # Missing/invalid indicator context is not a market invalidation.
+        # Defer this candle without mutating an existing ARMED setup.
+        return None
     context_ema_fast = df15["close"].ewm(span=EMA_FAST, adjust=False).mean().iloc[-1]
     context_ema_slow = df15["close"].ewm(span=EMA_SLOW, adjust=False).mean().iloc[-1]
     context_long = float(context_ema_fast) > float(context_ema_slow)
