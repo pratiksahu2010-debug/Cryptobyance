@@ -129,7 +129,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SET status='EXPIRED'", sql)
         self.assertNotIn("DELETE", sql.upper())
 
-    async def test_signal_enqueue_creates_outcome_tracking_row(self):
+    async def test_queued_signal_does_not_create_outcome_before_delivery(self):
         conn = FakeConnection(fetchrows=[None, {"id": 101}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
@@ -137,8 +137,17 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
                   "diagnostics": {"version": 1, "adx14": 24.0}}
         self.assertTrue(await store.enqueue_signal(signal, None, 3))
         sql = "\\n".join(call.args[0] for call in conn.execute.await_args_list)
+        self.assertNotIn("INSERT INTO signal_outcomes", sql)
+
+    async def test_outcome_row_is_created_atomically_after_confirmed_delivery(self):
+        conn = FakeConnection(fetchrows=[{"signal_id": 101}])
+        store = CandidateStore(FakePool(conn))
+        await store.finish_outbox(12)
+        sql = "\\n".join(call.args[0] for call in conn.execute.await_args_list)
+        self.assertIn("UPDATE signal_history SET status='SENT'", sql)
         self.assertIn("INSERT INTO signal_outcomes", sql)
-        self.assertIn("last_observed_candle_open_ms", sql)
+        self.assertIn("FROM signal_history WHERE id=$1", sql)
+        self.assertIn("ON CONFLICT(signal_id) DO NOTHING", sql)
 
     async def test_outcome_tracker_records_target_and_mfe_mae_in_r(self):
         conn = FakeConnection()
