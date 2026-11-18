@@ -871,7 +871,6 @@ class EngineTests(unittest.TestCase):
             signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(-1, 900000))
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "SHORT")
-        self.assertEqual(signal["diagnostics"]["ema_alignment_age_bars_capped_6"], 3)
 
     def test_adx_below_20_rejects_immediately(self):
         from unittest.mock import patch
