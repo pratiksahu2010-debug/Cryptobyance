@@ -94,6 +94,50 @@ class TestRestConfirmedCandles(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_second_reconnect_queues_a_fresh_backfill_after_inflight_repair(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        feed.sio.emit = AsyncMock()
+
+        async def run():
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+            calls = 0
+
+            async def controlled_backfill():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    first_started.set()
+                    await release_first.wait()
+
+            feed._backfill_after_reconnect = controlled_backfill
+
+            # Initial connect performs the scanner's normal bootstrap only.
+            await feed._on_connect()
+
+            # First reconnect starts a backfill that remains in flight.
+            await feed._on_disconnect()
+            await feed._on_connect()
+            first_task = feed._reconnect_backfill_task
+            await first_started.wait()
+
+            # A second outage/reconnect must queue another repair, not reuse
+            # the first repair as if it covered the newer disconnection.
+            await feed._on_disconnect()
+            await feed._on_connect()
+            second_task = feed._reconnect_backfill_task
+            self.assertIsNot(second_task, first_task)
+            await asyncio.sleep(0)
+            self.assertEqual(calls, 1)
+            self.assertFalse(second_task.done())
+
+            release_first.set()
+            await second_task
+            self.assertEqual(calls, 2)
+            await feed.close()
+
+        asyncio.run(run())
+
     def test_reconnect_backfill_failure_for_one_pair_does_not_abort_others(self):
         feed = CoinDCXFuturesFeed(["B-BTC_USDT", "B-ETH_USDT"])
         feed.sio.emit = AsyncMock()
