@@ -144,10 +144,12 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     return x
 
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Evaluate aligned 5m entry conditions with a mandatory 15m EMA trend veto.
+    """Simple completed-5m EMA/VWAP/RSI/ADX strategy with a hard 15m EMA veto.
 
-    EMA alignment (not a fresh crossover) is the entry rule on both timeframes.
-    A signal is impossible without at least 35 valid 15m candles.
+    LONG: 5m EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 20.
+    SHORT: exact inverse. 15m EMA9/EMA21 must agree with the signal direction.
+    ATR14 defines the protective stop distance and configured R-multiple target.
+    No extra slope, alignment-age, DI, or VWAP-extension entry gates are applied.
     """
     if (not has_contiguous_tail(df5, "5m", 60)
             or df15 is None
@@ -158,80 +160,58 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     if len(a) < 35:
         return None
     c = a.iloc[-1]
-    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr,
-              c.plus_di, c.minus_di]
+    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
+    if float(c.atr) <= 0:
+        return None
 
-    # The base rule remains EMA alignment, not a mandatory fresh crossover.
-    long_ok = (c.ema9 > c.ema21 and c.close > c.vwap and c.rsi > 50
-               and c.adx >= ADX_MIN and c.plus_di > c.minus_di)
-    short_ok = (c.ema9 < c.ema21 and c.close < c.vwap and c.rsi < 50
-                and c.adx >= ADX_MIN and c.minus_di > c.plus_di)
+    long_ok = (
+        float(c.ema9) > float(c.ema21)
+        and float(c.close) > float(c.vwap)
+        and float(c.rsi) > 50.0
+        and float(c.adx) >= ADX_MIN
+    )
+    short_ok = (
+        float(c.ema9) < float(c.ema21)
+        and float(c.close) < float(c.vwap)
+        and float(c.rsi) < 50.0
+        and float(c.adx) >= ADX_MIN
+    )
     if not (long_ok or short_ok):
         return None
     side = "LONG" if long_ok else "SHORT"
 
-    # Global anti-late-entry checks. EMA alignment alone can remain true for
-    # many candles, so require a recent alignment and rising/falling fast+slow
-    # EMA structure. Also reject entries already stretched more than 1 ATR
-    # from VWAP; these checks apply identically to every symbol and direction.
-    alignment_age = 0
-    for row in a.tail(6).iloc[::-1].itertuples(index=False):
-        aligned = row.ema9 > row.ema21 if side == "LONG" else row.ema9 < row.ema21
-        if not bool(aligned):
-            break
-        alignment_age += 1
-    prev5 = a.iloc[-4]
-    ema9_slope = float(c.ema9) - float(prev5.ema9)
-    ema21_slope = float(c.ema21) - float(prev5.ema21)
-    vwap_extension_atr = (float(c.close) - float(c.vwap)) / float(c.atr)
-    if alignment_age > MAX_EMA_ALIGNMENT_AGE_BARS:
-        return None
-    if side == "LONG":
-        if ema9_slope <= 0 or ema21_slope <= 0 or vwap_extension_atr > MAX_ENTRY_EXTENSION_ATR:
-            return None
-    else:
-        if ema9_slope >= 0 or ema21_slope >= 0 or vwap_extension_atr < -MAX_ENTRY_EXTENSION_ATR:
-            return None
-
-    # 15m is a hard direction veto. Missing, invalid, or neutral context blocks.
+    # Mandatory 15m trend veto: no signal against the higher-timeframe EMA bias.
     context_frame = indicators(df15.copy())
     if len(context_frame) < 35:
         return None
     context_row = context_frame.iloc[-1]
-    context_values = [context_row.ema9, context_row.ema21]
-    if not all(pd.notna(v) and np.isfinite(float(v)) for v in context_values):
+    if not all(pd.notna(v) and np.isfinite(float(v))
+               for v in (context_row.ema9, context_row.ema21)):
         return None
-    if context_row.ema9 > context_row.ema21:
+    if float(context_row.ema9) > float(context_row.ema21):
         context = "15m bullish"
-    elif context_row.ema9 < context_row.ema21:
+    elif float(context_row.ema9) < float(context_row.ema21):
         context = "15m bearish"
     else:
         return None
-
     if (side == "LONG" and context != "15m bullish") or (side == "SHORT" and context != "15m bearish"):
         return None
 
-    entry, atr_value = float(c.close), float(c.atr)
-    if not np.isfinite(atr_value) or atr_value <= 0:
-        return None
+    entry = float(c.close)
+    atr_value = float(c.atr)
     risk = atr_value * ATR_STOP_MULT
-
-    # Research telemetry only: these measurements are stored with each signal
-    # but never alter eligibility, sizing, stop placement, or Telegram delivery.
+    prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
     diagnostics = {
-        "version": 1,
+        "version": 2,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
         "ema9_slope_atr_3bars": (float(c.ema9) - float(prev5.ema9)) / atr_value,
         "ema21_slope_atr_3bars": (float(c.ema21) - float(prev5.ema21)) / atr_value,
-        "ema_alignment_age_bars_capped_6": alignment_age,
-        "price_vwap_distance_atr": (float(c.close) - float(c.vwap)) / atr_value,
-        "vwap_slope_atr_3bars": (float(c.vwap) - float(prev5.vwap)) / atr_value,
+        "price_vwap_distance_atr": (entry - float(c.vwap)) / atr_value,
         "rsi14": float(c.rsi),
         "adx14": float(c.adx),
-        "di_spread": float(c.plus_di) - float(c.minus_di),
         "atr_pct_of_price": 100.0 * atr_value / entry,
         "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
         "context_ema9_slope_pct_3bars": 100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9),
@@ -244,7 +224,8 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "stop": entry - risk if side == "LONG" else entry + risk,
         "target": entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR,
         "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
-        "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
+        "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
+        "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
         "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": context, "diagnostics": diagnostics,
