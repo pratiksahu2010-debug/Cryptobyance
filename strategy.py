@@ -282,3 +282,42 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Strict same-candle 5m signal evaluator; never queues delayed candidates."""
     return evaluate_setup(df5, df15)
+
+
+def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict:
+    """Return per-side setup, invalidation and RSI-cross inputs from closed bars.
+
+    The caller persists state separately for LONG and SHORT. 15m EMA direction
+    remains the existing higher-timeframe veto; it is not a substitute for the
+    explicit 5m DI/ADX setup conditions.
+    """
+    if not has_contiguous_tail(df5, "5m", 60) or df15 is None or not has_contiguous_tail(df15, "15m", 35):
+        return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
+                "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
+    a = indicators(df5.copy())
+    if len(a) < 35:
+        return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
+                "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
+    c, p = a.iloc[-1], a.iloc[-2]
+    required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di, c.rsi, p.rsi)
+    if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
+        return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
+                "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
+    ctx = indicators(df15.copy()).iloc[-1]
+    context_long = pd.notna(ctx.ema9) and pd.notna(ctx.ema21) and float(ctx.ema9) > float(ctx.ema21)
+    context_short = pd.notna(ctx.ema9) and pd.notna(ctx.ema21) and float(ctx.ema9) < float(ctx.ema21)
+    common = float(c.adx) >= ADX_MIN
+    long_setup = common and float(c.plus_di) > float(c.minus_di) and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap) and context_long
+    short_setup = common and float(c.minus_di) > float(c.plus_di) and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap) and context_short
+    long_invalid = (float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
+                    or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di))
+    short_invalid = (float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
+                     or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di))
+    long_trigger = float(p.rsi) < 52.0 and 52.0 <= float(c.rsi) <= 70.0
+    short_trigger = float(p.rsi) > 42.0 and 30.0 <= float(c.rsi) <= 42.0
+    return {
+        "LONG": {"setup_valid": bool(long_setup), "invalidation": bool(long_invalid),
+                 "trigger": bool(long_trigger)},
+        "SHORT": {"setup_valid": bool(short_setup), "invalidation": bool(short_invalid),
+                  "trigger": bool(short_trigger)},
+    }
