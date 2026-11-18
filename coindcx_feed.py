@@ -235,6 +235,13 @@ class CoinDCXFuturesFeed:
         Never let a provisional last-bar value become an actionable completed
         candle without a REST confirmation.
         """
+        # A reconnect schedules a full history repair asynchronously. Do not
+        # let the scanner consume the cache (or its prior confirmation marker)
+        # until that repair has finished; otherwise a scan can race the backfill.
+        reconnect_task = self._reconnect_backfill_task
+        if reconnect_task is not None and not reconnect_task.done():
+            await reconnect_task
+
         now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         interval = 300_000
         expected_open = (now_ms // interval) * interval - interval
