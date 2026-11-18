@@ -88,5 +88,32 @@ class ScannerFreshnessTests(unittest.TestCase):
         evaluate.assert_called_once()
 
 
+    def test_cycle_start_clock_cannot_make_a_stale_candle_look_fresh(self):
+        rows = candle_rows()
+        cycle_now_ms = rows[-1][0] + INTERVAL + 20_000
+        actual_now_ms = rows[-1][0] + INTERVAL + 120_000
+
+        class FakeFeed:
+            def __init__(self):
+                self.refresh_limits = []
+
+            def rows(self, pair):
+                return rows
+
+            async def fetch_history(self, pair, limit):
+                self.refresh_limits.append(limit)
+
+        feed = FakeFeed()
+        with patch("main.time.time", return_value=actual_now_ms / 1000):
+            with patch("main.evaluate_setup") as evaluate:
+                asyncio.run(scan_symbol(
+                    feed, object(), asyncio.Semaphore(1), "CYCLE_STALE/USDT",
+                    "B-CYCLE_STALE_USDT", cycle_now_ms,
+                ))
+
+        self.assertEqual(feed.refresh_limits, [6])
+        evaluate.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
