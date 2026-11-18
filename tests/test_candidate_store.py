@@ -203,8 +203,10 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
             {"timestamp": 2_400_000, "high": 101.0, "low": 99.0},
         ])
         args = conn.execute.await_args.args
-        self.assertEqual(args[2], "OPEN")
+        self.assertEqual(args[2], "AMBIGUOUS")
         self.assertTrue(args[10])
+        self.assertEqual(args[7], 2_400_000)
+        self.assertIsNone(args[8])
 
     async def test_schema_has_durable_signal_outbox_cooldown_and_runtime(self):
         for table in ("signal_history", "signal_outcomes", "telegram_outbox", "signal_cooldowns", "scanner_runtime", "schema_migrations"):
