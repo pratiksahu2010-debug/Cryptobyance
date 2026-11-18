@@ -2,23 +2,29 @@
 
 A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX USDT-margined perpetual futures. It sends Telegram alerts and never places, modifies, or cancels orders.
 
-## Strategy — one simple LONG/SHORT engine
+## Strategy — per-symbol staged LONG/SHORT state machine
 
-**5-minute completed-candle entry with a mandatory 15-minute EMA trend veto.**
+**5-minute completed-candle processing.** Every symbol has independent durable LONG and SHORT state rows in PostgreSQL. The lifecycle is `IDLE → ARMED → TRIGGERED → COOLDOWN → IDLE`; a setup candle only arms the direction and can never alert on that same candle.
 
-LONG requires all four 5m conditions on the latest completed candle:
-- EMA(9) > EMA(21).
-- Close above session VWAP (VWAP resets at the UTC day boundary).
-- RSI(14) > 50.
-- ADX(14) >= 20 (configurable with `ADX_MIN`; default 20).
+**IDLE setup (all conditions on the latest closed 5m bar):**
+- LONG: ADX(14) >= `ADX_MIN` (default 20), +DI > -DI, EMA(9) > EMA(21), and close above session VWAP.
+- SHORT: ADX(14) >= `ADX_MIN`, -DI > +DI, EMA(9) < EMA(21), and close below session VWAP.
+- The existing 15m EMA(9)/EMA(21) direction veto is retained: bullish for LONG and bearish for SHORT.
+- IDLE checks do not calculate RSI. RSI is calculated only for a direction already in ARMED state.
 
-SHORT is the exact inverse: EMA(9) < EMA(21), close below VWAP, RSI(14) < 50, and ADX(14) >= 20. No additional +DI/-DI, EMA-slope, fresh-crossover, EMA-alignment-age, or VWAP-extension gates are used.
+**ARMED trigger (a later closed 5m bar):**
+- LONG: RSI crosses upward through `RSI_LONG_MIN` (default 52) and closes inside `RSI_LONG_MIN..RSI_LONG_MAX` (default 52..70).
+- SHORT: RSI crosses downward through `RSI_SHORT_MAX` (default 42) and closes inside `RSI_SHORT_MIN..RSI_SHORT_MAX` (default 30..42).
+- A trigger is accepted only while the setup remains valid. Any EMA9/EMA21 cross against the direction, close crossing VWAP against the direction, ADX below minimum, or DI cross against the direction invalidates an ARMED setup.
 
-**15-minute veto:** LONG is allowed only when 15m EMA(9) > EMA(21); SHORT only when 15m EMA(9) < EMA(21). A neutral, missing, stale, invalid, or insufficient 15m context blocks the signal. Both timeframes use completed candles only; at least 35 contiguous 15m bars and 60 contiguous 5m bars are required.
+**Cooldown and re-arming:** `SIGNAL_COOLDOWN_CANDLES` defaults to 4 (20 minutes on 5m). After the bar count expires, the direction remains in COOLDOWN-WAIT until its setup has invalidated at least once during or after cooldown. It then returns to IDLE; a later qualifying candle must arm it again before another alert is possible. State and the processed-candle checkpoint persist across restarts. Reprocessing the same/older candle is a no-op. Signal history, state transition, cooldown and Telegram outbox are committed transactionally.
 
-**ATR risk levels:** ATR(14) on the 5m entry timeframe sets stop distance (`ATR_STOP_MULTIPLIER`, default 1.5 ATR). Target is the configured risk multiple (`MIN_RISK_REWARD`, default 1.5R). ATR is used for risk levels, not as an extra directional entry filter. These are informational planning levels, not exchange orders or guaranteed fills.
+**15-minute veto:** LONG is allowed only when 15m EMA(9) > EMA(21); SHORT only when 15m EMA(9) < EMA(21). Missing, stale, invalid, or insufficient 15m context defers state processing rather than firing on stale data. At least 35 contiguous 15m bars and 60 contiguous 5m bars are required.
 
-This is intentionally a small, explainable ruleset. It can produce more signals than the previous version because restrictive slope, age, DI, and extension gates have been removed. Validate it with chronological backtests and forward observation; no indicator combination guarantees profitability.
+**ATR risk levels (unchanged):** ATR(14) on the 5m entry timeframe sets stop distance (`ATR_STOP_MULTIPLIER`, default 1.5 ATR). Target is the configured risk multiple (`MIN_RISK_REWARD`, default 1.5R). These are informational planning levels, not exchange orders or guaranteed fills.
+
+All setup thresholds, RSI bands and cooldown length are configurable through environment settings loaded by `config.py`. The bot remains signal-only and no indicator combination guarantees profitability; validate with chronological backtests and forward observation before risking capital.
+
 ## Universe
 
 The bot retains the original 60 configured symbols:
