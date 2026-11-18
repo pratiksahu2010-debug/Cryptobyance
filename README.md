@@ -223,7 +223,7 @@ The parser extracts a reviewable category, direction, symbol, time window, indic
 - `POST /journal/api/training-instructions/{id}/review` with `{"decision":"APPROVED_RESEARCH","reviewer_note":"..." }` or `{"decision":"REJECTED","reviewer_note":"..." }`.
 - `GET /learning/daily-review` for the rolling 24-hour signal, feedback, missed-opportunity and instruction summary.
 
-**Approval means approved for offline research only.** It does not alter the live strategy, thresholds, symbols, stops, targets or Telegram signals. The parser is intentionally conservative: it extracts what it recognizes and preserves the raw sentence; it does not pretend to understand unsupported conditions. Always inspect the parsed instruction before approving it.
+**Approval means approved for offline research only.** It does not alter the live strategy, thresholds, symbols, stops, targets or Telegram signals. The parser is intentionally conservative: it extracts what it recognizes and preserves the raw sentence; it does not pretend to understand unsupported conditions. Always inspect the parsed instruction before approving it. The service also saves a rolling 24-hour research review at startup and every 24 hours while running; reviews are retained in PostgreSQL `training_daily_reviews`. A Render Free sleep/restart pauses the timer, so a fresh review is produced when the service starts again.
 
 ### Learning safeguards
 
