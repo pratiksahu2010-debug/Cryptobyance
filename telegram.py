@@ -67,9 +67,15 @@ class TelegramNotifier:
         ema9 = signal.get("ema9", snapshot.get("ema9"))
         ema21 = signal.get("ema21", snapshot.get("ema21"))
         vwap = signal.get("vwap", snapshot.get("vwap"))
-        ema9_text = fmt_price(float(ema9)) if ema9 is not None else "N/A"
-        ema21_text = fmt_price(float(ema21)) if ema21 is not None else "N/A"
-        vwap_text = fmt_price(float(vwap)) if vwap is not None else "N/A"
+        ema_line = (
+            f"<b>EMA 9/21: <code>{fmt_price(float(ema9))}</code> / <code>{fmt_price(float(ema21))}</code></b>\\n"
+            if ema9 is not None and ema21 is not None
+            else "EMA 9/21: aligned with signal direction\\n"
+        )
+        vwap_line = (
+            f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\\n"
+            if vwap is not None else "VWAP: correct side\\n"
+        )
         target1 = signal.get("target1", signal.get("target"))
         target2 = signal.get("target2", signal.get("target"))
         signal_ref = f"\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
