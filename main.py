@@ -90,6 +90,15 @@ class CandidateFeedbackRequest(BaseModel):
     comment: str = ""
 
 
+class TrainingInstructionRequest(BaseModel):
+    instruction: str
+
+
+class TrainingInstructionReviewRequest(BaseModel):
+    decision: str
+    reviewer_note: str = ""
+
+
 class ManualObservationRequest(BaseModel):
     symbol: str
     direction: str
@@ -694,6 +703,40 @@ async def journal_manual_observation(payload: ManualObservationRequest, request:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"saved": True, "candidate_id": candidate_id}
+
+
+@app.post("/journal/api/training-instructions")
+async def add_training_instruction(payload: TrainingInstructionRequest, request: Request):
+    require_journal_token(request)
+    try:
+        return await get_journal().add_training_instruction(payload.instruction)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/journal/api/training-instructions")
+async def list_training_instructions(request: Request, limit: int = 100):
+    require_journal_token(request)
+    return await get_journal().training_instructions(limit)
+
+
+@app.post("/journal/api/training-instructions/{instruction_id}/review")
+async def review_training_instruction(instruction_id: int, payload: TrainingInstructionReviewRequest,
+                                      request: Request):
+    require_journal_token(request)
+    try:
+        return await get_journal().review_training_instruction(
+            instruction_id, payload.decision, payload.reviewer_note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/learning/daily-review")
+async def daily_learning_review(request: Request):
+    require_journal_token(request)
+    return await get_journal().daily_training_review()
 
 
 @app.get("/journal/export")
