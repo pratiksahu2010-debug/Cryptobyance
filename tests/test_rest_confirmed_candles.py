@@ -192,6 +192,69 @@ class TestRestConfirmedCandles(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_refresh_waits_for_second_reconnect_queued_while_waiting_for_first(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        feed.sio.emit = AsyncMock()
+        feed.fetch_history = AsyncMock(
+            return_value=[_row(1_800_000_000_000, 100.0)]
+        )
+
+        async def run():
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+            second_started = asyncio.Event()
+            release_second = asyncio.Event()
+            backfill_calls = 0
+
+            async def controlled_backfill():
+                nonlocal backfill_calls
+                backfill_calls += 1
+                if backfill_calls == 1:
+                    first_started.set()
+                    await release_first.wait()
+                elif backfill_calls == 2:
+                    second_started.set()
+                    await release_second.wait()
+
+            feed._backfill_after_reconnect = controlled_backfill
+
+            # Initial connection is the normal bootstrap, not a reconnect.
+            await feed._on_connect()
+            await feed._on_disconnect()
+            await feed._on_connect()
+            await first_started.wait()
+
+            refresh = asyncio.create_task(
+                feed.refresh_latest_closed_candle(
+                    "B-BTC_USDT", now_ms=1_800_000_300_000
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertFalse(refresh.done())
+
+            # Replace the task while refresh is already awaiting the first one.
+            await feed._on_disconnect()
+            await feed._on_connect()
+            second_task = feed._reconnect_backfill_task
+            release_first.set()
+            await second_started.wait()
+
+            # Refresh must notice and await the second queued repair too.
+            await asyncio.sleep(0)
+            self.assertFalse(refresh.done())
+            feed.fetch_history.assert_not_awaited()
+
+            release_second.set()
+            await second_task
+            result = await refresh
+            self.assertEqual(result, 1_800_000_000_000)
+            feed.fetch_history.assert_awaited_once_with(
+                "B-BTC_USDT", limit=6
+            )
+            await feed.close()
+
+        asyncio.run(run())
+
     def test_failed_reconnect_backfill_blocks_scan_until_full_repair_succeeds(self):
         feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
         expected_open = 1_800_000_000_000
