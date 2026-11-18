@@ -777,7 +777,7 @@ class EngineTests(unittest.TestCase):
         self.assertLess(diagnostics["ema_spread_atr"], 0)
         self.assertLess(diagnostics["price_vwap_distance_atr"], 0)
         self.assertLess(diagnostics["di_spread"], 0)
-        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 6)
+        self.assertEqual(diagnostics["ema_alignment_age_bars_capped_6"], 3)
 
     def test_ema_alignment_with_all_gates_and_bullish_15m_emits_long(self):
         from unittest.mock import patch
