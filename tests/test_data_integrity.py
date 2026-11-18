@@ -91,6 +91,6 @@ class RestConfirmedCandleTests(unittest.TestCase):
         try:
             with self.assertRaisesRegex(ValueError, "did not confirm latest completed"):
                 asyncio.run(feed.refresh_latest_closed_candle("B-BTC_USDT", now_ms))
-            self.assertNotIn("B-BTC_USDT", feed._rest_confirmed_closed_open)
+            self.assertNotIn(expected_open, feed._rest_confirmed_closed_opens.get("B-BTC_USDT", set()))
         finally:
             asyncio.run(feed.close())
