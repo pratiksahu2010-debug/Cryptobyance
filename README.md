@@ -58,7 +58,7 @@ The runtime is split by responsibility:
 - `strategy.py`: pure OHLCV validation, indicators, per-direction setup/invalidation/RSI trigger evaluation, and risk levels.
 - `state_machine.py`: pure lifecycle transitions and PostgreSQL persistence for per-symbol/per-direction state.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
-- `candidate_store.py`: PostgreSQL schema, legacy-candidate invalidation, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
+- `candidate_store.py`: PostgreSQL schema, state transitions, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
 
 ### PostgreSQL persistence design
 
