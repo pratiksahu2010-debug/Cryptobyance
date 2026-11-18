@@ -207,6 +207,24 @@ Telegram must be able to reach the public HTTPS webhook. Dashboard feedback work
 
 All journal API routes except the dashboard and Telegram webhook require `X-Journal-Token: YOUR_TOKEN`. Manual observation and feedback are audit records, not trade orders.
 
+### Natural-language timing instructions
+
+Open `/journal`, enter your `JOURNAL_API_TOKEN`, and use **Teach the bot your preferred timing** to write instructions in plain language. Examples:
+
+- `For LONG, prefer the first retest after MACD turns positive and relative volume is above 1.5.`
+- `Avoid SHORT entries when price is more than 1 ATR below VWAP.`
+- `Prefer BTCUSDT LONG setups between 09:00 and 12:00 IST.`
+- `I missed ETHUSDT LONG at 10:15; the first pullback after volume expansion was the entry I wanted.`
+
+The parser extracts a reviewable category, direction, symbol, time window, indicator mentions, entry pattern and explicit relative-volume threshold when present. It stores the original sentence alongside the parsed version. Review instructions through the authenticated API:
+
+- `POST /journal/api/training-instructions` with JSON `{"instruction":"..."}`.
+- `GET /journal/api/training-instructions` to inspect pending and reviewed instructions.
+- `POST /journal/api/training-instructions/{id}/review` with `{"decision":"APPROVED_RESEARCH","reviewer_note":"..." }` or `{"decision":"REJECTED","reviewer_note":"..." }`.
+- `GET /learning/daily-review` for the rolling 24-hour signal, feedback, missed-opportunity and instruction summary.
+
+**Approval means approved for offline research only.** It does not alter the live strategy, thresholds, symbols, stops, targets or Telegram signals. The parser is intentionally conservative: it extracts what it recognizes and preserves the raw sentence; it does not pretend to understand unsupported conditions. Always inspect the parsed instruction before approving it.
+
 ### Learning safeguards
 
 The learning endpoint reports sample sizes, outcomes, feedback and rejected-candidate statistics. It can recommend further testing but never changes live thresholds or strategy code. Only accept a strategy adjustment after chronological walk-forward replay with realistic fees, funding, spread and slippage. The illustrative “Good Entry” example discussed during design is not inserted as a real trade or feedback record.
