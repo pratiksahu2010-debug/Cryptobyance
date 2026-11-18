@@ -24,7 +24,7 @@ from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
 
-from config import settings, SYMBOLS, STRATEGY_KEY
+from config import settings, SYMBOLS, STRATEGY_KEY, CONFIG_VERSION
 
 LOG_LEVEL = settings.log_level
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -239,6 +239,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 return
             signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
+            signal['config_version'] = CONFIG_VERSION
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
             # Point-in-time research snapshot: telemetry only; never feeds back into entry rules.
