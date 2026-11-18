@@ -74,7 +74,8 @@ class TelegramNotifier:
         target2 = signal.get("target2", signal.get("target"))
         signal_ref = f"\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
         return (
-            f"{emoji} <b>{signal['symbol']} / {signal['side']}</b>\n"
+            f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
+            + f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
             + chart_link
             + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
             + f"<b>Bar time: <code>{candle_time}</code></b>\n"
