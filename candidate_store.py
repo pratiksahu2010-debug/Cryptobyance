@@ -256,7 +256,15 @@ class CandidateStore:
                     if ts <= last_ts or ts <= int(outcome["signal_candle_open_ms"]):
                         continue
                     if ts - last_ts != 300_000:
+                        # We cannot know whether stop or target was touched in
+                        # an unobserved candle. Never classify a later barrier
+                        # touch as a reliable win/loss after losing chronology.
                         data_gap = True
+                        status = "AMBIGUOUS"
+                        exit_ts = ts
+                        bars_seen += 1
+                        last_ts = ts
+                        break
                     if side == "LONG":
                         favorable = max(0.0, (high - entry) / risk)
                         adverse = max(0.0, (entry - low) / risk)
