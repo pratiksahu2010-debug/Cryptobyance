@@ -60,6 +60,14 @@ def validate_ohlcv(
     df = candles_to_frame(raw)
     if df.empty:
         raise ValueError(f"empty {timeframe} OHLCV response")
+    # Identical repeated rows are harmless; conflicting rows at one exchange
+    # timestamp are ambiguous and must not silently select an arbitrary price.
+    duplicate_rows = df.loc[df["timestamp"].duplicated(keep=False)]
+    if not duplicate_rows.empty:
+        value_columns = ["open", "high", "low", "close", "volume"]
+        conflicts = duplicate_rows.groupby("timestamp")[value_columns].nunique(dropna=False).gt(1).any(axis=1)
+        if conflicts.any():
+            raise ValueError(f"conflicting duplicate timestamps in {timeframe} OHLCV")
     df = df.sort_values("timestamp", kind="stable").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
     numeric = ["timestamp", "open", "high", "low", "close", "volume"]
     if not np.isfinite(df[numeric].to_numpy(dtype=float)).all():
