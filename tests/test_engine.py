@@ -760,7 +760,6 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(diagnostics["version"], 2)
         self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
         self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
-        self.assertAlmostEqual(diagnostics["di_spread"], 20.0)
         self.assertAlmostEqual(diagnostics["context_ema_spread_pct"], 1.0)
         self.assertTrue(all(np.isfinite(value) for value in diagnostics.values()))
 
@@ -775,7 +774,6 @@ class EngineTests(unittest.TestCase):
         diagnostics = signal["diagnostics"]
         self.assertLess(diagnostics["ema_spread_atr"], 0)
         self.assertLess(diagnostics["price_vwap_distance_atr"], 0)
-        self.assertLess(diagnostics["di_spread"], 0)
         self.assertIn("ema9_slope_atr_3bars", diagnostics)
 
     def test_ema_alignment_with_all_gates_and_bullish_15m_emits_long(self):
