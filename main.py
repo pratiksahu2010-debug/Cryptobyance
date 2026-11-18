@@ -332,6 +332,21 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
             log.exception("PostgreSQL nightly cleanup failed; scanner will continue")
 
 
+async def daily_training_review_loop(journal: SignalJournal) -> None:
+    """Create one durable research-only review per 24-hour cycle."""
+    while True:
+        try:
+            summary = await journal.daily_training_review()
+            await journal.save_daily_training_review(summary)
+            log.info("24-hour training review saved decision=%s resolved=%s",
+                     summary.get("decision"), summary.get("resolved_sample"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("24-hour training review failed error_type=%s", type(exc).__name__)
+        await asyncio.sleep(24 * 60 * 60)
+
+
 async def scanner_session() -> None:
     global journal_service
     session_started_ms = int(time.time() * 1000)
@@ -370,6 +385,7 @@ async def scanner_session() -> None:
     semaphore = asyncio.Semaphore(CONCURRENCY)
     cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="postgres-nightly-cleanup")
     outbox_task = asyncio.create_task(telegram_outbox_loop(candidate_store, notifier), name="telegram-outbox")
+    training_review_task = asyncio.create_task(daily_training_review_loop(journal_service), name="daily-training-review")
     try:
         startup_attempt = 0
         while True:
@@ -513,7 +529,8 @@ async def scanner_session() -> None:
         state['database_connected'] = False
         cleanup_task.cancel()
         outbox_task.cancel()
-        for background_task in (cleanup_task, outbox_task):
+        training_review_task.cancel()
+        for background_task in (cleanup_task, outbox_task, training_review_task):
             try:
                 await background_task
             except asyncio.CancelledError:
