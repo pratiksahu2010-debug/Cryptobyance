@@ -396,7 +396,7 @@ class EngineTests(unittest.TestCase):
                 return "READY", None
             async def invalidate(self, symbol):
                 return None
-            async def enqueue_signal(self, signal, candidate_id, cooldown_candles):
+            async def enqueue_signal(self, signal, candidate_id, cooldown_candles, strategy_key="default"):
                 self.queued.append(signal.copy())
                 return True
 
