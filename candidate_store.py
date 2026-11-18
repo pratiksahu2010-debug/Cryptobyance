@@ -181,6 +181,23 @@ class CandidateStore:
                    FROM signal_history s
                    LEFT JOIN signal_outcomes o ON o.signal_id=s.id"""
             )
+            by_strategy = await conn.fetch(
+                """SELECT COALESCE(s.payload #>> '{performance_attribution,strategy_key}',
+                                      'legacy_unattributed') AS strategy_key,
+                       COUNT(*) FILTER (WHERE s.status='SENT') AS delivered_signals,
+                       COUNT(*) FILTER (WHERE s.status='DELIVERY_FAILED') AS delivery_failed,
+                       COUNT(*) FILTER (WHERE s.status='QUEUED') AS queued,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='TARGET') AS targets,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='OPEN') AS open,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS'))::numeric,3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r)::numeric,3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r)::numeric,3) AS avg_mae_r
+                   FROM signal_history s
+                   LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   GROUP BY 1 ORDER BY strategy_key"""
+            )
             by_symbol = await conn.fetch(
                 """SELECT o.symbol,o.direction,
                        COUNT(*) AS tracked,
@@ -248,6 +265,7 @@ class CandidateStore:
             )
         return {
             "totals": dict(totals) if totals else {},
+            "by_strategy": [dict(row) for row in by_strategy],
             "risk_by_outcome": [dict(row) for row in risk_by_outcome],
             "by_direction": [dict(row) for row in by_direction],
             "by_symbol_direction": [dict(row) for row in by_symbol],
@@ -292,7 +310,11 @@ class CandidateStore:
         symbol, direction = signal["symbol"], signal["side"]
         candle_ms = int(signal["candle"])
         key = f"{symbol}:{direction}:{candle_ms}"
-        payload = json.dumps(signal, separators=(",", ":"), allow_nan=False)
+        # Persist the exact strategy lifecycle key with each newly queued signal.
+        # Older rows intentionally remain unattributed; never infer their version.
+        attributed_signal = dict(signal)
+        attributed_signal["performance_attribution"] = {"strategy_key": str(strategy_key)}
+        payload = json.dumps(attributed_signal, separators=(",", ":"), allow_nan=False)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # Serialize competing signal writers for this symbol even when
