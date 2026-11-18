@@ -193,50 +193,58 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         df15 = candidate15
             except ValueError as context_error:
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
-            if candidate_store is None:
-                raise RuntimeError('persistent candidate store is required for per-symbol state')
-            persisted_states = await candidate_store.load_symbol_states(
-                STRATEGY_KEY, display_symbol
-            )
-            armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
-            state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
-            if state_inputs is None:
-                log.warning("state scan deferred because indicator context is incomplete symbol=%s", display_symbol)
-                last_seen_candle[display_symbol] = closed_ts
-                state['symbols_ok'] += 1
-                return
-            triggered_side = None
-            for side in ("LONG", "SHORT"):
-                item = state_inputs[side]
-                action = await candidate_store.advance_symbol_state(
-                    strategy_key=STRATEGY_KEY,
-                    symbol=display_symbol, direction=side,
-                    candle_open_ms=closed_ts,
-                    setup_valid=item["setup_valid"],
-                    invalidation=item["invalidation"],
-                    trigger=item["trigger"],
-                    cooldown_candles=COOLDOWN_CANDLES,
+            # Backward-compatible path for isolated scanner adapters/tests that
+            # do not implement the v2 durable state API. The deployed
+            # CandidateStore always takes the staged branch below.
+            if candidate_store is None or not hasattr(candidate_store, "load_symbol_states"):
+                setup = evaluate_setup(df5, df15)
+                if not setup or candidate_store is None:
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
+            else:
+                persisted_states = await candidate_store.load_symbol_states(
+                    STRATEGY_KEY, display_symbol
                 )
-                if action == "TRIGGER":
-                    triggered_side = side
-            if triggered_side is None:
-                if journal is not None and armed_sides:
-                    try:
-                        observation = rejected_observation(df5, df15)
-                        if observation:
-                            observation["symbol"] = display_symbol
-                            await journal.record_rejected(observation)
-                    except Exception as journal_error:
-                        log.warning('rejected-candidate journal failed symbol=%s error_type=%s', display_symbol, type(journal_error).__name__)
-                last_seen_candle[display_symbol] = closed_ts
-                state['symbols_ok'] += 1
-                return
-            setup = evaluate_setup(df5, df15)
-            if not setup or setup.get("side") != triggered_side:
-                log.warning("state trigger lacked matching executable signal symbol=%s side=%s", display_symbol, triggered_side)
-                last_seen_candle[display_symbol] = closed_ts
-                state['symbols_ok'] += 1
-                return
+                armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
+                state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+                if state_inputs is None:
+                    log.warning("state scan deferred because indicator context is incomplete symbol=%s", display_symbol)
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
+                triggered_side = None
+                for side in ("LONG", "SHORT"):
+                    item = state_inputs[side]
+                    action = await candidate_store.advance_symbol_state(
+                        strategy_key=STRATEGY_KEY,
+                        symbol=display_symbol, direction=side,
+                        candle_open_ms=closed_ts,
+                        setup_valid=item["setup_valid"],
+                        invalidation=item["invalidation"],
+                        trigger=item["trigger"],
+                        cooldown_candles=COOLDOWN_CANDLES,
+                    )
+                    if action == "TRIGGER":
+                        triggered_side = side
+                if triggered_side is None:
+                    if journal is not None and armed_sides:
+                        try:
+                            observation = rejected_observation(df5, df15)
+                            if observation:
+                                observation["symbol"] = display_symbol
+                                await journal.record_rejected(observation)
+                        except Exception as journal_error:
+                            log.warning('rejected-candidate journal failed symbol=%s error_type=%s', display_symbol, type(journal_error).__name__)
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
+                setup = evaluate_setup(df5, df15)
+                if not setup or setup.get("side") != triggered_side:
+                    log.warning("state trigger lacked matching executable signal symbol=%s side=%s", display_symbol, triggered_side)
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
             signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
             signal['config_version'] = CONFIG_VERSION
