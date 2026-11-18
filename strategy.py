@@ -314,9 +314,10 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
         return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
                 "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
-    ctx = indicators(df15.copy(), include_rsi=False).iloc[-1]
-    context_long = pd.notna(ctx.ema9) and pd.notna(ctx.ema21) and float(ctx.ema9) > float(ctx.ema21)
-    context_short = pd.notna(ctx.ema9) and pd.notna(ctx.ema21) and float(ctx.ema9) < float(ctx.ema21)
+    context_ema_fast = df15["close"].ewm(span=EMA_FAST, adjust=False).mean().iloc[-1]
+    context_ema_slow = df15["close"].ewm(span=EMA_SLOW, adjust=False).mean().iloc[-1]
+    context_long = float(context_ema_fast) > float(context_ema_slow)
+    context_short = float(context_ema_fast) < float(context_ema_slow)
     common = float(c.adx) >= ADX_MIN
     long_setup = common and float(c.plus_di) > float(c.minus_di) and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap) and context_long
     short_setup = common and float(c.minus_di) > float(c.plus_di) and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap) and context_short
