@@ -209,7 +209,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             for side in ("LONG", "SHORT"):
                 item = state_inputs[side]
                 action = await candidate_store.advance_symbol_state(
-                    strategy_key="coindcx_per_symbol_v1",
+                    strategy_key=STRATEGY_KEY,
                     symbol=display_symbol, direction=side,
                     candle_open_ms=closed_ts,
                     setup_valid=item["setup_valid"],
@@ -273,7 +273,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
             queued = await candidate_store.enqueue_signal(
                 signal, None, COOLDOWN_CANDLES,
-                strategy_key="ema_vwap_rsi_adx_15m_v1",
+                strategy_key=STRATEGY_KEY,
             )
             last_seen_candle[display_symbol] = closed_ts
             if queued:
