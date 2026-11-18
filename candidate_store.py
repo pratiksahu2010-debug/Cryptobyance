@@ -113,6 +113,35 @@ class CandidateStore:
         try:
             async with pool.acquire() as conn:
                 await conn.execute(DDL)
+                # Repair rows created by the earlier queued-before-delivery
+                # implementation. Only Telegram-confirmed SENT alerts belong
+                # in performance statistics; also backfill any SENT row that
+                # was missing an outcome record.
+                async with conn.transaction():
+                    await conn.execute(
+                        """DELETE FROM signal_outcomes o
+                           USING signal_history s
+                           WHERE s.id=o.signal_id AND s.status <> 'SENT'"""
+                    )
+                    await conn.execute(
+                        """INSERT INTO signal_outcomes(
+                               signal_id,symbol,direction,signal_candle_open_ms,
+                               entry,stop,target,risk_per_unit,last_observed_candle_open_ms
+                           )
+                           SELECT s.id,s.symbol,s.direction,s.candle_open_ms,
+                                  (s.payload->>'entry')::double precision,
+                                  (s.payload->>'stop')::double precision,
+                                  (s.payload->>'target')::double precision,
+                                  ABS((s.payload->>'entry')::double precision -
+                                      (s.payload->>'stop')::double precision),
+                                  s.candle_open_ms
+                           FROM signal_history s
+                           WHERE s.status='SENT'
+                             AND NULLIF(s.payload->>'entry','') IS NOT NULL
+                             AND NULLIF(s.payload->>'stop','') IS NOT NULL
+                             AND NULLIF(s.payload->>'target','') IS NOT NULL
+                           ON CONFLICT(signal_id) DO NOTHING"""
+                    )
             return cls(pool)
         except BaseException:
             await pool.close()
@@ -120,6 +149,53 @@ class CandidateStore:
 
     async def close(self):
         await self.pool.close()
+
+    async def performance_summary(self) -> dict:
+        """Return aggregate and per-symbol outcome metrics; never expose trade payloads."""
+        async with self.pool.acquire() as conn:
+            totals = await conn.fetchrow(
+                """SELECT
+                       COUNT(*) FILTER (WHERE s.status='SENT') AS delivered_signals,
+                       COUNT(*) FILTER (WHERE s.status='DELIVERY_FAILED') AS delivery_failed,
+                       COUNT(*) FILTER (WHERE s.status='QUEUED') AS queued,
+                       COUNT(o.signal_id) AS tracked_outcomes,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='OPEN') AS open,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='TARGET') AS targets,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                       COUNT(o.signal_id) FILTER (WHERE o.data_gap) AS data_gaps,
+                       COUNT(*) FILTER (WHERE s.status='SENT' AND o.signal_id IS NULL) AS sent_without_outcome,
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS'))::numeric, 3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r)::numeric, 3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r)::numeric, 3) AS avg_mae_r
+                   FROM signal_history s
+                   LEFT JOIN signal_outcomes o ON o.signal_id=s.id"""
+            )
+            by_symbol = await conn.fetch(
+                """SELECT o.symbol,o.direction,
+                       COUNT(*) AS tracked,
+                       COUNT(*) FILTER (WHERE o.status='TARGET') AS targets,
+                       COUNT(*) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                       COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
+                       COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS'))::numeric, 3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r)::numeric, 3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r)::numeric, 3) AS avg_mae_r
+                   FROM signal_outcomes o
+                   JOIN signal_history s ON s.id=o.signal_id
+                   WHERE s.status='SENT'
+                   GROUP BY o.symbol,o.direction
+                   ORDER BY o.symbol,o.direction"""
+            )
+            outbox = await conn.fetch(
+                """SELECT status,COUNT(*) AS count
+                   FROM telegram_outbox GROUP BY status ORDER BY status"""
+            )
+        return {
+            "totals": dict(totals) if totals else {},
+            "by_symbol_direction": [dict(row) for row in by_symbol],
+            "outbox": [dict(row) for row in outbox],
+        }
 
     async def cleanup(self, now_ms: int) -> dict[str, int]:
         """Expire stale pending candidates without deleting any persisted records."""
