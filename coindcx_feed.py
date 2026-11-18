@@ -134,9 +134,12 @@ class CoinDCXFuturesFeed:
             reconnection_delay_max=30, logger=False, engineio_logger=False,
         )
         self.bars: dict[str, dict[int, list]] = {pair: {} for pair in self.pairs}
-        # Last 5m candle whose final OHLCV was confirmed by REST for each pair.
-        # Socket.IO updates can be provisional until the candle closes.
-        self._rest_confirmed_closed_open: dict[str, int] = {}
+        # 5m candles whose final OHLCV was confirmed by REST. Keep markers
+        # bounded with the bar cache so late websocket frames cannot rewrite
+        # a completed candle after the next interval has been confirmed.
+        self._rest_confirmed_closed_opens: dict[str, set[int]] = {
+            pair: set() for pair in self.pairs
+        }
         self.websocket_connected = False
         self.last_ws_event: float | None = None
         self.ws_events_received = 0
@@ -232,7 +235,7 @@ class CoinDCXFuturesFeed:
         expected_open = (now_ms // interval) * interval - interval
         if expected_open < 0:
             raise ValueError("invalid expected completed candle timestamp")
-        if self._rest_confirmed_closed_open.get(pair) == expected_open:
+        if expected_open in self._rest_confirmed_closed_opens.get(pair, set()):
             return expected_open
 
         rows = await self.fetch_history(pair, limit=6)
@@ -242,16 +245,29 @@ class CoinDCXFuturesFeed:
                 f"REST history did not confirm latest completed 5m candle for {pair}: "
                 f"expected_open={expected_open}"
             )
-        self._rest_confirmed_closed_open[pair] = expected_open
+        self._rest_confirmed_closed_opens.setdefault(pair, set()).add(expected_open)
         return expected_open
 
-    def _merge_rows(self, pair: str, rows: list[list]) -> None:
+    def _merge_rows(self, pair: str, rows: list[list], source: str = "rest") -> None:
+        """Merge candle rows without allowing provisional WS data to replace REST finals.
+
+        REST is authoritative and may replace a provisional websocket row.
+        WebSocket rows may update unconfirmed timestamps only.
+        """
+        if source not in {"rest", "websocket"}:
+            raise ValueError(f"unsupported candle source: {source}")
         cache = self.bars.setdefault(pair, {})
+        confirmed = self._rest_confirmed_closed_opens.setdefault(pair, set())
         for row in rows:
-            cache[int(row[0])] = row
+            timestamp = int(row[0])
+            if source == "websocket" and timestamp in confirmed:
+                continue
+            cache[timestamp] = row
         if len(cache) > 500:
-            for ts in sorted(cache)[:-500]:
+            evicted = sorted(cache)[:-500]
+            for ts in evicted:
                 del cache[ts]
+                confirmed.discard(ts)
 
     def rows(self, pair: str) -> list[list]:
         return [self.bars.get(pair, {})[ts] for ts in sorted(self.bars.get(pair, {}))]
@@ -312,7 +328,7 @@ class CoinDCXFuturesFeed:
                 if pair not in self.bars:
                     continue
                 row = candle_to_row(item)
-                self._merge_rows(pair, [row])
+                self._merge_rows(pair, [row], source="websocket")
                 self.last_ws_event = time.time()
                 self.ws_events_received += 1
                 self.last_ws_pair = pair
