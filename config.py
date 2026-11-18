@@ -39,6 +39,10 @@ class Settings:
     ema_slow: int
     rsi_period: int
     adx_period: int
+    rsi_long_min: float
+    rsi_long_max: float
+    rsi_short_min: float
+    rsi_short_max: float
     atr_stop_multiplier: float
     min_risk_reward: float
     log_level: str
@@ -62,6 +66,13 @@ class Settings:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
 
+        rsi_long_min = _number("RSI_LONG_MIN", "52", 0, 100)
+        rsi_long_max = _number("RSI_LONG_MAX", "70", 0, 100)
+        rsi_short_min = _number("RSI_SHORT_MIN", "30", 0, 100)
+        rsi_short_max = _number("RSI_SHORT_MAX", "42", 0, 100)
+        if rsi_long_min >= rsi_long_max or rsi_short_min >= rsi_short_max:
+            raise ValueError("RSI band minimums must be below their maximums")
+
         return cls(
             scan_interval_seconds=_integer("SCAN_INTERVAL_SECONDS", "60", 20, 600),
             concurrency=_integer("CONCURRENCY", "8", 1, 16),
@@ -73,6 +84,10 @@ class Settings:
             ema_slow=ema_slow,
             rsi_period=_integer("RSI_PERIOD", "14", 2, 100),
             adx_period=_integer("ADX_PERIOD", "14", 2, 100),
+            rsi_long_min=rsi_long_min,
+            rsi_long_max=rsi_long_max,
+            rsi_short_min=rsi_short_min,
+            rsi_short_max=rsi_short_max,
             atr_stop_multiplier=_number("ATR_STOP_MULTIPLIER", "1.5", 0.000001),
             min_risk_reward=_number("MIN_RISK_REWARD", "1.5", 0.000001),
             log_level=log_level,
