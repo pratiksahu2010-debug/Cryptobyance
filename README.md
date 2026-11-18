@@ -21,7 +21,7 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 
 **15-minute veto:** LONG is allowed only when 15m EMA(9) > EMA(21); SHORT only when 15m EMA(9) < EMA(21). Missing, stale, invalid, or insufficient 15m context defers state processing rather than firing on stale data. At least 35 contiguous 15m bars and 60 contiguous 5m bars are required.
 
-**ATR risk levels (unchanged):** ATR(14) on the 5m entry timeframe sets stop distance (`ATR_STOP_MULTIPLIER`, default 1.5 ATR). Target is the configured risk multiple (`MIN_RISK_REWARD`, default 1.5R). These are informational planning levels, not exchange orders or guaranteed fills.
+**Risk levels:** stop loss is the prior swing low for LONG or prior swing high for SHORT, using `SWING_LOOKBACK_BARS` (default 10; signal candle excluded). TP1 and TP2 are configured at `TP1_R` (default 1R) and `TP2_R` (default 2R) of the entry-to-stop risk. These are informational planning levels, not exchange orders or guaranteed fills.
 
 All setup thresholds, RSI bands and cooldown length are configurable through environment settings loaded by `config.py`. The bot remains signal-only and no indicator combination guarantees profitability; validate with chronological backtests and forward observation before risking capital.
 
@@ -45,7 +45,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a TradingView market-directory link for the symbol, where you can select an exchange that lists the market. This is deliberately not presented as a CoinDCX chart: the bot's signal data and contract validation remain CoinDCX-based. Alerts also include entry, ATR-derived stop/target, RR, RSI, ADX, mandatory 15m trend confirmation, and candle close time. Symbols that cannot be safely converted to a USDT ticker omit the link.
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a TradingView market-directory link for the symbol, where you can select an exchange that lists the market. This is deliberately not presented as a CoinDCX chart: the bot's signal data and contract validation remain CoinDCX-based. Alerts include entry, bar time, ADX, RSI, EMA9/21 values, VWAP, swing-based stop, TP1, TP2, 15m trend confirmation, and the signal ID used by feedback buttons. Symbols that cannot be safely converted to a USDT ticker omit the link.
 
 ## Code architecture
 
