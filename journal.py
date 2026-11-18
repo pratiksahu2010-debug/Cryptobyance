@@ -60,6 +60,26 @@ CREATE TABLE IF NOT EXISTS journal_candidate_feedback (
 );
 CREATE INDEX IF NOT EXISTS ix_journal_candidate_feedback_created
  ON journal_candidate_feedback(candidate_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS training_instructions (
+    id BIGSERIAL PRIMARY KEY,
+    raw_text TEXT NOT NULL,
+    parsed JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL'
+      CHECK(status IN ('PENDING_APPROVAL','APPROVED_RESEARCH','REJECTED')),
+    reviewer_note TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_training_instructions_status_created
+ ON training_instructions(status,created_at DESC);
+CREATE TABLE IF NOT EXISTS training_daily_reviews (
+    id BIGSERIAL PRIMARY KEY,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    summary JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(window_start,window_end)
+);
 """
 
 FEEDBACK_CATEGORIES = {
@@ -350,6 +370,86 @@ class SignalJournal:
             item["created_at"] = item["created_at"].isoformat()
             result.append(item)
         return result
+
+    async def add_training_instruction(self, raw_text: str) -> dict:
+        from training_rules import parse_instruction
+        parsed = parse_instruction(raw_text)
+        clean = " ".join(str(raw_text).strip().split())
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO training_instructions(raw_text,parsed)
+                   VALUES($1,$2::jsonb) RETURNING id,raw_text,parsed,status,created_at""",
+                clean, json.dumps(parsed, separators=(",", ":"), allow_nan=False))
+        return {"id": int(row["id"]), "raw_text": row["raw_text"],
+                "parsed": json.loads(row["parsed"]) if isinstance(row["parsed"], str) else dict(row["parsed"]),
+                "status": row["status"], "created_at": row["created_at"].isoformat()}
+
+    async def training_instructions(self, limit: int = 100) -> list[dict]:
+        limit = max(1, min(int(limit), 250))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id,raw_text,parsed::text AS parsed,status,reviewer_note,created_at,reviewed_at
+                   FROM training_instructions ORDER BY created_at DESC,id DESC LIMIT $1""", limit)
+        return [{"id": int(r["id"]), "raw_text": r["raw_text"], "parsed": json.loads(r["parsed"]),
+                 "status": r["status"], "reviewer_note": r["reviewer_note"],
+                 "created_at": r["created_at"].isoformat(),
+                 "reviewed_at": r["reviewed_at"].isoformat() if r["reviewed_at"] else None} for r in rows]
+
+    async def review_training_instruction(self, instruction_id: int, decision: str,
+                                          reviewer_note: str = "") -> dict:
+        decision = str(decision).strip().upper()
+        if decision not in {"APPROVED_RESEARCH", "REJECTED"}:
+            raise ValueError("decision must be APPROVED_RESEARCH or REJECTED")
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE training_instructions SET status=$2,reviewer_note=$3,reviewed_at=NOW()
+                   WHERE id=$1 RETURNING id,status,reviewed_at""",
+                int(instruction_id), decision, str(reviewer_note or "").strip()[:1000])
+        if row is None:
+            raise LookupError("training instruction not found")
+        return {"id": int(row["id"]), "status": row["status"],
+                "reviewed_at": row["reviewed_at"].isoformat(),
+                "live_strategy_changed": False}
+
+    async def daily_training_review(self) -> dict:
+        async with self.pool.acquire() as conn:
+            totals = await conn.fetchrow(
+                """SELECT COUNT(*) AS delivered,
+                   COUNT(*) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS')) AS resolved,
+                   COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
+                   COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                   ROUND(AVG(o.realized_r)::numeric,3) AS avg_realized_r
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-INTERVAL '24 hours'""")
+            feedback = await conn.fetch(
+                """SELECT f.category,COUNT(*) AS count FROM journal_feedback f
+                   JOIN signal_history s ON s.id=f.signal_id
+                   WHERE f.created_at >= NOW()-INTERVAL '24 hours'
+                   GROUP BY f.category ORDER BY count DESC""")
+            candidate_labels = await conn.fetch(
+                """SELECT category,COUNT(*) AS count FROM journal_candidate_feedback
+                   WHERE created_at >= NOW()-INTERVAL '24 hours'
+                   GROUP BY category ORDER BY count DESC""")
+            instructions = await conn.fetch(
+                """SELECT status,COUNT(*) AS count FROM training_instructions
+                   WHERE created_at >= NOW()-INTERVAL '24 hours' GROUP BY status""")
+            missed = await conn.fetch(
+                """SELECT COUNT(*) AS count,ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r
+                   FROM journal_candidates WHERE created_at >= NOW()-INTERVAL '24 hours'
+                   AND rejection_reasons @> '[\"manual_missed_opportunity\]'::jsonb""")
+        resolved = int(totals["resolved"] or 0)
+        return {
+            "window": "rolling_24_hours", "generated_at": datetime.now(timezone.utc).isoformat(),
+            "signals": dict(totals), "signal_feedback": [dict(x) for x in feedback],
+            "candidate_feedback": [dict(x) for x in candidate_labels],
+            "training_instruction_status": [dict(x) for x in instructions],
+            "manual_missed_opportunities": dict(missed),
+            "decision": "INSUFFICIENT_DATA" if resolved < 30 else "RESEARCH_REPLAY_REQUIRED",
+            "resolved_sample": resolved,
+            "next_step": "Keep collecting labelled outcomes; do not tune live rules." if resolved < 30
+                         else "Run chronological walk-forward replay with fees, funding, spread and slippage.",
+            "live_strategy_changed": False, "orders_enabled": False,
+        }
 
     async def learning_summary(self) -> dict:
         async with self.pool.acquire() as conn:
