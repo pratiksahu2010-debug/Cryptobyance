@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from candidate_store import CandidateStore, DDL
 
@@ -34,6 +34,18 @@ class FakePool:
 
 
 class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connect_repairs_legacy_outcome_rows(self):
+        conn = FakeConnection()
+        pool = FakePool(conn)
+        with patch("candidate_store.asyncpg.create_pool", new=AsyncMock(return_value=pool)):
+            await CandidateStore.connect("postgresql://test.invalid/db")
+        statements = "\\n".join(call.args[0] for call in conn.execute.await_args_list)
+        self.assertIn("DELETE FROM signal_outcomes", statements)
+        self.assertIn("s.status <> 'SENT'", statements)
+        self.assertIn("INSERT INTO signal_outcomes", statements)
+        self.assertIn("s.status='SENT'", statements)
+        self.assertIn("ON CONFLICT(signal_id) DO NOTHING", statements)
+
     async def test_signal_is_atomically_recorded_and_queued(self):
         conn = FakeConnection(fetchrows=[None, {"id": 71}])
         store = CandidateStore(FakePool(conn))
