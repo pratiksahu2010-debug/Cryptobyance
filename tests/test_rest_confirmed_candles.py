@@ -1,6 +1,7 @@
 """Regression tests for REST-confirmed candle cache integrity."""
 
 import asyncio
+import unittest
 
 from coindcx_feed import CoinDCXFuturesFeed
 
@@ -9,13 +10,14 @@ def _row(timestamp: int, close: float) -> list[float | int]:
     return [timestamp, close, close + 1, close - 1, close, 10.0]
 
 
-def _feed() -> CoinDCXFuturesFeed:
-    return CoinDCXFuturesFeed(["B-BTC_USDT"])
+class TestRestConfirmedCandles(unittest.TestCase):
+    def make_feed(self) -> CoinDCXFuturesFeed:
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        self.addCleanup(lambda: asyncio.run(feed.close()))
+        return feed
 
-
-def test_websocket_cannot_overwrite_rest_confirmed_candle():
-    feed = _feed()
-    try:
+    def test_websocket_cannot_overwrite_rest_confirmed_candle(self):
+        feed = self.make_feed()
         pair = "B-BTC_USDT"
         timestamp = 1_800_000_000_000
         provisional = _row(timestamp, 100.0)
@@ -27,14 +29,10 @@ def test_websocket_cannot_overwrite_rest_confirmed_candle():
         feed._rest_confirmed_closed_opens[pair].add(timestamp)
         feed._merge_rows(pair, [late_websocket], source="websocket")
 
-        assert feed.rows(pair) == [confirmed]
-    finally:
-        asyncio.run(feed.close())
+        self.assertEqual(feed.rows(pair), [confirmed])
 
-
-def test_websocket_can_update_unconfirmed_newer_candle():
-    feed = _feed()
-    try:
+    def test_websocket_can_update_unconfirmed_newer_candle(self):
+        feed = self.make_feed()
         pair = "B-BTC_USDT"
         confirmed_timestamp = 1_800_000_000_000
         newer_timestamp = confirmed_timestamp + 300_000
@@ -47,14 +45,10 @@ def test_websocket_can_update_unconfirmed_newer_candle():
         feed._merge_rows(pair, [provisional_newer], source="websocket")
         feed._merge_rows(pair, [updated_newer], source="websocket")
 
-        assert feed.rows(pair) == [confirmed, updated_newer]
-    finally:
-        asyncio.run(feed.close())
+        self.assertEqual(feed.rows(pair), [confirmed, updated_newer])
 
-
-def test_rest_can_replace_provisional_websocket_candle():
-    feed = _feed()
-    try:
+    def test_rest_can_replace_provisional_websocket_candle(self):
+        feed = self.make_feed()
         pair = "B-BTC_USDT"
         timestamp = 1_800_000_000_000
         provisional = _row(timestamp, 100.0)
@@ -63,6 +57,8 @@ def test_rest_can_replace_provisional_websocket_candle():
         feed._merge_rows(pair, [provisional], source="websocket")
         feed._merge_rows(pair, [confirmed], source="rest")
 
-        assert feed.rows(pair) == [confirmed]
-    finally:
-        asyncio.run(feed.close())
+        self.assertEqual(feed.rows(pair), [confirmed])
+
+
+if __name__ == "__main__":
+    unittest.main()
