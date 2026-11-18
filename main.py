@@ -64,6 +64,7 @@ state: dict[str, Any] = {
     "websocket_connect_errors": 0, "last_websocket_error": None, "websocket_disconnects": 0,
     "websocket_candle_fresh": False, "scanner_restarts": 0,
     "telegram_configured": False, "database_connected": False,
+    "outcome_tracking_errors": 0, "outcome_rows_updated": 0,
 }
 # In-process deduplication only. Startup cutoff prevents replaying candles that
 # closed before the current scanner session began; state is not durable across restarts.
@@ -118,9 +119,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # Only later completed 5m candles are considered by the store.
             if candidate_store is not None:
                 try:
-                    await candidate_store.update_open_outcomes(
+                    updated_outcomes = await candidate_store.update_open_outcomes(
                         display_symbol, df5.to_dict("records")
                     )
+                    state["outcome_rows_updated"] += int(updated_outcomes)
                 except Exception as outcome_error:
                     state["outcome_tracking_errors"] = state.get("outcome_tracking_errors", 0) + 1
                     log.warning(
@@ -372,6 +374,8 @@ async def scanner_session() -> None:
                     "websocket_connected": feed.websocket_connected,
                     "websocket_events_received": feed.ws_events_received,
                     "signals_queued": state.get("signals_queued", 0),
+        "outcome_rows_updated": state.get("outcome_rows_updated", 0),
+        "outcome_tracking_errors": state.get("outcome_tracking_errors", 0),
                     "signals_sent": state["signals_sent"],
                     "last_error": state["last_error"],
                 })

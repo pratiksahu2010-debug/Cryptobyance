@@ -196,13 +196,6 @@ class CandidateStore:
                 if risk_per_unit <= 0:
                     raise ValueError("signal stop must define positive risk")
                 await conn.execute(
-                    """INSERT INTO signal_outcomes(
-                           signal_id,symbol,direction,signal_candle_open_ms,
-                           entry,stop,target,risk_per_unit,last_observed_candle_open_ms
-                       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4)
-                       ON CONFLICT(signal_id) DO NOTHING""",
-                    signal_id,symbol,direction,candle_ms,entry,stop,target,risk_per_unit)
-                await conn.execute(
                     """INSERT INTO telegram_outbox(signal_id,idempotency_key,payload)
                        VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING""",
                     signal_id,key,payload)
@@ -263,7 +256,15 @@ class CandidateStore:
                     if ts <= last_ts or ts <= int(outcome["signal_candle_open_ms"]):
                         continue
                     if ts - last_ts != 300_000:
+                        # We cannot know whether stop or target was touched in
+                        # an unobserved candle. Never classify a later barrier
+                        # touch as a reliable win/loss after losing chronology.
                         data_gap = True
+                        status = "AMBIGUOUS"
+                        exit_ts = ts
+                        bars_seen += 1
+                        last_ts = ts
+                        break
                     if side == "LONG":
                         favorable = max(0.0, (high - entry) / risk)
                         adverse = max(0.0, (entry - low) / risk)
@@ -334,6 +335,24 @@ class CandidateStore:
                 if row:
                     await conn.execute(
                         "UPDATE signal_history SET status='SENT',delivered_at=NOW() WHERE id=$1", row["signal_id"])
+                    # Outcome tracking starts only after Telegram confirms delivery.
+                    # Keeping this insert in the same transaction prevents queued or
+                    # permanently failed alerts from polluting performance statistics.
+                    await conn.execute(
+                        """INSERT INTO signal_outcomes(
+                               signal_id,symbol,direction,signal_candle_open_ms,
+                               entry,stop,target,risk_per_unit,last_observed_candle_open_ms
+                           )
+                           SELECT id,symbol,direction,candle_open_ms,
+                                  (payload->>'entry')::double precision,
+                                  (payload->>'stop')::double precision,
+                                  (payload->>'target')::double precision,
+                                  ABS((payload->>'entry')::double precision -
+                                      (payload->>'stop')::double precision),
+                                  candle_open_ms
+                           FROM signal_history WHERE id=$1
+                           ON CONFLICT(signal_id) DO NOTHING""",
+                        row["signal_id"])
 
     async def retry_outbox(self, outbox_id: int, attempts: int, error_type: str):
         async with self.pool.acquire() as conn:
