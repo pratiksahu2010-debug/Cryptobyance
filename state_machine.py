@@ -128,13 +128,8 @@ async def advance_persisted_state(
         invalidated_during_cooldown=invalidated_before,
     )
     if decision.action == "TRIGGER":
-        # Keep ARMED until enqueue_signal commits the alert + cooldown together.
-        await conn.execute(
-            """UPDATE strategy_signal_states SET last_processed_candle_open_ms=$4,
-               updated_at=NOW() WHERE strategy_key=$1 AND symbol=$2 AND direction=$3""",
-            strategy_key, symbol, direction, int(candle_open_ms),
-        )
-        return "TRIGGER"
+        # Keep ARMED and its prior-candle checkpoint unchanged until enqueue_signal
+        # atomically commits signal history, outbox and cooldown.
 
     next_state = decision.state
     if row is None:
@@ -173,3 +168,37 @@ async def advance_persisted_state(
             strategy_key, symbol, direction, state, next_state, int(candle_open_ms),
         )
     return decision.action
+
+
+async def persist_signal_lifecycle(
+    conn, *, strategy_key: str, symbol: str, direction: str,
+    candle_open_ms: int, cooldown_candles: int,
+) -> bool:
+    """Atomically move an ARMED setup into cooldown when its alert is enqueued."""
+    row = await conn.fetchrow(
+        """SELECT state,last_processed_candle_open_ms,cycle_id
+           FROM strategy_signal_states
+           WHERE strategy_key=$1 AND symbol=$2 AND direction=$3 FOR UPDATE""",
+        strategy_key, symbol, direction,
+    )
+    if row is None or row["state"] != "ARMED":
+        return False
+    previous = row["last_processed_candle_open_ms"]
+    if previous is not None and int(candle_open_ms) <= int(previous):
+        return False
+    until_ms = int(candle_open_ms) + int(cooldown_candles) * CANDLE_INTERVAL_MS
+    await conn.execute(
+        """UPDATE strategy_signal_states SET state='COOLDOWN',
+             last_processed_candle_open_ms=$4,last_triggered_candle_open_ms=$4,
+             cooldown_until_candle_open_ms=$5,setup_invalidated=FALSE,updated_at=NOW()
+           WHERE strategy_key=$1 AND symbol=$2 AND direction=$3""",
+        strategy_key, symbol, direction, int(candle_open_ms), until_ms,
+    )
+    for old_state, new_state in (("ARMED", "TRIGGERED"), ("TRIGGERED", "COOLDOWN")):
+        await conn.execute(
+            """INSERT INTO strategy_state_events(
+                 strategy_key,symbol,direction,from_state,to_state,candle_open_ms
+               ) VALUES($1,$2,$3,$4,$5,$6)""",
+            strategy_key, symbol, direction, old_state, new_state, int(candle_open_ms),
+        )
+    return True
