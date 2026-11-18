@@ -198,16 +198,15 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
     LONG: 5m EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 20.
     SHORT: exact inverse. 15m EMA9/EMA21 must agree with the signal direction.
-    ATR14 defines the protective stop distance and configured R-multiple target.
-    No extra slope, alignment-age, DI, or VWAP-extension entry gates are applied.
+    This builder is called only after the persisted state machine confirms an
+    ARMED RSI-band trigger. It uses a prior swing stop and configured TP1/TP2.
     """
     if (not has_contiguous_tail(df5, "5m", 60)
             or df15 is None
             or not has_contiguous_tail(df15, "15m", 35)):
         return None
 
-    armed_sides = armed_sides or set()
-    a = indicators(df5.copy(), include_rsi=bool(armed_sides))
+    a = indicators(df5.copy(), include_rsi=True)
     if len(a) < 35:
         return None
     c = a.iloc[-1]
@@ -285,7 +284,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "ema9": float(c.ema9), "ema21": float(c.ema21), "vwap": float(c.vwap),
         "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
         "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
-        "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
+        "atr": atr_value, "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": context, "diagnostics": diagnostics,
     }
