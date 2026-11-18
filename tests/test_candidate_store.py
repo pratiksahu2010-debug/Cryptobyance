@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -54,6 +55,12 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
         queued = await store.enqueue_signal(signal, candidate_id=9, cooldown_candles=3)
         self.assertTrue(queued)
+        history_insert = next(args for query, args in conn.fetchrow_calls
+                              if "INSERT INTO signal_history" in query)
+        saved_payload = json.loads(history_insert[4])
+        self.assertEqual(
+            saved_payload["performance_attribution"]["strategy_key"], "default"
+        )
         self.assertEqual(len(conn.fetchrow_calls), 4)
         sql = "\n".join(call[0] for call in conn.fetchrow_calls)
         self.assertIn("signal_cooldowns", sql)
@@ -106,6 +113,9 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
             "avg_mfe_r": 1.2, "avg_mae_r": 0.7,
         }])
         conn.fetch = AsyncMock(side_effect=[
+            [{"strategy_key": "ema_vwap_rsi_adx_15m_v1", "delivered_signals": 10,
+              "targets": 3, "stop_losses": 2, "open": 4, "ambiguous": 1,
+              "avg_realized_r": 0.5}],
             [{"symbol": "BTC/USDT", "direction": "LONG", "tracked": 4,
               "targets": 2, "stop_losses": 1, "open": 1, "ambiguous": 0,
               "avg_realized_r": 0.75, "avg_mfe_r": 1.4, "avg_mae_r": 0.5}],
@@ -119,6 +129,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         report = await store.performance_summary()
         self.assertEqual(report["totals"]["delivered_signals"], 12)
         self.assertEqual(report["totals"]["sent_without_outcome"], 2)
+        self.assertEqual(report["by_strategy"][0]["strategy_key"], "ema_vwap_rsi_adx_15m_v1")
+        self.assertEqual(report["by_strategy"][0]["delivered_signals"], 10)
         self.assertEqual(report["by_symbol_direction"][0]["symbol"], "BTC/USDT")
         self.assertEqual(report["risk_by_outcome"][0]["stop_mfe_050r_before_exit"], 1)
         self.assertEqual(report["by_direction"][0]["direction"], "LONG")
