@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 import asyncpg
 
+from state_machine import STATE_DDL, persist_signal_lifecycle
+
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -119,6 +121,7 @@ class CandidateStore:
         try:
             async with pool.acquire() as conn:
                 await conn.execute(DDL)
+                await conn.execute(STATE_DDL)
                 # Repair rows created by the earlier queued-before-delivery
                 # implementation. Only Telegram-confirmed SENT alerts belong
                 # in performance statistics; also backfill any SENT row that
@@ -284,7 +287,7 @@ class CandidateStore:
         return ("READY", None) if float(adx) >= float(adx_min) else ("REJECT", None)
 
     async def enqueue_signal(self, signal: dict, candidate_id: int | None,
-                             cooldown_candles: int) -> bool:
+                             cooldown_candles: int, strategy_key: str = "default") -> bool:
         """Atomically persist signal, mark candidate, apply durable cooldown and enqueue alert."""
         symbol, direction = signal["symbol"], signal["side"]
         candle_ms = int(signal["candle"])
@@ -295,9 +298,26 @@ class CandidateStore:
                 # Serialize competing signal writers for this symbol even when
                 # no cooldown row exists yet (SELECT FOR UPDATE cannot lock absence).
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", symbol)
+                lock_key = f"{strategy_key}:{symbol}:{direction}"
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
                 cooldown = await conn.fetchrow(
                     "SELECT last_direction,last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1 FOR UPDATE", symbol)
                 if cooldown and cooldown["last_direction"] == direction and candle_ms - int(cooldown["last_candle_open_ms"]) < cooldown_candles * 300_000:
+                    if candidate_id is not None:
+                        await conn.execute(
+                            "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
+                            candidate_id)
+                    return False
+                existing = await conn.fetchrow(
+                    "SELECT id FROM signal_history WHERE idempotency_key=$1", key
+                )
+                if existing is not None:
+                    return False
+                lifecycle_recorded = await persist_signal_lifecycle(
+                    conn, strategy_key=strategy_key, symbol=symbol, direction=direction,
+                    candle_open_ms=candle_ms, cooldown_candles=cooldown_candles,
+                )
+                if not lifecycle_recorded:
                     if candidate_id is not None:
                         await conn.execute(
                             "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
