@@ -43,6 +43,9 @@ class Settings:
     rsi_long_max: float
     rsi_short_min: float
     rsi_short_max: float
+    swing_lookback_bars: int
+    tp1_r: float
+    tp2_r: float
     atr_stop_multiplier: float
     min_risk_reward: float
     log_level: str
@@ -72,6 +75,10 @@ class Settings:
         rsi_short_max = _number("RSI_SHORT_MAX", "42", 0, 100)
         if rsi_long_min >= rsi_long_max or rsi_short_min >= rsi_short_max:
             raise ValueError("RSI band minimums must be below their maximums")
+        tp1_r = _number("TP1_R", "1", 0.01, 20)
+        tp2_r = _number("TP2_R", "2", 0.01, 40)
+        if tp2_r <= tp1_r:
+            raise ValueError("TP2_R must be greater than TP1_R")
 
         return cls(
             scan_interval_seconds=_integer("SCAN_INTERVAL_SECONDS", "60", 20, 600),
@@ -88,6 +95,9 @@ class Settings:
             rsi_long_max=rsi_long_max,
             rsi_short_min=rsi_short_min,
             rsi_short_max=rsi_short_max,
+            swing_lookback_bars=_integer("SWING_LOOKBACK_BARS", "10", 2, 100),
+            tp1_r=tp1_r,
+            tp2_r=tp2_r,
             atr_stop_multiplier=_number("ATR_STOP_MULTIPLIER", "1.5", 0.000001),
             min_risk_reward=_number("MIN_RISK_REWARD", "1.5", 0.000001),
             log_level=log_level,
