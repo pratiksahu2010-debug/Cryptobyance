@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from strategy import indicators, ADX_MIN, ATR_STOP_MULT, MIN_RR
@@ -451,6 +451,16 @@ class SignalJournal:
                          else "Run chronological walk-forward replay with fees, funding, spread and slippage.",
             "live_strategy_changed": False, "orders_enabled": False,
         }
+
+    async def save_daily_training_review(self, summary: dict) -> None:
+        window_end = datetime.now(timezone.utc)
+        window_start = window_end - timedelta(hours=24)
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO training_daily_reviews(window_start,window_end,summary)
+                   VALUES($1,$2,$3::jsonb) ON CONFLICT(window_start,window_end) DO NOTHING""",
+                window_start, window_end,
+                json.dumps(summary, default=str, separators=(",", ":"), allow_nan=False))
 
     async def learning_summary(self) -> dict:
         async with self.pool.acquire() as conn:
