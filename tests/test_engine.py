@@ -856,6 +856,7 @@ class EngineTests(unittest.TestCase):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         five.loc[five.index[-4], "ema9"] = five.iloc[-1].ema9
+        five.loc[five.index[-4], "ema21"] = five.iloc[-1].ema9 + 0.1
         with patch("strategy.indicators", side_effect=[five, fifteen]):
             self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
 
