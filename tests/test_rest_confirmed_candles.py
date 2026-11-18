@@ -2,6 +2,7 @@
 
 import asyncio
 import unittest
+from unittest.mock import AsyncMock
 
 from coindcx_feed import CoinDCXFuturesFeed
 
@@ -58,6 +59,63 @@ class TestRestConfirmedCandles(unittest.TestCase):
         feed._merge_rows(pair, [confirmed], source="rest")
 
         self.assertEqual(feed.rows(pair), [confirmed])
+
+
+    def test_initial_websocket_connection_does_not_duplicate_bootstrap(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT"])
+        feed.sio.emit = AsyncMock()
+
+        async def run():
+            await feed._on_connect()
+            self.assertIsNone(feed._reconnect_backfill_task)
+            await feed.close()
+
+        asyncio.run(run())
+
+    def test_reconnect_backfills_full_history_for_each_active_pair(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT", "B-ETH_USDT"])
+        feed.sio.emit = AsyncMock()
+        feed.fetch_history = AsyncMock(return_value=[_row(1_800_000_000_000, 100.0)])
+
+        async def run():
+            await feed._on_connect()
+            await feed._on_disconnect()
+            await feed._on_connect()
+            task = feed._reconnect_backfill_task
+            self.assertIsNotNone(task)
+            await task
+            self.assertEqual(feed.fetch_history.await_count, 2)
+            self.assertEqual(
+                {call.args[0] for call in feed.fetch_history.await_args_list},
+                {"B-BTC_USDT", "B-ETH_USDT"},
+            )
+            self.assertTrue(all(call.kwargs["limit"] == 320 for call in feed.fetch_history.await_args_list))
+            await feed.close()
+
+        asyncio.run(run())
+
+    def test_reconnect_backfill_failure_for_one_pair_does_not_abort_others(self):
+        feed = CoinDCXFuturesFeed(["B-BTC_USDT", "B-ETH_USDT"])
+        feed.sio.emit = AsyncMock()
+        calls = []
+
+        async def fetch(pair, limit=320):
+            calls.append(pair)
+            if pair == "B-BTC_USDT":
+                raise RuntimeError("temporary REST failure")
+            return [_row(1_800_000_000_000, 100.0)]
+
+        feed.fetch_history = AsyncMock(side_effect=fetch)
+
+        async def run():
+            await feed._on_connect()
+            await feed._on_disconnect()
+            await feed._on_connect()
+            await feed._reconnect_backfill_task
+            self.assertCountEqual(calls, ["B-BTC_USDT", "B-ETH_USDT"])
+            await feed.close()
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":
