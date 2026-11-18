@@ -140,6 +140,7 @@ class CandidateStore:
                              AND NULLIF(s.payload->>'entry','') IS NOT NULL
                              AND NULLIF(s.payload->>'stop','') IS NOT NULL
                              AND NULLIF(s.payload->>'target','') IS NOT NULL
+                             AND ABS((s.payload->>'entry')::double precision - (s.payload->>'stop')::double precision) > 0
                            ON CONFLICT(signal_id) DO NOTHING"""
                     )
             return cls(pool)
@@ -178,9 +179,9 @@ class CandidateStore:
                        COUNT(*) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
                        COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
                        COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
-                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS'))::numeric, 3) AS avg_realized_r,
-                       ROUND(AVG(o.best_favorable_r)::numeric, 3) AS avg_mfe_r,
-                       ROUND(AVG(o.worst_adverse_r)::numeric, 3) AS avg_mae_r
+                       ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS')))::numeric, 3) AS avg_realized_r,
+                       ROUND((AVG(o.best_favorable_r))::numeric, 3) AS avg_mfe_r,
+                       ROUND((AVG(o.worst_adverse_r))::numeric, 3) AS avg_mae_r
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
                    WHERE s.status='SENT'
