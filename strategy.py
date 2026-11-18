@@ -121,7 +121,7 @@ def has_contiguous_tail(df: pd.DataFrame, timeframe: str, required_bars: int) ->
     return bool((values[1:] - values[:-1] == interval_ms).all())
 
 
-def indicators(df: pd.DataFrame) -> pd.DataFrame:
+def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
     """Calculate indicators without mutating a possibly view-backed input frame.
 
     All derived columns are built as independent Series and concatenated once.
@@ -138,17 +138,20 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     ema9 = close.ewm(span=EMA_FAST, adjust=False).mean()
     ema21 = close.ewm(span=EMA_SLOW, adjust=False).mean()
 
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(
-        alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
-    ).mean()
-    loss = (-delta.clip(upper=0)).ewm(
-        alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
-    ).mean()
-    rs = gain / loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.mask((loss == 0) & (gain > 0), 100)
-    rsi = rsi.mask((loss == 0) & (gain == 0), 50)
+    if include_rsi:
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(
+            alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
+        ).mean()
+        loss = (-delta.clip(upper=0)).ewm(
+            alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
+        ).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.mask((loss == 0) & (gain > 0), 100)
+        rsi = rsi.mask((loss == 0) & (gain == 0), 50)
+    else:
+        rsi = pd.Series(np.nan, index=base.index, dtype=float)
 
     prev_close = close.shift(1)
     tr = pd.concat([
@@ -203,7 +206,8 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
             or not has_contiguous_tail(df15, "15m", 35)):
         return None
 
-    a = indicators(df5.copy())
+    armed_sides = armed_sides or set()
+    a = indicators(df5.copy(), include_rsi=bool(armed_sides))
     if len(a) < 35:
         return None
     c = a.iloc[-1]
@@ -284,7 +288,7 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict
     return evaluate_setup(df5, df15)
 
 
-def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict:
+def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict:
     """Return per-side setup, invalidation and RSI-cross inputs from closed bars.
 
     The caller persists state separately for LONG and SHORT. 15m EMA direction
@@ -299,7 +303,7 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -
         return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
                 "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
     c, p = a.iloc[-1], a.iloc[-2]
-    required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di, c.rsi, p.rsi)
+    required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di)
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
         return {"LONG": {"setup_valid": False, "invalidation": True, "trigger": False},
                 "SHORT": {"setup_valid": False, "invalidation": True, "trigger": False}}
@@ -313,8 +317,12 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -
                     or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di))
     short_invalid = (float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
                      or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di))
-    long_trigger = float(p.rsi) < settings.rsi_long_min and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max
-    short_trigger = float(p.rsi) > settings.rsi_short_max and settings.rsi_short_min <= float(c.rsi) <= settings.rsi_short_max
+    long_trigger = ("LONG" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
+                    and float(p.rsi) < settings.rsi_long_min
+                    and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max)
+    short_trigger = ("SHORT" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
+                     and float(p.rsi) > settings.rsi_short_max
+                     and settings.rsi_short_min <= float(c.rsi) <= settings.rsi_short_max)
     return {
         "LONG": {"setup_valid": bool(long_setup), "invalidation": bool(long_invalid),
                  "trigger": bool(long_trigger)},
