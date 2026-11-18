@@ -24,27 +24,13 @@ from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
 
-from config import settings
+from config import settings, SYMBOLS, STRATEGY_KEY
 
 LOG_LEVEL = settings.log_level
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cryptobyance")
 
 # Fixed, deterministic universe: liquid USDT-margined perpetual contracts.
-SYMBOLS = [
-    "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-    "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
-    "TRX/USDT", "LTC/USDT", "BCH/USDT", "NEAR/USDT", "APT/USDT",
-    "ARB/USDT", "OP/USDT", "SUI/USDT", "SEI/USDT", "INJ/USDT",
-    "ATOM/USDT", "ETC/USDT", "FIL/USDT", "ICP/USDT", "AAVE/USDT",
-    "UNI/USDT", "TIA/USDT", "JUP/USDT", "WIF/USDT", "PEPE/USDT",
-    "FLOKI/USDT", "SHIB/USDT", "RUNE/USDT", "FTM/USDT", "GALA/USDT",
-    "SAND/USDT", "MANA/USDT", "AXS/USDT", "EGLD/USDT", "ALGO/USDT",
-    "VET/USDT", "THETA/USDT", "EOS/USDT", "XLM/USDT", "HBAR/USDT",
-    "MKR/USDT", "CRV/USDT", "LDO/USDT", "DYDX/USDT", "1000BONK/USDT",
-    "1000PEPE/USDT", "ORDI/USDT", "STX/USDT", "IMX/USDT", "GRT/USDT",
-    "QNT/USDT", "ENS/USDT", "KAS/USDT", "PENDLE/USDT", "ONDO/USDT",
-]
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
 # Scan only around completed 5m candle closes. Stale data waits for the
@@ -210,7 +196,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             if candidate_store is None:
                 raise RuntimeError('persistent candidate store is required for per-symbol state')
             persisted_states = await candidate_store.load_symbol_states(
-                "coindcx_per_symbol_v1", display_symbol
+                STRATEGY_KEY, display_symbol
             )
             armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
             state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
