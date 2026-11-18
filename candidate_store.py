@@ -65,9 +65,15 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
  exit_price DOUBLE PRECISION,
  realized_r DOUBLE PRECISION,
  data_gap BOOLEAN NOT NULL DEFAULT FALSE,
+ best_favorable_candle_open_ms BIGINT,
+ worst_adverse_candle_open_ms BIGINT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE signal_outcomes
+ ADD COLUMN IF NOT EXISTS best_favorable_candle_open_ms BIGINT;
+ALTER TABLE signal_outcomes
+ ADD COLUMN IF NOT EXISTS worst_adverse_candle_open_ms BIGINT;
 CREATE INDEX IF NOT EXISTS ix_signal_outcomes_symbol_status
  ON signal_outcomes(symbol,status,last_observed_candle_open_ms);
 
@@ -152,7 +158,7 @@ class CandidateStore:
         await self.pool.close()
 
     async def performance_summary(self) -> dict:
-        """Return aggregate and per-symbol outcome metrics; never expose trade payloads."""
+        """Return aggregate and global risk diagnostics without exposing trade payloads."""
         async with self.pool.acquire() as conn:
             totals = await conn.fetchrow(
                 """SELECT
@@ -188,12 +194,59 @@ class CandidateStore:
                    GROUP BY o.symbol,o.direction
                    ORDER BY o.symbol,o.direction"""
             )
+            # Global stop/target profile. Timestamp comparisons deliberately
+            # exclude the exit candle because OHLC cannot reveal the order of
+            # its high and low. This makes "before exit" excursion counts safe.
+            risk_by_outcome = await conn.fetch(
+                """SELECT o.status,COUNT(*) AS count,
+                       ROUND(AVG(o.best_favorable_r)::numeric,3) AS avg_mfe_r,
+                       ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS median_mfe_r,
+                       ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS p75_mfe_r,
+                       ROUND(percentile_cont(0.90) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS p90_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r)::numeric,3) AS avg_mae_r,
+                       ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS median_mae_r,
+                       ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS p75_mae_r,
+                       ROUND(percentile_cont(0.90) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS p90_mae_r,
+                       ROUND(AVG(o.bars_observed)::numeric,1) AS avg_bars_to_exit,
+                       COUNT(o.best_favorable_candle_open_ms) AS mfe_timestamped,
+                       COUNT(o.worst_adverse_candle_open_ms) AS mae_timestamped,
+                       COUNT(*) FILTER (WHERE o.status='STOP_LOSS'
+                           AND o.best_favorable_r>=0.50
+                           AND o.best_favorable_candle_open_ms<o.exit_candle_open_ms) AS stop_mfe_050r_before_exit,
+                       COUNT(*) FILTER (WHERE o.status='STOP_LOSS'
+                           AND o.best_favorable_r>=1.00
+                           AND o.best_favorable_candle_open_ms<o.exit_candle_open_ms) AS stop_mfe_100r_before_exit,
+                       COUNT(*) FILTER (WHERE o.status='TARGET'
+                           AND o.worst_adverse_r>=0.50
+                           AND o.worst_adverse_candle_open_ms<o.exit_candle_open_ms) AS target_mae_050r_before_exit,
+                       COUNT(*) FILTER (WHERE o.status='TARGET'
+                           AND o.worst_adverse_r>=1.00
+                           AND o.worst_adverse_candle_open_ms<o.exit_candle_open_ms) AS target_mae_100r_before_exit
+                   FROM signal_outcomes o
+                   JOIN signal_history s ON s.id=o.signal_id
+                   WHERE s.status='SENT' AND o.status IN ('TARGET','STOP_LOSS')
+                   GROUP BY o.status ORDER BY o.status"""
+            )
+            by_direction = await conn.fetch(
+                """SELECT o.direction,o.status,COUNT(*) AS count,
+                       ROUND(AVG(o.realized_r)::numeric,3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r)::numeric,3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r)::numeric,3) AS avg_mae_r,
+                       ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS median_mfe_r,
+                       ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS median_mae_r
+                   FROM signal_outcomes o
+                   JOIN signal_history s ON s.id=o.signal_id
+                   WHERE s.status='SENT'
+                   GROUP BY o.direction,o.status ORDER BY o.direction,o.status"""
+            )
             outbox = await conn.fetch(
                 """SELECT status,COUNT(*) AS count
                    FROM telegram_outbox GROUP BY status ORDER BY status"""
             )
         return {
             "totals": dict(totals) if totals else {},
+            "risk_by_outcome": [dict(row) for row in risk_by_outcome],
+            "by_direction": [dict(row) for row in by_direction],
             "by_symbol_direction": [dict(row) for row in by_symbol],
             "outbox": [dict(row) for row in outbox],
         }
@@ -306,7 +359,8 @@ class CandidateStore:
                 """SELECT o.signal_id,o.direction,o.signal_candle_open_ms,o.entry,
                           o.stop,o.target,o.risk_per_unit,o.best_favorable_r,
                           o.worst_adverse_r,o.bars_observed,
-                          o.last_observed_candle_open_ms,o.data_gap
+                          o.last_observed_candle_open_ms,o.data_gap,
+                          o.best_favorable_candle_open_ms,o.worst_adverse_candle_open_ms
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
                    WHERE o.symbol=$1 AND o.status='OPEN' AND s.status='SENT'
@@ -321,6 +375,8 @@ class CandidateStore:
                 risk = float(outcome["risk_per_unit"])
                 best = float(outcome["best_favorable_r"])
                 worst = float(outcome["worst_adverse_r"])
+                best_ts = outcome["best_favorable_candle_open_ms"]
+                worst_ts = outcome["worst_adverse_candle_open_ms"]
                 bars_seen = int(outcome["bars_observed"])
                 last_ts = int(outcome["last_observed_candle_open_ms"])
                 data_gap = bool(outcome["data_gap"])
@@ -352,8 +408,12 @@ class CandidateStore:
                         adverse = max(0.0, (high - entry) / risk)
                         stop_hit = high >= stop
                         target_hit = low <= target
-                    best = max(best, favorable)
-                    worst = max(worst, adverse)
+                    if favorable > best:
+                        best = favorable
+                        best_ts = ts
+                    if adverse > worst:
+                        worst = adverse
+                        worst_ts = ts
                     bars_seen += 1
                     last_ts = ts
                     if stop_hit and target_hit:
@@ -379,10 +439,11 @@ class CandidateStore:
                        SET status=$2,best_favorable_r=$3,worst_adverse_r=$4,
                            bars_observed=$5,last_observed_candle_open_ms=$6,
                            exit_candle_open_ms=$7,exit_price=$8,realized_r=$9,
-                           data_gap=$10,updated_at=NOW()
+                           data_gap=$10,best_favorable_candle_open_ms=$11,
+                           worst_adverse_candle_open_ms=$12,updated_at=NOW()
                        WHERE signal_id=$1 AND status='OPEN'""",
                     int(outcome["signal_id"]),status,best,worst,bars_seen,last_ts,
-                    exit_ts,exit_price,realized_r,data_gap)
+                    exit_ts,exit_price,realized_r,data_gap,best_ts,worst_ts)
                 updated += 1
             return updated
 
