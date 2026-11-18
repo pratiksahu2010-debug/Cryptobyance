@@ -29,15 +29,16 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
             "candle": 1_800_000_000_000,
         }
 
-    def test_tradingview_url_uses_binance_usdt_perpetual_and_five_minute_interval(self):
+    def test_tradingview_url_opens_symbol_market_directory_without_wrong_exchange_assumption(self):
         self.assertEqual(
             TelegramNotifier.tradingview_url("BTC/USDT"),
-            "https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P&interval=5",
+            "https://www.tradingview.com/symbols/BTCUSDT/markets/",
         )
         self.assertEqual(
             TelegramNotifier.tradingview_url("1000BONK/USDT"),
-            "https://www.tradingview.com/chart/?symbol=BINANCE%3A1000BONKUSDT.P&interval=5",
+            "https://www.tradingview.com/symbols/1000BONKUSDT/markets/",
         )
+        self.assertNotIn("BINANCE", TelegramNotifier.tradingview_url("BTC/USDT"))
 
     def test_tradingview_url_rejects_invalid_or_non_usdt_symbols(self):
         self.assertEqual(TelegramNotifier.tradingview_url(""), "")
@@ -47,10 +48,10 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
     def test_formatted_signal_contains_clickable_tradingview_chart_link(self):
         message = TelegramNotifier.format_message(self._signal())
         self.assertIn(
-            '<a href="https://www.tradingview.com/chart/?symbol=BINANCE%3ABTCUSDT.P&amp;interval=5">',
+            '<a href="https://www.tradingview.com/symbols/BTCUSDT/markets/">',
             message,
         )
-        self.assertIn("OPEN BINANCE PERPETUAL CHART · 5m", message)
+        self.assertIn("OPEN TRADINGVIEW MARKET LIST · SELECT EXCHANGE", message)
         self.assertIn("CoinDCX USDT Perpetual", message)
         self.assertIn("EMA 9/21: aligned with signal direction", message)
         self.assertIn("15m trend filter:", message)
