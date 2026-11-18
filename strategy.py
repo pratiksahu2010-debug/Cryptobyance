@@ -40,14 +40,15 @@ def candles_to_frame(raw: list) -> pd.DataFrame:
     else:
         raise ValueError(f"unsupported OHLCV row width: {width}")
     df = pd.DataFrame(raw, columns=columns)
-    # Build a converted frame instead of assigning through a potentially
-    # view-backed column. This is safe with pandas Copy-on-Write (pandas 3.0)
-    # and avoids repeated ChainedAssignmentError FutureWarnings in production.
+    # Construct converted columns in a fresh frame. Avoid mutating the
+    # original frame through assign/setitem paths under pandas Copy-on-Write.
     numeric_columns = ("timestamp", "open", "high", "low", "close", "volume")
-    df = df.assign(**{
+    converted = pd.DataFrame({
         col: pd.to_numeric(df[col], errors="coerce")
         for col in numeric_columns
-    })
+    }, index=df.index)
+    extras = df.drop(columns=list(numeric_columns))
+    df = pd.concat([converted, extras], axis=1)
     return df.dropna(subset=["timestamp", "close", "volume"]).reset_index(drop=True)
 
 def timeframe_milliseconds(timeframe: str) -> int:
