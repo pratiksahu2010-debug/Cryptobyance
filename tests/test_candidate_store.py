@@ -57,7 +57,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(queued)
         history_insert = next(args for query, args in conn.fetchrow_calls
                               if "INSERT INTO signal_history" in query)
-        saved_payload = json.loads(history_insert[1][4])
+        saved_payload = json.loads(history_insert[4])
         self.assertEqual(
             saved_payload["performance_attribution"]["strategy_key"], "default"
         )
