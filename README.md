@@ -4,7 +4,7 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 
 ## Strategy — one engine only
 
-**5-minute completed-candle entry. 15-minute context is not an entry gate.**
+**5-minute completed-candle entry with mandatory 15-minute EMA trend confirmation.**
 
 LONG requires all conditions on the latest completed 5m candle:
 - EMA(9) > EMA(21) (alignment; a fresh crossover is not required).
@@ -28,7 +28,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 - Active futures instruments: public CoinDCX active-instruments endpoint.
 - Historical 5m candles: public CoinDCX futures candlestick REST endpoint.
 - Live updates: public CoinDCX futures Socket.IO 5m candlestick channels.
-- The scanner aggregates aligned groups of three completed 5m candles into 15m bars. At least 35 valid 15m bars are required; the latest 15m EMA(9)/EMA(21) direction is a mandatory veto.
+- The scanner aggregates aligned groups of three completed 5m candles into 15m bars. At least 35 valid, contiguous 15m bars are required; the latest 15m EMA(9)/EMA(21) direction is a mandatory veto. Signal calculation also requires the latest 60 completed 5m bars to be contiguous; gaps in either indicator window block signals until a complete window is restored.
 - Reconnects: Socket.IO reconnection with bounded retry delay.
 - Recovery: REST history is refreshed for symbols whose candle cache is missing or stale.
 - Public market data only. No CoinDCX API key or secret is required.
@@ -103,7 +103,7 @@ These fields are **observability data only**. They do not add entry filters, cha
 
 ## Delivered-signal outcome tracking
 
-New delivered alerts are tracked in PostgreSQL `signal_outcomes`. For each signal, subsequent completed 5m candles update maximum favourable excursion (MFE) and maximum adverse excursion (MAE), both in units of initial risk (R). The first stop/target resolution is recorded; a candle touching both levels is labelled `AMBIGUOUS` because OHLC data cannot establish which level traded first. Missing 5m intervals set `data_gap=true`.
+Only Telegram-confirmed delivered alerts are inserted into PostgreSQL `signal_outcomes`; queued, retrying, or permanently failed alerts are excluded. Outcome-row creation is committed atomically with the signal-history transition to `SENT`. For each delivered signal, subsequent completed 5m candles update maximum favourable excursion (MFE) and maximum adverse excursion (MAE), both in units of initial risk (R). The first stop/target resolution is recorded; a candle touching both levels is labelled `AMBIGUOUS` because OHLC data cannot establish which level traded first. Missing 5m intervals set `data_gap=true`.
 
 Only alerts with `signal_history.status='SENT'` are included. The signal candle is excluded from outcome measurement because the assumed entry is its close. Open outcomes remain open until a stop or target is reached; there is no invented time-based exit. This is research telemetry, not simulated exchange fills, and it does not change signals or execute orders.
 
