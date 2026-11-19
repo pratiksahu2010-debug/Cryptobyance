@@ -91,7 +91,7 @@ class TelegramNotifier:
             + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
-            + f"<b>15m trend filter: {escape(str(signal.get('context', 'unavailable')))}</b>"
+            + f"<b>15m trend filter: {escape(str(signal.get('context', 'unavailable')))} (mandatory direction confirmation)</b>"
             + signal_ref
             + "\n\n<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
