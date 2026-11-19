@@ -84,7 +84,7 @@ class TelegramNotifier:
             + f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
             + chart_link
             + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
-            + f"<b>Bar time: <code>{candle_time}</code></b>\n"
+            + f"<b>5m candle close: <code>{candle_time}</code></b>\n"
             + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\n"
             + ema_line
             + vwap_line
