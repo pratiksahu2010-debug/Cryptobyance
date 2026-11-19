@@ -121,7 +121,7 @@ def has_contiguous_tail(df: pd.DataFrame, timeframe: str, required_bars: int) ->
     return bool((values[1:] - values[:-1] == interval_ms).all())
 
 
-def indicators(df: pd.DataFrame) -> pd.DataFrame:
+def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
     """Calculate indicators without mutating a possibly view-backed input frame.
 
     All derived columns are built as independent Series and concatenated once.
@@ -138,17 +138,20 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
     ema9 = close.ewm(span=EMA_FAST, adjust=False).mean()
     ema21 = close.ewm(span=EMA_SLOW, adjust=False).mean()
 
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(
-        alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
-    ).mean()
-    loss = (-delta.clip(upper=0)).ewm(
-        alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
-    ).mean()
-    rs = gain / loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.mask((loss == 0) & (gain > 0), 100)
-    rsi = rsi.mask((loss == 0) & (gain == 0), 50)
+    if include_rsi:
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(
+            alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
+        ).mean()
+        loss = (-delta.clip(upper=0)).ewm(
+            alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD
+        ).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.mask((loss == 0) & (gain > 0), 100)
+        rsi = rsi.mask((loss == 0) & (gain == 0), 50)
+    else:
+        rsi = pd.Series(np.nan, index=base.index, dtype=float)
 
     prev_close = close.shift(1)
     tr = pd.concat([
@@ -193,17 +196,16 @@ def indicators(df: pd.DataFrame) -> pd.DataFrame:
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Simple completed-5m EMA/VWAP/RSI/ADX strategy with a hard 15m EMA veto.
 
-    LONG: 5m EMA9 > EMA21, close > VWAP, RSI14 > 50, ADX14 >= 20.
-    SHORT: exact inverse. 15m EMA9/EMA21 must agree with the signal direction.
-    ATR14 defines the protective stop distance and configured R-multiple target.
-    No extra slope, alignment-age, DI, or VWAP-extension entry gates are applied.
+    The persisted state machine has already confirmed the directional setup and
+    RSI-band trigger. This builder rechecks EMA/VWAP/ADX plus the 15m veto and
+    creates a prior-swing stop with configured TP1/TP2 levels.
     """
     if (not has_contiguous_tail(df5, "5m", 60)
             or df15 is None
             or not has_contiguous_tail(df15, "15m", 35)):
         return None
 
-    a = indicators(df5.copy())
+    a = indicators(df5.copy(), include_rsi=True)
     if len(a) < 35:
         return None
     c = a.iloc[-1]
@@ -216,13 +218,11 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     long_ok = (
         float(c.ema9) > float(c.ema21)
         and float(c.close) > float(c.vwap)
-        and float(c.rsi) > 50.0
         and float(c.adx) >= ADX_MIN
     )
     short_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
-        and float(c.rsi) < 50.0
         and float(c.adx) >= ADX_MIN
     )
     if not (long_ok or short_ok):
@@ -248,7 +248,17 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
     entry = float(c.close)
     atr_value = float(c.atr)
-    risk = atr_value * ATR_STOP_MULT
+    # Use the validated indicator frame so callers that inject precomputed
+    # indicator rows (e.g. deterministic replay/tests) keep price fields aligned.
+    swing = a.iloc[-(settings.swing_lookback_bars + 1):-1]
+    if len(swing) < settings.swing_lookback_bars:
+        return None
+    stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
+    risk = entry - stop if side == "LONG" else stop - entry
+    if not np.isfinite(risk) or risk <= 0:
+        return None
+    target1 = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
+    target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
     diagnostics = {
@@ -267,18 +277,76 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         return None
 
     return {
-        "side": side, "entry": entry,
-        "stop": entry - risk if side == "LONG" else entry + risk,
-        "target": entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR,
-        "rr": MIN_RR, "rsi": float(c.rsi), "adx": float(c.adx),
+        "side": side, "entry": entry, "stop": stop,
+        "target": target2, "target1": target1, "target2": target2,
+        "rr": settings.tp2_r, "rsi": float(c.rsi), "adx": float(c.adx),
+        "ema9": float(c.ema9), "ema21": float(c.ema21), "vwap": float(c.vwap),
         "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
         "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
-        "atr": atr_value, "vwap": float(c.vwap), "candle": int(c.timestamp),
+        "atr": atr_value, "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": context, "diagnostics": diagnostics,
     }
 
 
 def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Strict same-candle 5m signal evaluator; never queues delayed candidates."""
-    return evaluate_setup(df5, df15)
+    """Backward-compatible standalone evaluator; the scanner uses the staged state machine.
+
+    Keep the pre-v2 public helper's ATR stop and configured risk/reward contract
+    for existing integrations. Production alerts are built by evaluate_setup
+    only after a persisted ARMED RSI trigger and use swing-based TP1/TP2 levels.
+    """
+    signal = evaluate_setup(df5, df15)
+    if signal is None:
+        return None
+    risk = float(signal["atr"]) * ATR_STOP_MULT
+    entry = float(signal["entry"])
+    side = signal["side"]
+    signal["stop"] = entry - risk if side == "LONG" else entry + risk
+    signal["target"] = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
+    signal["rr"] = MIN_RR
+    return signal
+
+
+def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict:
+    """Return per-side setup, invalidation and RSI-cross inputs from closed bars.
+
+    The caller persists state separately for LONG and SHORT. 15m EMA direction
+    remains the existing higher-timeframe veto; it is not a substitute for the
+    explicit 5m DI/ADX setup conditions.
+    """
+    if not has_contiguous_tail(df5, "5m", 60) or df15 is None or not has_contiguous_tail(df15, "15m", 35):
+        return None
+    armed_sides = armed_sides or set()
+    a = indicators(df5.copy(), include_rsi=bool(armed_sides))
+    if len(a) < 35:
+        return None
+    c, p = a.iloc[-1], a.iloc[-2]
+    required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di)
+    if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
+        # Missing/invalid indicator context is not a market invalidation.
+        # Defer this candle without mutating an existing ARMED setup.
+        return None
+    context_ema_fast = df15["close"].ewm(span=EMA_FAST, adjust=False).mean().iloc[-1]
+    context_ema_slow = df15["close"].ewm(span=EMA_SLOW, adjust=False).mean().iloc[-1]
+    context_long = float(context_ema_fast) > float(context_ema_slow)
+    context_short = float(context_ema_fast) < float(context_ema_slow)
+    common = float(c.adx) >= ADX_MIN
+    long_setup = common and float(c.plus_di) > float(c.minus_di) and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap) and context_long
+    short_setup = common and float(c.minus_di) > float(c.plus_di) and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap) and context_short
+    long_invalid = (float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
+                    or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di))
+    short_invalid = (float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
+                     or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di))
+    long_trigger = (long_setup and "LONG" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
+                    and float(p.rsi) < settings.rsi_long_min
+                    and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max)
+    short_trigger = (short_setup and "SHORT" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
+                     and float(p.rsi) > settings.rsi_short_max
+                     and settings.rsi_short_min <= float(c.rsi) <= settings.rsi_short_max)
+    return {
+        "LONG": {"setup_valid": bool(long_setup), "invalidation": bool(long_invalid),
+                 "trigger": bool(long_trigger)},
+        "SHORT": {"setup_valid": bool(short_setup), "invalidation": bool(short_invalid),
+                  "trigger": bool(short_trigger)},
+    }

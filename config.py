@@ -6,6 +6,27 @@ import os
 from dataclasses import dataclass, field
 
 
+CONFIG_VERSION = "v2"
+STRATEGY_KEY = "coindcx_per_symbol_v2"
+
+SYMBOLS = (
+    "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
+    "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
+    "TRX/USDT", "LTC/USDT", "BCH/USDT", "NEAR/USDT", "APT/USDT",
+    "ARB/USDT", "OP/USDT", "SUI/USDT", "SEI/USDT", "INJ/USDT",
+    "ATOM/USDT", "ETC/USDT", "FIL/USDT", "ICP/USDT", "AAVE/USDT",
+    "UNI/USDT", "TIA/USDT", "JUP/USDT", "WIF/USDT", "PEPE/USDT",
+    "FLOKI/USDT", "SHIB/USDT", "RUNE/USDT", "FTM/USDT", "GALA/USDT",
+    "SAND/USDT", "MANA/USDT", "AXS/USDT", "EGLD/USDT", "ALGO/USDT",
+    "VET/USDT", "THETA/USDT", "EOS/USDT", "XLM/USDT", "HBAR/USDT",
+    "MKR/USDT", "CRV/USDT", "LDO/USDT", "DYDX/USDT", "1000BONK/USDT",
+    "1000PEPE/USDT", "ORDI/USDT", "STX/USDT", "IMX/USDT", "GRT/USDT",
+    "QNT/USDT", "ENS/USDT", "KAS/USDT", "PENDLE/USDT", "ONDO/USDT",
+ )
+
+assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
+
+
 def _integer(name: str, default: str, minimum: int, maximum: int) -> int:
     try:
         value = int(os.getenv(name, default))
@@ -39,6 +60,13 @@ class Settings:
     ema_slow: int
     rsi_period: int
     adx_period: int
+    rsi_long_min: float
+    rsi_long_max: float
+    rsi_short_min: float
+    rsi_short_max: float
+    swing_lookback_bars: int
+    tp1_r: float
+    tp2_r: float
     atr_stop_multiplier: float
     min_risk_reward: float
     log_level: str
@@ -62,10 +90,21 @@ class Settings:
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
 
+        rsi_long_min = _number("RSI_LONG_MIN", "52", 0, 100)
+        rsi_long_max = _number("RSI_LONG_MAX", "70", 0, 100)
+        rsi_short_min = _number("RSI_SHORT_MIN", "30", 0, 100)
+        rsi_short_max = _number("RSI_SHORT_MAX", "42", 0, 100)
+        if rsi_long_min >= rsi_long_max or rsi_short_min >= rsi_short_max:
+            raise ValueError("RSI band minimums must be below their maximums")
+        tp1_r = _number("TP1_R", "1", 0.01, 20)
+        tp2_r = _number("TP2_R", "2", 0.01, 40)
+        if tp2_r <= tp1_r:
+            raise ValueError("TP2_R must be greater than TP1_R")
+
         return cls(
             scan_interval_seconds=_integer("SCAN_INTERVAL_SECONDS", "60", 20, 600),
             concurrency=_integer("CONCURRENCY", "8", 1, 16),
-            signal_cooldown_candles=_integer("SIGNAL_COOLDOWN_CANDLES", "3", 1, 100),
+            signal_cooldown_candles=_integer("SIGNAL_COOLDOWN_CANDLES", "4", 1, 100),
             timeframe=timeframe,
             context_timeframe=context_timeframe,
             adx_min=_number("ADX_MIN", "20", 0.01, 100),
@@ -73,6 +112,13 @@ class Settings:
             ema_slow=ema_slow,
             rsi_period=_integer("RSI_PERIOD", "14", 2, 100),
             adx_period=_integer("ADX_PERIOD", "14", 2, 100),
+            rsi_long_min=rsi_long_min,
+            rsi_long_max=rsi_long_max,
+            rsi_short_min=rsi_short_min,
+            rsi_short_max=rsi_short_max,
+            swing_lookback_bars=_integer("SWING_LOOKBACK_BARS", "10", 2, 100),
+            tp1_r=tp1_r,
+            tp2_r=tp2_r,
             atr_stop_multiplier=_number("ATR_STOP_MULTIPLIER", "1.5", 0.000001),
             min_risk_reward=_number("MIN_RISK_REWARD", "1.5", 0.000001),
             log_level=log_level,

@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 import asyncpg
 
-from state_machine import STATE_DDL, persist_signal_lifecycle
+from state_machine import STATE_DDL, advance_persisted_state, persist_signal_lifecycle
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -284,6 +284,30 @@ class CandidateStore:
         # Retain candidate audit rows and all signal, delivery, cooldown and
         # runtime records. No automatic DELETE is performed by this cleanup.
         return {"expired": int(expired_tag.rsplit(" ", 1)[-1]), "deleted": 0}
+
+    async def load_symbol_states(self, strategy_key: str, symbol: str) -> dict[str, str]:
+        """Load durable direction states so RSI is computed only for ARMED sides."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT direction,state FROM strategy_signal_states
+                   WHERE strategy_key=$1 AND symbol=$2""", strategy_key, symbol
+            )
+        return {str(row["direction"]): str(row["state"]) for row in rows}
+
+    async def advance_symbol_state(
+        self, *, strategy_key: str, symbol: str, direction: str,
+        candle_open_ms: int, setup_valid: bool, invalidation: bool,
+        trigger: bool, cooldown_candles: int,
+    ) -> str:
+        """Advance one per-symbol/per-side state on a newly closed candle."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                return await advance_persisted_state(
+                    conn, strategy_key=strategy_key, symbol=symbol,
+                    direction=direction, candle_open_ms=candle_open_ms,
+                    setup_valid=setup_valid, invalidation=invalidation,
+                    trigger=trigger, cooldown_candles=cooldown_candles,
+                )
 
     async def invalidate(self, symbol: str):
         async with self.pool.acquire() as conn:

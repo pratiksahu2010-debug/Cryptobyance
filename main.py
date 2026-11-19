@@ -19,32 +19,18 @@ from pydantic import BaseModel
 load_dotenv()
 
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
-from strategy import evaluate_setup, indicators, timeframe_milliseconds, validate_ohlcv
+from strategy import evaluate_setup, evaluate_state_inputs, indicators, timeframe_milliseconds, validate_ohlcv
 from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
 
-from config import settings
+from config import settings, SYMBOLS, STRATEGY_KEY, CONFIG_VERSION
 
 LOG_LEVEL = settings.log_level
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cryptobyance")
 
 # Fixed, deterministic universe: liquid USDT-margined perpetual contracts.
-SYMBOLS = [
-    "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-    "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
-    "TRX/USDT", "LTC/USDT", "BCH/USDT", "NEAR/USDT", "APT/USDT",
-    "ARB/USDT", "OP/USDT", "SUI/USDT", "SEI/USDT", "INJ/USDT",
-    "ATOM/USDT", "ETC/USDT", "FIL/USDT", "ICP/USDT", "AAVE/USDT",
-    "UNI/USDT", "TIA/USDT", "JUP/USDT", "WIF/USDT", "PEPE/USDT",
-    "FLOKI/USDT", "SHIB/USDT", "RUNE/USDT", "FTM/USDT", "GALA/USDT",
-    "SAND/USDT", "MANA/USDT", "AXS/USDT", "EGLD/USDT", "ALGO/USDT",
-    "VET/USDT", "THETA/USDT", "EOS/USDT", "XLM/USDT", "HBAR/USDT",
-    "MKR/USDT", "CRV/USDT", "LDO/USDT", "DYDX/USDT", "1000BONK/USDT",
-    "1000PEPE/USDT", "ORDI/USDT", "STX/USDT", "IMX/USDT", "GRT/USDT",
-    "QNT/USDT", "ENS/USDT", "KAS/USDT", "PENDLE/USDT", "ONDO/USDT",
-]
 assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
 
 # Scan only around completed 5m candle closes. Stale data waits for the
@@ -207,25 +193,61 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         df15 = candidate15
             except ValueError as context_error:
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
-            setup = evaluate_setup(df5, df15)
-            if not setup:
-                if journal is not None:
-                    try:
-                        observation = rejected_observation(df5, df15)
-                        if observation:
-                            observation["symbol"] = display_symbol
-                            await journal.record_rejected(observation)
-                    except Exception as journal_error:
-                        log.warning("rejected-candidate journal failed symbol=%s error_type=%s", display_symbol, type(journal_error).__name__)
-                if candidate_store is not None:
-                    # Retire legacy pending candidates so they can never promote later.
-                    await candidate_store.invalidate(display_symbol)
-                last_seen_candle[display_symbol] = closed_ts
-                state['symbols_ok'] += 1
-                return
-
+            # Backward-compatible path for isolated scanner adapters/tests that
+            # do not implement the v2 durable state API. The deployed
+            # CandidateStore always takes the staged branch below.
+            if candidate_store is None or not hasattr(candidate_store, "load_symbol_states"):
+                setup = evaluate_setup(df5, df15)
+                if not setup or candidate_store is None:
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
+            else:
+                persisted_states = await candidate_store.load_symbol_states(
+                    STRATEGY_KEY, display_symbol
+                )
+                armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
+                state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+                if state_inputs is None:
+                    log.warning("state scan deferred because indicator context is incomplete symbol=%s", display_symbol)
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
+                triggered_side = None
+                for side in ("LONG", "SHORT"):
+                    item = state_inputs[side]
+                    action = await candidate_store.advance_symbol_state(
+                        strategy_key=STRATEGY_KEY,
+                        symbol=display_symbol, direction=side,
+                        candle_open_ms=closed_ts,
+                        setup_valid=item["setup_valid"],
+                        invalidation=item["invalidation"],
+                        trigger=item["trigger"],
+                        cooldown_candles=COOLDOWN_CANDLES,
+                    )
+                    if action == "TRIGGER":
+                        triggered_side = side
+                if triggered_side is None:
+                    if journal is not None and armed_sides:
+                        try:
+                            observation = rejected_observation(df5, df15)
+                            if observation:
+                                observation["symbol"] = display_symbol
+                                await journal.record_rejected(observation)
+                        except Exception as journal_error:
+                            log.warning('rejected-candidate journal failed symbol=%s error_type=%s', display_symbol, type(journal_error).__name__)
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
+                setup = evaluate_setup(df5, df15)
+                if not setup or setup.get("side") != triggered_side:
+                    log.warning("state trigger lacked matching executable signal symbol=%s side=%s", display_symbol, triggered_side)
+                    last_seen_candle[display_symbol] = closed_ts
+                    state['symbols_ok'] += 1
+                    return
             signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
+            signal['config_version'] = CONFIG_VERSION
             signal['candle_close'] = five_minute_close
             signal['signal_generated_at'] = datetime.now(timezone.utc).isoformat()
             # Point-in-time research snapshot: telemetry only; never feeds back into entry rules.
@@ -250,10 +272,6 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 }
             except Exception as snapshot_error:
                 log.warning("signal snapshot enrichment failed symbol=%s error_type=%s", display_symbol, type(snapshot_error).__name__)
-            # Retire pending rows created by older releases; the current engine
-            # never promotes a candidate after its crossover candle.
-            if candidate_store is not None:
-                await candidate_store.invalidate(display_symbol)
             if candidate_store is None:
                 raise RuntimeError('persistent candidate store is required to queue a signal')
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
@@ -264,7 +282,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
             queued = await candidate_store.enqueue_signal(
                 signal, None, COOLDOWN_CANDLES,
-                strategy_key="ema_vwap_rsi_adx_15m_v1",
+                strategy_key=STRATEGY_KEY,
             )
             last_seen_candle[display_symbol] = closed_ts
             if queued:
