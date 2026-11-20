@@ -10,6 +10,17 @@ from config import settings
 from outcomes import advance_outcome
 from state_machine import STATE_DDL, advance_persisted_state, persist_signal_lifecycle
 
+def _percentile(values: list[float], fraction: float) -> float | None:
+    ordered = sorted(float(value) for value in values if value is not None)
+    if not ordered:
+        return None
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -265,8 +276,155 @@ class CandidateStore:
     async def close(self):
         await self.pool.close()
 
+    async def _performance_summary_sqlite(self) -> dict:
+        """SQLite-compatible equivalent; percentiles are calculated from ordered local rows."""
+        async with self.pool.acquire() as conn:
+            totals = await conn.fetchrow(
+                """SELECT
+                       COUNT(*) FILTER (WHERE s.status='SENT') AS delivered_signals,
+                       COUNT(*) FILTER (WHERE s.status='DELIVERY_FAILED') AS delivery_failed,
+                       COUNT(*) FILTER (WHERE s.status='QUEUED') AS queued,
+                       COUNT(o.signal_id) AS tracked_outcomes,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='OPEN') AS open,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='TARGET') AS targets,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='TIMEOUT') AS timeouts,
+                       COUNT(o.signal_id) FILTER (WHERE o.result='WIN') AS wins,
+                       COUNT(o.signal_id) FILTER (WHERE o.result='LOSS') AS losses,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                       COUNT(o.signal_id) FILTER (WHERE o.data_gap) AS data_gaps,
+                       COUNT(*) FILTER (WHERE s.status='SENT' AND o.signal_id IS NULL) AS sent_without_outcome,
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT')), 3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r), 3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r), 3) AS avg_mae_r,
+                       ROUND(AVG(o.best_favorable_pct), 3) AS avg_mfe_pct,
+                       ROUND(AVG(o.worst_adverse_pct), 3) AS avg_mae_pct
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id"""
+            )
+            by_strategy = await conn.fetch(
+                """SELECT COALESCE(s.payload #>> '{performance_attribution,strategy_key}',
+                                      'legacy_unattributed') AS strategy_key,
+                       COUNT(*) FILTER (WHERE s.status='SENT') AS delivered_signals,
+                       COUNT(*) FILTER (WHERE s.status='DELIVERY_FAILED') AS delivery_failed,
+                       COUNT(*) FILTER (WHERE s.status='QUEUED') AS queued,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='TARGET') AS targets,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='TIMEOUT') AS timeouts,
+                       COUNT(o.signal_id) FILTER (WHERE o.result='WIN') AS wins,
+                       COUNT(o.signal_id) FILTER (WHERE o.result='LOSS') AS losses,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='OPEN') AS open,
+                       COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT')),3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r),3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r),3) AS avg_mae_r,
+                       ROUND(AVG(o.best_favorable_pct),3) AS avg_mfe_pct,
+                       ROUND(AVG(o.worst_adverse_pct),3) AS avg_mae_pct
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   GROUP BY 1 ORDER BY strategy_key"""
+            )
+            by_symbol = await conn.fetch(
+                """SELECT o.symbol,o.direction,COUNT(*) AS tracked,
+                       COUNT(*) FILTER (WHERE o.status='TARGET') AS targets,
+                       COUNT(*) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                       COUNT(*) FILTER (WHERE o.status='TIMEOUT') AS timeouts,
+                       COUNT(*) FILTER (WHERE o.result='WIN') AS wins,
+                       COUNT(*) FILTER (WHERE o.result='LOSS') AS losses,
+                       COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
+                       COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT')),3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r),3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r),3) AS avg_mae_r,
+                       ROUND(AVG(o.best_favorable_pct),3) AS avg_mfe_pct,
+                       ROUND(AVG(o.worst_adverse_pct),3) AS avg_mae_pct
+                   FROM signal_outcomes o JOIN signal_history s ON s.id=o.signal_id
+                   WHERE s.status='SENT' GROUP BY o.symbol,o.direction
+                   ORDER BY o.symbol,o.direction"""
+            )
+            risk_rows = await conn.fetch(
+                """SELECT o.status,o.best_favorable_r,o.worst_adverse_r,o.bars_observed,
+                          o.best_favorable_candle_open_ms,o.worst_adverse_candle_open_ms,
+                          o.exit_candle_open_ms
+                   FROM signal_outcomes o JOIN signal_history s ON s.id=o.signal_id
+                   WHERE s.status='SENT' AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
+                   ORDER BY o.status,o.signal_candle_open_ms"""
+            )
+            direction_rows = await conn.fetch(
+                """SELECT o.direction,o.status,o.realized_r,o.best_favorable_r,o.worst_adverse_r
+                   FROM signal_outcomes o JOIN signal_history s ON s.id=o.signal_id
+                   WHERE s.status='SENT' ORDER BY o.direction,o.status"""
+            )
+            outbox = await conn.fetch(
+                "SELECT status,COUNT(*) AS count FROM telegram_outbox GROUP BY status ORDER BY status"
+            )
+
+        def avg(rows, field):
+            values = [float(row[field]) for row in rows if row[field] is not None]
+            return round(sum(values) / len(values), 3) if values else None
+
+        risk_by_outcome = []
+        for status in sorted({str(row["status"]) for row in risk_rows}):
+            group = [row for row in risk_rows if row["status"] == status]
+            mfe = [float(row["best_favorable_r"]) for row in group if row["best_favorable_r"] is not None]
+            mae = [float(row["worst_adverse_r"]) for row in group if row["worst_adverse_r"] is not None]
+            risk_by_outcome.append({
+                "status": status, "count": len(group),
+                "avg_mfe_r": avg(group, "best_favorable_r"),
+                "median_mfe_r": _percentile(mfe, 0.50),
+                "p75_mfe_r": _percentile(mfe, 0.75),
+                "p90_mfe_r": _percentile(mfe, 0.90),
+                "avg_mae_r": avg(group, "worst_adverse_r"),
+                "median_mae_r": _percentile(mae, 0.50),
+                "p75_mae_r": _percentile(mae, 0.75),
+                "p90_mae_r": _percentile(mae, 0.90),
+                "avg_bars_to_exit": round(sum(int(row["bars_observed"] or 0) for row in group) / len(group), 1),
+                "mfe_timestamped": sum(row["best_favorable_candle_open_ms"] is not None for row in group),
+                "mae_timestamped": sum(row["worst_adverse_candle_open_ms"] is not None for row in group),
+                "stop_mfe_050r_before_exit": sum(
+                    row["status"] == "STOP_LOSS" and float(row["best_favorable_r"] or 0) >= 0.50
+                    and row["best_favorable_candle_open_ms"] is not None
+                    and row["exit_candle_open_ms"] is not None
+                    and row["best_favorable_candle_open_ms"] < row["exit_candle_open_ms"] for row in group),
+                "stop_mfe_100r_before_exit": sum(
+                    row["status"] == "STOP_LOSS" and float(row["best_favorable_r"] or 0) >= 1.00
+                    and row["best_favorable_candle_open_ms"] is not None
+                    and row["exit_candle_open_ms"] is not None
+                    and row["best_favorable_candle_open_ms"] < row["exit_candle_open_ms"] for row in group),
+                "target_mae_050r_before_exit": sum(
+                    row["status"] == "TARGET" and float(row["worst_adverse_r"] or 0) >= 0.50
+                    and row["worst_adverse_candle_open_ms"] is not None
+                    and row["exit_candle_open_ms"] is not None
+                    and row["worst_adverse_candle_open_ms"] < row["exit_candle_open_ms"] for row in group),
+                "target_mae_100r_before_exit": sum(
+                    row["status"] == "TARGET" and float(row["worst_adverse_r"] or 0) >= 1.00
+                    and row["worst_adverse_candle_open_ms"] is not None
+                    and row["exit_candle_open_ms"] is not None
+                    and row["worst_adverse_candle_open_ms"] < row["exit_candle_open_ms"] for row in group),
+            })
+
+        by_direction = []
+        for direction, status in sorted({(str(row["direction"]), str(row["status"])) for row in direction_rows}):
+            group = [row for row in direction_rows if row["direction"] == direction and row["status"] == status]
+            by_direction.append({
+                "direction": direction, "status": status, "count": len(group),
+                "avg_realized_r": avg(group, "realized_r"),
+                "avg_mfe_r": avg(group, "best_favorable_r"),
+                "avg_mae_r": avg(group, "worst_adverse_r"),
+                "median_mfe_r": _percentile([row["best_favorable_r"] for row in group], 0.50),
+                "median_mae_r": _percentile([row["worst_adverse_r"] for row in group], 0.50),
+            })
+        return {
+            "totals": dict(totals) if totals else {},
+            "by_strategy": [dict(row) for row in by_strategy],
+            "risk_by_outcome": risk_by_outcome,
+            "by_direction": by_direction,
+            "by_symbol_direction": [dict(row) for row in by_symbol],
+            "outbox": [dict(row) for row in outbox],
+        }
+
     async def performance_summary(self) -> dict:
         """Return aggregate and global risk diagnostics without exposing trade payloads."""
+        if getattr(self.pool, "is_sqlite", False):
+            return await self._performance_summary_sqlite()
         async with self.pool.acquire() as conn:
             totals = await conn.fetchrow(
                 """SELECT
