@@ -313,6 +313,7 @@ SQLite integration tests cover schema creation, durable state/idempotency, signa
 - The historical replay assumes entry at the signal candle close. It models an estimated round-trip percentage cost but does not model exchange-specific bid/ask spread, funding, market impact, partial fills, or latency. It is not an execution simulator.
 - Shadow mode records would-be signals using an isolated persisted state machine. It does not simulate exchange fills or send shadow alerts.
 - This CoinDCX crypto strategy has no separate index feed; `index_trend` is stored as `null`, while the completed 15m EMA trend is captured.
+- Crypto trades continuously (24/7), so there is no exchange opening/closing session to reset state against. VWAP is anchored to the UTC calendar day; persisted per-symbol setup/cooldown state intentionally survives UTC midnight so a still-valid trend leg cannot generate a duplicate alert.
 - Trainer buckets are descriptive and require the configured minimum samples. Only bounded ADX/RSI threshold candidates are searched automatically; cooldown, EMA spread, VWAP distance, relative volume, and time-of-day remain diagnostics until a replayable counterfactual is available.
 - SQLite is a single-process local-development backend. Render must use PostgreSQL and one Uvicorn worker. Do not use the SQLite file for multiple workers or production replicas.
 - Weekly digests require valid Telegram credentials and chat configuration. Failed sends remain pending and are retried; without credentials they are retained but not delivered.
