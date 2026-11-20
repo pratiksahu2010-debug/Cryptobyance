@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from candidate_store import CandidateStore
 from journal import SignalJournal
@@ -74,6 +75,23 @@ class SQLitePersistenceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(daily["signals"]["delivered"], 1)
         learning = await self.journal.learning_summary()
         self.assertEqual(learning["delivered_signal_totals"]["delivered_signals"], 1)
+
+    async def test_weekly_digest_is_persisted_idempotently_and_retried(self):
+        window_end = datetime(2026, 11, 16, tzinfo=timezone.utc)
+        window_start = window_end - timedelta(days=7)
+        summary = await self.journal.build_weekly_digest(window_start, window_end)
+        self.assertEqual(summary["resolved_sample"], 0)
+        self.assertFalse(summary["live_strategy_changed"])
+        digest_id = await self.journal.save_weekly_digest(summary, window_start, window_end)
+        duplicate_id = await self.journal.save_weekly_digest(summary, window_start, window_end)
+        self.assertEqual(digest_id, duplicate_id)
+        pending = await self.journal.pending_weekly_digests()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["id"], digest_id)
+        await self.journal.mark_weekly_digest_attempt(digest_id)
+        self.assertEqual((await self.journal.pending_weekly_digests())[0]["attempts"], 1)
+        await self.journal.mark_weekly_digest_sent(digest_id)
+        self.assertEqual(await self.journal.pending_weekly_digests(), [])
 
     async def test_sqlite_config_shadow_history_lifecycle(self):
         active = await self.journal.active_config()
