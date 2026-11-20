@@ -90,7 +90,7 @@ def _translate_sql(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...
     query = re.sub(r"\bNOW\(\)", "CURRENT_TIMESTAMP", query, flags=re.IGNORECASE)
 
     # PostgreSQL row locks are replaced by BEGIN IMMEDIATE at transaction start.
-    query = re.sub(r"\s+FOR\s+UPDATE\b", "", query, flags=re.IGNORECASE)
+    query = re.sub(r"\s+FOR\s+UPDATE(?:\s+SKIP\s+LOCKED)?\b", "", query, flags=re.IGNORECASE)
 
     # PostgreSQL casts used by JSONB/numeric analytics are unnecessary in SQLite.
     query = re.sub(
