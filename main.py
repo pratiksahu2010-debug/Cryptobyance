@@ -577,7 +577,8 @@ async def scanner_session() -> None:
     if not database_dsn:
         # Render must use PostgreSQL for durable production persistence. SQLite
         # is a zero-extra-dependency fallback for a developer's local run only.
-        if os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER"):
+        render_flag = os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"}
+        if os.getenv("RENDER_SERVICE_ID") or render_flag:
             raise RuntimeError("DATABASE_URL is required on Render; configure the PostgreSQL internal URL")
         local_path = os.getenv("LOCAL_SQLITE_PATH", "./cryptobyance-local.db").strip()
         if local_path.startswith("sqlite://"):
