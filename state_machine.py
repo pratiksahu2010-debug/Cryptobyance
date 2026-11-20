@@ -1,6 +1,7 @@
 """Persistent per-symbol setup/trigger/cooldown state machine.
 
-One row is maintained per strategy, symbol and direction. A newly qualified
+One row is maintained per strategy, symbol and direction in PostgreSQL or the
+local SQLite backend. A newly qualified
 setup is only ARMED; it cannot trigger until a later completed candle.
 """
 from __future__ import annotations
