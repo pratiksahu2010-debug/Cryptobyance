@@ -64,7 +64,6 @@ class Settings:
     rsi_long_max: float
     rsi_short_min: float
     rsi_short_max: float
-    context_rsi_midline: float
     swing_lookback_bars: int
     tp1_r: float
     tp2_r: float
@@ -100,7 +99,6 @@ class Settings:
         rsi_long_max = _number("RSI_LONG_MAX", "70", 0, 100)
         rsi_short_min = _number("RSI_SHORT_MIN", "30", 0, 100)
         rsi_short_max = _number("RSI_SHORT_MAX", "42", 0, 100)
-        context_rsi_midline = _number("CONTEXT_RSI_MIDLINE", "50", 0, 100)
         if rsi_long_min >= rsi_long_max or rsi_short_min >= rsi_short_max:
             raise ValueError("RSI band minimums must be below their maximums")
         tp1_r = _number("TP1_R", "1", 0.01, 20)
@@ -123,7 +121,6 @@ class Settings:
             rsi_long_max=rsi_long_max,
             rsi_short_min=rsi_short_min,
             rsi_short_max=rsi_short_max,
-            context_rsi_midline=context_rsi_midline,
             swing_lookback_bars=_integer("SWING_LOOKBACK_BARS", "10", 2, 100),
             tp1_r=tp1_r,
             tp2_r=tp2_r,

@@ -9,9 +9,8 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 **IDLE setup (all conditions on the latest closed 5m bar):**
 - LONG: ADX(14) >= `ADX_MIN` (default 20), +DI > -DI, EMA(9) > EMA(21), and close above session VWAP.
 - SHORT: ADX(14) >= `ADX_MIN`, -DI > +DI, EMA(9) < EMA(21), and close below session VWAP.
-- The existing 15m EMA(9)/EMA(21) direction veto is retained: bullish for LONG and bearish for SHORT.
-- 5m RSI(14) remains the mandatory entry trigger and is calculated only for a direction already in ARMED state.
-- 15m RSI(14) is an optional confidence signal: at/above `CONTEXT_RSI_MIDLINE` (default 50) supports LONG; at/below it supports SHORT. It is displayed in alerts and stored in the feature snapshot, but never blocks a valid 5m signal.
+- All entry decisions use completed 5m candles: EMA9/EMA21, VWAP, ADX/+DI/-DI, RSI(14) trigger, and ATR-based risk sizing.
+- 15m EMA9/EMA21 is optional descriptive context only. It never delays, vetoes, or invalidates a 5m setup; 15m RSI is not calculated or used.
 
 **ARMED trigger (a later closed 5m bar):**
 - LONG: RSI crosses upward through `RSI_LONG_MIN` (default 52) and closes inside `RSI_LONG_MIN..RSI_LONG_MAX` (default 52..70).
@@ -26,7 +25,7 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 
 **Legacy compatibility:** the public `evaluate_signal()` helper intentionally retains its historical ATR stop and single `target` contract (`ATR_STOP_MULTIPLIER` and `MIN_RISK_REWARD`). Its supplemental `target1`/`target2` fields are recalculated from that same ATR risk distance, and its payload identifies `risk_model=legacy_atr`. These two legacy environment variables do not affect the production scanner or Telegram alerts.
 
-All setup thresholds, RSI bands, the 15m RSI confidence midline (`CONTEXT_RSI_MIDLINE`, default 50) and cooldown length are configurable through environment settings loaded by `config.py`. The bot remains signal-only and no indicator combination guarantees profitability; validate with chronological backtests and forward observation before risking capital.
+All setup thresholds, 5m RSI bands and cooldown length are configurable through environment settings loaded by `config.py`. The bot remains signal-only and no indicator combination guarantees profitability; validate with chronological backtests and forward observation before risking capital.
 
 ## Universe
 
@@ -280,7 +279,7 @@ Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By de
 
 ## Signal feature snapshot
 
-Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR and ATR% of price, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
+Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR and ATR% of price, relative volume, MACD, 15m EMA market trend, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
 
 These fields are research telemetry only. They do not add entry gates or alter the live signal decision.
 
