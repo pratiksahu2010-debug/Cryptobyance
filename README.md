@@ -206,13 +206,9 @@ After deployment, open `/journal` and enter `JOURNAL_API_TOKEN`. The dashboard s
 
 ### Telegram feedback buttons
 
-Signal messages include inline feedback buttons. To receive button presses, configure Telegram's webhook once after deployment (replace the service URL with your Render URL):
+Signal messages include inline feedback buttons. On Render, the service automatically registers `https://$RENDER_EXTERNAL_URL/telegram/webhook` at startup and explicitly subscribes to both `message` and `callback_query` updates. No manual `setWebhook` command is required. The Render service must have `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `TELEGRAM_WEBHOOK_SECRET` configured. Check `/health` for `telegram_webhook_registered: true`; startup logs report registration failures without stopping the scanner.
 
-```bash
-curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
-  -d "url=https://YOUR-SERVICE.onrender.com/telegram/webhook" \
-  -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
-```
+For local or non-Render hosting, register the webhook manually with Telegram's `setWebhook` API, using your public HTTPS URL, `TELEGRAM_WEBHOOK_SECRET`, and `allowed_updates=["message","callback_query"]`.
 
 Telegram must be able to reach the public HTTPS webhook. Dashboard feedback works independently of webhook configuration. Reply to a delivered bot alert with ordinary text to attach a `NEEDS_REVIEW` note to that signal. A reply note is not a grade and does not remove the signal from `/pending`; use the inline buttons or `/relabel` for a manual label.
 
