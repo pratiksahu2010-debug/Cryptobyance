@@ -709,7 +709,7 @@ class SignalJournal:
         config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
         return {"version": row["config_version"], "config": config}
 
-    async def config_history(self, limit: int = 30) -> list[dict]:
+    async def config_history(self, limit: int = 30) -> dict:
         limit = max(1, min(int(limit), 100))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
