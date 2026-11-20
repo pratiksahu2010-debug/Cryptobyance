@@ -765,7 +765,7 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(signal["context_rsi_aligned"])
         self.assertEqual(signal["context_rsi_score"], 0)
         diagnostics = signal["diagnostics"]
-        self.assertEqual(diagnostics["version"], 3)
+        self.assertEqual(diagnostics["version"], 4)
         self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
         self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
         self.assertAlmostEqual(diagnostics["context_ema_spread_pct"], 1.0)
@@ -803,11 +803,14 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
 
-    def test_15m_bearish_trend_vetoes_long(self):
+    def test_15m_bearish_trend_does_not_veto_valid_5m_long(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(False)
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(-1, 900000)))
+            signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(-1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertEqual(signal["context"], "15m bearish")
 
     def test_ema_alignment_with_bearish_15m_emits_short(self):
         from unittest.mock import patch
@@ -818,37 +821,49 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(signal["side"], "SHORT")
         self.assertEqual(signal["context"], "15m bearish")
 
-    def test_15m_bullish_trend_vetoes_short(self):
+    def test_15m_bullish_trend_does_not_veto_valid_5m_short(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("SHORT"), self._context_frame(True)
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(1, 900000)))
+            signal = evaluate_signal(self._trend_frame(-1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "SHORT")
+        self.assertEqual(signal["context"], "15m bullish")
 
-    def test_missing_15m_data_blocks_signal(self):
+    def test_missing_15m_data_does_not_block_valid_5m_signal(self):
         from unittest.mock import patch
         with patch("strategy.indicators", return_value=self._indicator_frame("LONG")):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), None))
+            signal = evaluate_signal(self._trend_frame(1, 300000), None)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertEqual(signal["context"], "15m unavailable")
 
-    def test_insufficient_15m_history_blocks_signal(self):
+    def test_insufficient_15m_history_does_not_block_valid_5m_signal(self):
         from unittest.mock import patch
-        five, fifteen = self._indicator_frame("LONG"), self._context_frame(True, n=34)
-        with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000).iloc[:34]))
+        five = self._indicator_frame("LONG")
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000).iloc[:34])
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["context"], "15m unavailable")
 
-    def test_neutral_15m_trend_blocks_signal(self):
+    def test_neutral_15m_trend_does_not_block_valid_5m_signal(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         fifteen["ema9"] = 100.0
         fifteen["ema21"] = 100.0
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+            signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["context"], "15m neutral")
 
-    def test_nonfinite_15m_ema_blocks_signal(self):
+    def test_nonfinite_15m_ema_is_ignored_for_5m_entry(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         fifteen.loc[fifteen.index[-1], "ema9"] = np.nan
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+            signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["context"], "15m unavailable")
 
     def test_simple_strategy_allows_older_ema_alignment(self):
         from unittest.mock import patch

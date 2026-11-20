@@ -235,15 +235,12 @@ def context_rsi_is_aligned(side: str, context_rsi: float, midline: float = 50.0)
 
 
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Simple completed-5m EMA/VWAP/RSI/ADX strategy with a hard 15m EMA veto.
+    """Build a signal from completed 5m structure; 15m is optional context only.
 
-    The persisted state machine has already confirmed the directional setup and
-    RSI-band trigger. This builder rechecks EMA/VWAP/ADX plus the 15m veto and
-    creates a prior-swing stop with configured TP1/TP2 levels.
+    A delayed, neutral, missing, or opposing 15m trend must never veto a valid
+    5m setup. Higher-timeframe values are retained as diagnostics/confidence.
     """
-    if (not has_contiguous_tail(df5, "5m", 60)
-            or df15 is None
-            or not has_contiguous_tail(df15, "15m", 35)):
+    if not has_contiguous_tail(df5, "5m", 60):
         return None
 
     a = indicators(df5.copy(), include_rsi=True)
@@ -270,27 +267,30 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         return None
     side = "LONG" if long_ok else "SHORT"
 
-    # Mandatory 15m trend veto: no signal against the higher-timeframe EMA bias.
-    context_frame = indicators(df15.copy())
-    if len(context_frame) < 35:
-        return None
-    context_row = context_frame.iloc[-1]
-    if not all(pd.notna(v) and np.isfinite(float(v))
-               for v in (context_row.ema9, context_row.ema21)):
-        return None
-    if float(context_row.ema9) > float(context_row.ema21):
-        context = "15m bullish"
-    elif float(context_row.ema9) < float(context_row.ema21):
-        context = "15m bearish"
-    else:
-        return None
-    if (side == "LONG" and context != "15m bullish") or (side == "SHORT" and context != "15m bearish"):
-        return None
+    # 15m is descriptive only. Do not wait for a 15m EMA alignment or a new
+    # 15m close before acting on a fully confirmed 5m setup.
+    context_frame = None
+    context_row = None
+    prev15 = None
+    context = "15m unavailable"
+    if df15 is not None and has_contiguous_tail(df15, "15m", 35):
+        candidate_context = indicators(df15.copy(), include_rsi=True)
+        if len(candidate_context) >= 35:
+            candidate_row = candidate_context.iloc[-1]
+            if all(pd.notna(v) and np.isfinite(float(v))
+                   for v in (candidate_row.ema9, candidate_row.ema21)):
+                context_frame = candidate_context
+                context_row = candidate_row
+                prev15 = candidate_context.iloc[-4]
+                if float(candidate_row.ema9) > float(candidate_row.ema21):
+                    context = "15m bullish"
+                elif float(candidate_row.ema9) < float(candidate_row.ema21):
+                    context = "15m bearish"
+                else:
+                    context = "15m neutral"
 
     entry = float(c.close)
     atr_value = float(c.atr)
-    # Use the validated indicator frame so callers that inject precomputed
-    # indicator rows (e.g. deterministic replay/tests) keep price fields aligned.
     swing = a.iloc[-(settings.swing_lookback_bars + 1):-1]
     if len(swing) < settings.swing_lookback_bars:
         return None
@@ -301,15 +301,18 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     target1 = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
-    prev15 = context_frame.iloc[-4]
-    context_rsi_available = pd.notna(context_row.rsi) and np.isfinite(float(context_row.rsi))
+
+    context_rsi_available = (
+        context_row is not None and pd.notna(context_row.rsi)
+        and np.isfinite(float(context_row.rsi))
+    )
     context_rsi = float(context_row.rsi) if context_rsi_available else None
     context_rsi_aligned = (
         context_rsi_is_aligned(side, context_rsi, settings.context_rsi_midline)
         if context_rsi_available else None
     )
     diagnostics = {
-        "version": 3,
+        "version": 4,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
         "ema9_slope_atr_3bars": (float(c.ema9) - float(prev5.ema9)) / atr_value,
         "ema21_slope_atr_3bars": (float(c.ema21) - float(prev5.ema21)) / atr_value,
@@ -317,13 +320,23 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "rsi14": float(c.rsi),
         "adx14": float(c.adx),
         "atr_pct_of_price": 100.0 * atr_value / entry,
-        "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
-        "context_rsi_midline": float(settings.context_rsi_midline),
+        "context_available": context_row is not None,
+        **({
+            "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
+            "context_rsi_midline": float(settings.context_rsi_midline),
+            "context_ema9_slope_pct_3bars": (
+                100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9)
+                if prev15 is not None and pd.notna(prev15.ema9) and float(prev15.ema9) != 0
+                else 0.0
+            ),
+        } if context_row is not None else {}),
         **({"context_rsi14": context_rsi, "context_rsi_aligned": context_rsi_aligned}
            if context_rsi_available else {}),
-        "context_ema9_slope_pct_3bars": 100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9),
     }
-    if not all(np.isfinite(float(value)) for value in diagnostics.values()):
+    if not all(
+        isinstance(value, (bool, np.bool_)) or np.isfinite(float(value))
+        for value in diagnostics.values()
+    ):
         return None
 
     return {
@@ -375,14 +388,14 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict
     return signal
 
 
-def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict:
-    """Return per-side setup, invalidation and RSI-cross inputs from closed bars.
+def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict | None:
+    """Evaluate setup, invalidation and RSI-cross inputs using closed 5m bars.
 
-    The caller persists state separately for LONG and SHORT. 15m EMA direction
-    remains the existing higher-timeframe veto; it is not a substitute for the
-    explicit 5m DI/ADX setup conditions.
+    15m trend is deliberately excluded from setup and invalidation gates. It is
+    passed through to signal diagnostics elsewhere, never allowed to delay or
+    cancel an otherwise valid 5m setup.
     """
-    if not has_contiguous_tail(df5, "5m", 60) or df15 is None or not has_contiguous_tail(df15, "15m", 35):
+    if not has_contiguous_tail(df5, "5m", 60):
         return None
     armed_sides = armed_sides or set()
     a = indicators(df5.copy(), include_rsi=bool(armed_sides))
@@ -391,34 +404,35 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
     c, p = a.iloc[-1], a.iloc[-2]
     required = (c.ema9, c.ema21, c.vwap, c.adx, c.plus_di, c.minus_di)
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
-        # Missing/invalid indicator context is not a market invalidation.
-        # Defer this candle without mutating an existing ARMED setup.
         return None
-    context_ema_fast = df15["close"].ewm(span=EMA_FAST, adjust=False).mean().iloc[-1]
-    context_ema_slow = df15["close"].ewm(span=EMA_SLOW, adjust=False).mean().iloc[-1]
-    if not all(pd.notna(v) and np.isfinite(float(v)) for v in (context_ema_fast, context_ema_slow)):
-        # Missing higher-timeframe data must defer the scan, not invalidate a setup.
-        return None
-    context_long = float(context_ema_fast) > float(context_ema_slow)
-    context_short = float(context_ema_fast) < float(context_ema_slow)
+
     common = float(c.adx) >= ADX_MIN
-    long_setup = common and float(c.plus_di) > float(c.minus_di) and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap) and context_long
-    short_setup = common and float(c.minus_di) > float(c.plus_di) and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap) and context_short
-    # In addition to 5m invalidation, a completed 15m EMA reversal (or loss
-    # of directional alignment) invalidates an already-ARMED setup. Equality
-    # invalidates both sides so a flat 15m context cannot keep stale setups alive.
-    long_invalid = (float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
-                    or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di)
-                    or not context_long)
-    short_invalid = (float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
-                     or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di)
-                     or not context_short)
-    long_trigger = (long_setup and "LONG" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
-                    and float(p.rsi) < settings.rsi_long_min
-                    and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max)
-    short_trigger = (short_setup and "SHORT" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
-                     and float(p.rsi) > settings.rsi_short_max
-                     and settings.rsi_short_min <= float(c.rsi) <= settings.rsi_short_max)
+    long_setup = (
+        common and float(c.plus_di) > float(c.minus_di)
+        and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap)
+    )
+    short_setup = (
+        common and float(c.minus_di) > float(c.plus_di)
+        and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap)
+    )
+    long_invalid = (
+        float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
+        or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di)
+    )
+    short_invalid = (
+        float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
+        or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di)
+    )
+    long_trigger = (
+        long_setup and "LONG" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
+        and float(p.rsi) < settings.rsi_long_min
+        and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max
+    )
+    short_trigger = (
+        short_setup and "SHORT" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
+        and float(p.rsi) > settings.rsi_short_max
+        and settings.rsi_short_min <= float(c.rsi) <= settings.rsi_short_max
+    )
     return {
         "LONG": {"setup_valid": bool(long_setup), "invalidation": bool(long_invalid),
                  "trigger": bool(long_trigger)},
