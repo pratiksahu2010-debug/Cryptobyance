@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 import asyncpg
 
+from sqlite_store import SQLitePool
 from config import settings
 from outcomes import advance_outcome
 from state_machine import STATE_DDL, advance_persisted_state, persist_signal_lifecycle
@@ -164,6 +165,54 @@ class CandidateStore:
 
     @classmethod
     async def connect(cls, dsn: str):
+        if str(dsn).strip().lower().startswith("sqlite://"):
+            pool = await SQLitePool.connect(dsn)
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(DDL)
+                    await conn.execute(STATE_DDL)
+                    # SQLite equivalent of the PostgreSQL legacy-outcome repair.
+                    async with conn.transaction():
+                        await conn.execute(
+                            """DELETE FROM signal_outcomes
+                               WHERE signal_id IN (
+                                 SELECT id FROM signal_history WHERE status <> 'SENT'
+                               )"""
+                        )
+                        await conn.execute(
+                            """INSERT INTO signal_outcomes(
+                                   signal_id,symbol,direction,signal_candle_open_ms,
+                                   entry,stop,target,target1,target2,atr_at_entry,
+                                   risk_per_unit,outcome_horizon_bars,cost_pct,
+                                   last_observed_candle_open_ms
+                               )
+                               SELECT s.id,s.symbol,s.direction,s.candle_open_ms,
+                                      CAST(json_extract(s.payload,'$.entry') AS REAL),
+                                      CAST(json_extract(s.payload,'$.stop') AS REAL),
+                                      CAST(json_extract(s.payload,'$.target') AS REAL),
+                                      COALESCE(CAST(json_extract(s.payload,'$.target1') AS REAL),
+                                               CAST(json_extract(s.payload,'$.target') AS REAL)),
+                                      COALESCE(CAST(json_extract(s.payload,'$.target2') AS REAL),
+                                               CAST(json_extract(s.payload,'$.target') AS REAL)),
+                                      CAST(json_extract(s.payload,'$.atr') AS REAL),
+                                      ABS(CAST(json_extract(s.payload,'$.entry') AS REAL) -
+                                          CAST(json_extract(s.payload,'$.stop') AS REAL)),
+                                      $1,$2,s.candle_open_ms
+                               FROM signal_history s
+                               WHERE s.status='SENT'
+                                 AND json_extract(s.payload,'$.entry') IS NOT NULL
+                                 AND json_extract(s.payload,'$.stop') IS NOT NULL
+                                 AND json_extract(s.payload,'$.target') IS NOT NULL
+                                 AND ABS(CAST(json_extract(s.payload,'$.entry') AS REAL) -
+                                         CAST(json_extract(s.payload,'$.stop') AS REAL)) > 0
+                               ON CONFLICT(signal_id) DO NOTHING""",
+                            settings.outcome_horizon_bars, settings.outcome_cost_pct
+                        )
+                return cls(pool)
+            except BaseException:
+                await pool.close()
+                raise
+
         pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=8,
                                          timeout=10, command_timeout=10)
         try:
