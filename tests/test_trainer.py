@@ -86,6 +86,9 @@ class OfflineTrainerTests(unittest.TestCase):
             row["features"].pop("price_vwap_distance_pct", None)
         result = build_training_proposal(rows, CURRENT, min_bucket_samples=30)
         self.assertIn("vwap_distance_pct", result["summary"]["bucket_analysis"])
+        self.assertIn("cooldown_candles", result["summary"]["bucket_analysis"])
+        self.assertIn("rsi_long_band", result["summary"]["bucket_analysis"])
+        self.assertIn("rsi_short_band", result["summary"]["bucket_analysis"])
         self.assertEqual(
             result["summary"]["bucket_analysis"]["vwap_distance_pct"]["available_samples"], 0
         )
