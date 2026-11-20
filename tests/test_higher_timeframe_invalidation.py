@@ -72,7 +72,7 @@ class HigherTimeframeInvalidationTests(unittest.TestCase):
     def test_invalid_15m_data_defers_without_false_invalidation(self):
         five = self._five_minute_inputs("LONG")
         fifteen = self._fifteen_minute_raw("BULLISH")
-        fifteen.loc[fifteen.index[-1], "close"] = np.nan
+        fifteen["close"] = np.nan
         with patch("strategy.indicators", return_value=five):
             self.assertIsNone(evaluate_state_inputs(five, fifteen, armed_sides={"LONG"}))
 
