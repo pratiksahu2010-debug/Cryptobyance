@@ -117,12 +117,13 @@ class TelegramNotifier:
             body["reply_markup"] = {
                 "inline_keyboard": [
                     [
-                        {"text": "👍 Good entry", "callback_data": f"jfb|{int(signal_id)}|GOOD_ENTRY"},
-                        {"text": "👎 Bad signal", "callback_data": f"jfb|{int(signal_id)}|BAD_SIGNAL"},
+                        {"text": "👍 Good", "callback_data": f"jfb|{int(signal_id)}|GOOD_ENTRY"},
+                        {"text": "👎 Bad", "callback_data": f"jfb|{int(signal_id)}|BAD_SIGNAL"},
+                        {"text": "⏰ Late", "callback_data": f"jfb|{int(signal_id)}|LATE_ENTRY"},
                     ],
                     [
-                        {"text": "⏰ Late entry", "callback_data": f"jfb|{int(signal_id)}|LATE_ENTRY"},
-                        {"text": "🔎 Review", "callback_data": f"jfb|{int(signal_id)}|NEEDS_REVIEW"},
+                        {"text": "🚫 Fake", "callback_data": f"jfb|{int(signal_id)}|FAKE_SIGNAL"},
+                        {"text": "⏭ Skip", "callback_data": f"jfb|{int(signal_id)}|SKIP"},
                     ],
                 ]
             }
