@@ -175,11 +175,14 @@ class SQLiteConnection:
         # Strip leading comments before translation so the idempotent
         # ADD COLUMN guard can recognize the statement and inspect PRAGMA.
         source = str(sql).strip()
-        while True:
-            cleaned = re.sub(r"^(?:--[^\\n]*(?:\\n|$)|/\\*.*?\\*/\\s*)+", "", source, flags=re.DOTALL)
-            if cleaned == source:
-                break
-            source = cleaned.lstrip()
+        # Strip leading SQL comments before recognizing idempotent ALTERs.
+        # Keep real newline escapes in the regex (not literal backslash-n).
+        source = re.sub(
+            r"\\A\\s*(?:(?:--[^\\r\\n]*(?:\\r?\\n|\\Z))|(?:/\\*.*?\\*/\\s*))*",
+            "",
+            source,
+            flags=re.DOTALL,
+        ).lstrip()
         query, params = _translate_sql(source, args)
         if not query:
             return None
