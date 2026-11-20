@@ -529,8 +529,8 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
     async def run_cleanup() -> None:
         result = await candidate_store.cleanup(int(time.time() * 1000))
         log.info(
-            "PostgreSQL retention sweep complete expired_candidates=%d deleted_records=%d",
-            result["expired"], result["deleted"],
+            "Database retention sweep complete expired_candidates=%d retention_days=%d deleted_telemetry=%d details=%s",
+            result["expired"], result["retention_days"], result["deleted"], result["retention_deleted"],
         )
 
     # Startup cleanup catches up if the free web service slept through 02:00.
