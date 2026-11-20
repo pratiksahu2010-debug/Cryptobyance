@@ -930,6 +930,7 @@ def build_health_payload() -> dict[str, Any]:
     scan_fresh = bool(scan_age is not None and scan_age <= max(180, CANDLE_INTERVAL_SECONDS + CANDLE_CLOSE_GRACE_SECONDS + 60))
     healthy = bool(
         state["running"] and state["market_metadata_ready"]
+        and state["database_connected"] and state["telegram_configured"]
         and state["active_symbols"] > 0 and cycle_complete and scan_fresh
         and state["last_cycle_symbols_failed"] == 0
         and state["last_cycle_symbols_ok"] == state["active_symbols"]
