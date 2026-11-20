@@ -574,11 +574,14 @@ async def scanner_session() -> None:
     state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
     database_dsn = settings.database_url
+    render_flag = os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"}
+    on_render = bool(os.getenv("RENDER_SERVICE_ID")) or render_flag
+    if database_dsn.startswith("sqlite://") and on_render:
+        raise RuntimeError("SQLite is local-only; configure PostgreSQL DATABASE_URL on Render")
     if not database_dsn:
         # Render must use PostgreSQL for durable production persistence. SQLite
         # is a zero-extra-dependency fallback for a developer's local run only.
-        render_flag = os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"}
-        if os.getenv("RENDER_SERVICE_ID") or render_flag:
+        if on_render:
             raise RuntimeError("DATABASE_URL is required on Render; configure the PostgreSQL internal URL")
         local_path = os.getenv("LOCAL_SQLITE_PATH", "./cryptobyance-local.db").strip()
         if local_path.startswith("sqlite://"):
