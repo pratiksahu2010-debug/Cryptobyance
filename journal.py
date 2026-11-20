@@ -781,6 +781,17 @@ class SignalJournal:
                 "proposal_id": int(row["proposal_id"]),
                 "shadow_until": row["shadow_until"].isoformat()}
 
+    async def shadow_signal_counts(self, proposal_version: str) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT COUNT(*) AS total,
+                          COUNT(*) FILTER (WHERE direction='LONG') AS longs,
+                          COUNT(*) FILTER (WHERE direction='SHORT') AS shorts,
+                          COUNT(DISTINCT symbol) AS symbols
+                   FROM shadow_signal_history WHERE proposal_version=$1""",
+                str(proposal_version))
+        return {key: int(row[key] or 0) for key in ("total", "longs", "shorts", "symbols")}
+
     async def stop_shadow(self, actor: str, reason: str = "Shadow test stopped") -> dict:
         actor = str(actor or "unknown")[:120]
         reason = str(reason or "Shadow test stopped")[:500]
