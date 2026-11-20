@@ -250,7 +250,10 @@ def build_training_proposal(
             if candidate_fold["expectancy_r"] is not None and baseline_fold["expectancy_r"] is not None
             else None
         )
-        if len(selected_fold) < 10 or improvement is None or improvement < MIN_EXPECTANCY_IMPROVEMENT_R:
+        if (len(selected_fold) < 10 or improvement is None
+                or improvement < MIN_EXPECTANCY_IMPROVEMENT_R
+                or candidate_fold["expectancy_r"] is None
+                or candidate_fold["expectancy_r"] <= 0):
             stable = False
         fold_results.append({
             "fold": index,
@@ -269,10 +272,17 @@ def build_training_proposal(
         best["metrics"]["expectancy_r"] - oos_metrics["expectancy_r"]
         if oos_metrics["expectancy_r"] is not None else None
     )
-    if not changes or not stable or oos_metrics["expectancy_r"] is None or oos_metrics["expectancy_r"] <= 0:
+    train_expectancy = best["metrics"]["expectancy_r"]
+    test_expectancy = oos_metrics["expectancy_r"]
+    train_test_collapse = (
+        train_expectancy > 0
+        and (test_expectancy is None or test_expectancy < train_expectancy * 0.5)
+    )
+    if (not changes or not stable or test_expectancy is None
+            or test_expectancy <= 0 or train_test_collapse):
         return {
             "status": "NO_OOS_IMPROVEMENT",
-            "reason": "No stricter candidate demonstrated positive, stable out-of-sample expectancy improvement across both chronological folds.",
+            "reason": "No stricter candidate passed positive expectancy, stable out-of-sample improvement, and train/test-collapse guards.",
             "base_config_version": base_config_version,
             "summary": summary,
             "walk_forward": {
