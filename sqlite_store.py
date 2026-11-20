@@ -7,10 +7,8 @@ multi-worker production deployments.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import sqlite3
-from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
