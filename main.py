@@ -582,6 +582,8 @@ async def weekly_digest_loop(journal: SignalJournal) -> None:
         for item in await journal.pending_weekly_digests(limit=5):
             summary = item["summary"]
             totals = summary.get("totals", {}).get("totals", {})
+            resolved = int(totals.get("wins") or 0) + int(totals.get("losses") or 0) + int(totals.get("timeouts") or 0)
+            win_rate = round(100 * int(totals.get("wins") or 0) / resolved, 2) if resolved else "n/a"
             best = summary.get("best_symbols") or []
             worst = summary.get("worst_symbols") or []
             weakest = summary.get("weakest_parameter_bucket")
@@ -589,8 +591,8 @@ async def weekly_digest_loop(journal: SignalJournal) -> None:
                 "WEEKLY SIGNAL REVIEW (UTC)",
                 f"Window: {summary.get('window_start')} → {summary.get('window_end')}",
                 f"Resolved samples: {summary.get('resolved_sample', 0)}",
-                f"Win rate: {totals.get('win_rate_resolved_pct', 'n/a')}% · "
-                f"Expectancy: {totals.get('expectancy_r', totals.get('avg_net_realized_r', 'n/a'))}R",
+                f"Win rate: {win_rate}% · "
+                f"Expectancy: {totals.get('avg_net_realized_r', 'n/a')}R",
                 f"False-signal rate: {totals.get('false_signal_rate', 'n/a')}",
                 "Best symbols:",
             ]
