@@ -247,3 +247,11 @@ The parser extracts a reviewable category, direction, symbol, time window, indic
 ### Learning safeguards
 
 The learning endpoint reports sample sizes, outcomes, feedback and rejected-candidate statistics. It can recommend further testing but never changes live thresholds or strategy code. Only accept a strategy adjustment after chronological walk-forward replay with realistic fees, funding, spread and slippage. The illustrative “Good Entry” example discussed during design is not inserted as a real trade or feedback record.
+
+## Offline threshold trainer (proposal-only)
+
+Run `/train` in the configured Telegram chat or call the protected `POST /journal/api/train` endpoint. The trainer joins delivered signals, point-in-time feature snapshots, cost-adjusted outcomes, and the latest manual feedback label. Manual Good/Bad/Late/Fake labels override the automatic WIN/LOSS/TIMEOUT classification; conflicts are counted in the report.
+
+The trainer refuses to generate a proposal below `TRAINING_MIN_SAMPLES=100` resolved labeled signals. Bucket metrics are suppressed below `TRAINING_MIN_BUCKET_SAMPLES=30`. It searches only bounded, stricter variants of the currently active ADX and RSI-band filters, selects candidates on the older 70% of the chronological dataset, and requires positive expectancy improvement in both sequential out-of-sample folds. It reports train/test metrics, expectancy gap, retained sample size, manual-label conflicts, and feature-bucket analysis. It will return an explicit insufficient-data or no-OOS-improvement result rather than guessing.
+
+Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. **Training is research-only at this stage:** proposals are not applied automatically, and live signal thresholds remain unchanged. EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual.
