@@ -1084,6 +1084,7 @@ class SignalJournal:
             window_end = window_end.replace(tzinfo=timezone.utc)
         if window_start >= window_end:
             raise ValueError("weekly digest window_start must be earlier than window_end")
+        days = max(1, min(14, int((window_end-window_start).total_seconds() / 86400)))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT s.id AS signal_id,s.direction,s.candle_open_ms,
