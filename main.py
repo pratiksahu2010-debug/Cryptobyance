@@ -615,7 +615,7 @@ async def weekly_digest_loop(journal: SignalJournal) -> None:
             lines.append(f"Manual-label conflicts: {summary.get('manual_label_conflicts', 0)}")
             lines.append("Research summary only. Live settings were not changed.")
             try:
-                await _telegram_send_message(settings.telegram_chat_id, "\\n".join(lines))
+                await _telegram_send_message(settings.telegram_chat_id, "\n".join(lines))
                 await journal.mark_weekly_digest_sent(item["id"])
                 log.info("Weekly digest sent id=%s", item["id"])
             except asyncio.CancelledError:
