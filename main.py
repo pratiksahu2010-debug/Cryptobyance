@@ -54,7 +54,7 @@ RUNTIME_CONFIG_KEYS = (
     "scan_interval_seconds", "concurrency", "signal_cooldown_candles",
     "timeframe", "context_timeframe", "adx_min", "ema_fast", "ema_slow",
     "rsi_period", "adx_period", "rsi_long_min", "rsi_long_max",
-    "rsi_short_min", "rsi_short_max", "context_rsi_midline",
+    "rsi_short_min", "rsi_short_max",
     "swing_lookback_bars", "tp1_r", "tp2_r", "atr_stop_multiplier",
     "min_risk_reward", "outcome_horizon_bars", "outcome_cost_pct",
     "training_min_samples", "training_min_bucket_samples", "log_level",
