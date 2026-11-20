@@ -882,7 +882,7 @@ class SignalJournal:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT config_version,status,previous_version,approved_by,reason,
-                          created_at,activated_at,deactivated_at
+                          created_at,activated_at,deactivated_at,shadow_until
                    FROM config_history ORDER BY created_at DESC,config_version DESC LIMIT $1""",
                 limit)
             events = await conn.fetch(
@@ -894,7 +894,8 @@ class SignalJournal:
                 {**dict(row),
                  "created_at": row["created_at"].isoformat() if row["created_at"] else None,
                  "activated_at": row["activated_at"].isoformat() if row["activated_at"] else None,
-                 "deactivated_at": row["deactivated_at"].isoformat() if row["deactivated_at"] else None}
+                 "deactivated_at": row["deactivated_at"].isoformat() if row["deactivated_at"] else None,
+                 "shadow_until": row["shadow_until"].isoformat() if row["shadow_until"] else None}
                 for row in rows
             ],
             "events": [
