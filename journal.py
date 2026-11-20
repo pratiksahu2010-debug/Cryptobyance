@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS training_proposals (
     changes JSONB NOT NULL,
     metrics JSONB NOT NULL,
     status TEXT NOT NULL DEFAULT 'PROPOSED'
-      CHECK(status IN ('PROPOSED','APPROVED','REJECTED','ROLLED_BACK')),
+      CHECK(status IN ('PROPOSED','APPROVED','REJECTED','ROLLED_BACK','SHADOW')),
     reviewer_note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reviewed_at TIMESTAMPTZ
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS ix_training_proposals_status_created
 CREATE TABLE IF NOT EXISTS config_history (
     config_version TEXT PRIMARY KEY,
     config JSONB NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('ACTIVE','INACTIVE')),
+    status TEXT NOT NULL CHECK(status IN ('ACTIVE','INACTIVE','SHADOW')),
     previous_version TEXT,
     approved_by TEXT NOT NULL DEFAULT '',
     reason TEXT NOT NULL DEFAULT '',
@@ -118,7 +118,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_config_history_one_active
  ON config_history(status) WHERE status='ACTIVE';
 CREATE TABLE IF NOT EXISTS config_history_events (
     id BIGSERIAL PRIMARY KEY,
-    action TEXT NOT NULL CHECK(action IN ('INITIALIZE','APPROVE','REJECT','ROLLBACK')),
+    action TEXT NOT NULL CHECK(action IN ('INITIALIZE','APPROVE','REJECT','ROLLBACK','SHADOW_START','SHADOW_STOP','SHADOW_EXPIRE')),
     config_version TEXT NOT NULL,
     previous_version TEXT,
     actor TEXT NOT NULL DEFAULT '',
@@ -443,8 +443,13 @@ class SignalJournal:
                    GROUP BY f.category ORDER BY count DESC,f.category""", days)
             totals = await conn.fetchrow(
                 """WITH latest_feedback AS (
-                     SELECT DISTINCT ON (signal_id) signal_id,category
-                     FROM journal_feedback ORDER BY signal_id,created_at DESC,id DESC
+                     SELECT signal_id,category FROM (
+                       SELECT signal_id,category,
+                              ROW_NUMBER() OVER (
+                                PARTITION BY signal_id ORDER BY created_at DESC,id DESC
+                              ) AS feedback_rank
+                       FROM journal_feedback
+                     ) ranked_feedback WHERE feedback_rank=1
                    ), labeled AS (
                      SELECT s.id,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
                             f.category,
@@ -1123,9 +1128,9 @@ class SignalJournal:
                           ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
                    FROM journal_candidates GROUP BY status ORDER BY status""")
             reasons = await conn.fetch(
-                """SELECT reason,COUNT(*) AS count FROM journal_candidates c
+                """SELECT r.reason,COUNT(*) AS count FROM journal_candidates c
                    CROSS JOIN LATERAL jsonb_array_elements_text(c.rejection_reasons) AS r(reason)
-                   GROUP BY reason ORDER BY count DESC LIMIT 20""")
+                   GROUP BY r.reason ORDER BY count DESC LIMIT 20""")
         sample = (int(totals["targets"] or 0) + int(totals["stop_losses"] or 0)
                   + int(totals["timeouts"] or 0))
         recommendations = []
