@@ -68,6 +68,11 @@ class FakePool:
         return FakeAcquire(self.conn)
 
 
+class FakeStore:
+    def __init__(self, conn):
+        self.pool = FakePool(conn)
+
+
 class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
     async def test_approve_proposal_merges_delta_and_records_version(self):
         current = {
@@ -82,7 +87,7 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
             ],
             fetchrows_result=[{"config_version": "v2"}],
         )
-        journal = SignalJournal(FakePool(conn))
+        journal = SignalJournal(FakeStore(conn))
         result = await journal.approve_proposal(7, "12345")
         self.assertEqual(result["version"], "v3")
         self.assertEqual(result["previous_version"], "v2")
