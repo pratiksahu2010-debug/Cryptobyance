@@ -223,17 +223,6 @@ def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
     return pd.concat([base, derived], axis=1)
 
 
-def context_rsi_is_aligned(side: str, context_rsi: float, midline: float = 50.0) -> bool:
-    """Return whether 15m RSI supports direction; this is confidence-only, never a veto."""
-    if side not in {"LONG", "SHORT"}:
-        raise ValueError(f"unsupported signal side: {side}")
-    if not np.isfinite(float(context_rsi)) or not 0 <= float(context_rsi) <= 100:
-        raise ValueError("context_rsi must be a finite value from 0 to 100")
-    if not np.isfinite(float(midline)) or not 0 <= float(midline) <= 100:
-        raise ValueError("midline must be a finite value from 0 to 100")
-    return float(context_rsi) >= float(midline) if side == "LONG" else float(context_rsi) <= float(midline)
-
-
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Build a signal from completed 5m structure; 15m is optional context only.
 
@@ -274,7 +263,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     prev15 = None
     context = "15m unavailable"
     if df15 is not None and has_contiguous_tail(df15, "15m", 35):
-        candidate_context = indicators(df15.copy(), include_rsi=True)
+        candidate_context = indicators(df15.copy(), include_rsi=False)
         if len(candidate_context) >= 35:
             candidate_row = candidate_context.iloc[-1]
             if all(pd.notna(v) and np.isfinite(float(v))
@@ -302,17 +291,8 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
 
-    context_rsi_available = (
-        context_row is not None and pd.notna(context_row.rsi)
-        and np.isfinite(float(context_row.rsi))
-    )
-    context_rsi = float(context_row.rsi) if context_rsi_available else None
-    context_rsi_aligned = (
-        context_rsi_is_aligned(side, context_rsi, settings.context_rsi_midline)
-        if context_rsi_available else None
-    )
     diagnostics = {
-        "version": 4,
+        "version": 5,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
         "ema9_slope_atr_3bars": (float(c.ema9) - float(prev5.ema9)) / atr_value,
         "ema21_slope_atr_3bars": (float(c.ema21) - float(prev5.ema21)) / atr_value,
@@ -323,15 +303,12 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "context_available": context_row is not None,
         **({
             "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
-            "context_rsi_midline": float(settings.context_rsi_midline),
             "context_ema9_slope_pct_3bars": (
                 100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9)
                 if prev15 is not None and pd.notna(prev15.ema9) and float(prev15.ema9) != 0
                 else 0.0
             ),
         } if context_row is not None else {}),
-        **({"context_rsi14": context_rsi, "context_rsi_aligned": context_rsi_aligned}
-           if context_rsi_available else {}),
     }
     if not all(
         isinstance(value, (bool, np.bool_)) or np.isfinite(float(value))
@@ -352,9 +329,6 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "atr": atr_value, "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": context,
-        "context_rsi14": context_rsi,
-        "context_rsi_aligned": context_rsi_aligned,
-        "context_rsi_score": (1 if context_rsi_aligned else 0) if context_rsi_available else None,
         "diagnostics": diagnostics,
     }
 
