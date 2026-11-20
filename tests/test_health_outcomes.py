@@ -22,6 +22,17 @@ class HealthOutcomeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["totals"]["delivered_signals"], 5)
         self.assertNotIn("payload", payload)
 
+    async def test_readiness_returns_service_unavailable_until_scanner_is_healthy(self):
+        with patch("main.build_health_payload", return_value={"ok": False, "scanner_running": False}):
+            response = await main.readiness()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.body, b'{"ok":false,"scanner_running":false}')
+
+    async def test_readiness_returns_success_when_scanner_is_healthy(self):
+        with patch("main.build_health_payload", return_value={"ok": True, "scanner_running": True}):
+            response = await main.readiness()
+        self.assertEqual(response.status_code, 200)
+
     def test_health_exposes_outcome_tracker_counters(self):
         with patch.dict(main.state, {
             "outcome_rows_updated": 17,
