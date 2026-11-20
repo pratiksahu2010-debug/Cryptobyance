@@ -27,6 +27,7 @@ from strategy import evaluate_setup, evaluate_state_inputs, indicators, timefram
 from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
+from feature_snapshot import build_indicator_snapshot
 
 from config import settings, SYMBOLS, STRATEGY_KEY, CONFIG_VERSION
 
@@ -271,6 +272,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         df15 = candidate15
             except ValueError as context_error:
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
+            state_metadata = {}
             # Backward-compatible path for isolated scanner adapters/tests that
             # do not implement the v2 durable state API. The deployed
             # CandidateStore always takes the staged branch below.
@@ -323,6 +325,15 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     last_seen_candle[display_symbol] = closed_ts
                     state['symbols_ok'] += 1
                     return
+            if candidate_store is not None and hasattr(candidate_store, "load_symbol_state_metadata"):
+                try:
+                    details = await candidate_store.load_symbol_state_metadata(
+                        STRATEGY_KEY, display_symbol
+                    )
+                    state_metadata = details.get(setup.get("side"), {})
+                except Exception as metadata_error:
+                    log.warning("state metadata snapshot unavailable symbol=%s error_type=%s",
+                                display_symbol, type(metadata_error).__name__)
             signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
             signal['config_version'] = CONFIG_VERSION
@@ -331,26 +342,19 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # Point-in-time research snapshot: telemetry only; never feeds back into entry rules.
             try:
                 ind = indicators(df5.copy())
-                current = ind.iloc[-1]
-                close_series = df5["close"].astype(float)
-                macd_line = close_series.ewm(span=12, adjust=False).mean() - close_series.ewm(span=26, adjust=False).mean()
-                macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-                volume_mean = df5["volume"].rolling(20, min_periods=20).mean().iloc[-1]
-                signal["indicator_snapshot"] = {
-                    "version": 1, "ema9": float(current.ema9), "ema21": float(current.ema21),
-                    "rsi14": float(current.rsi), "adx14": float(current.adx),
-                    "plus_di": float(current.plus_di), "minus_di": float(current.minus_di),
-                    "vwap": float(current.vwap), "atr14": float(current.atr),
-                    "relative_volume_20": float(df5["volume"].iloc[-1] / volume_mean) if volume_mean and volume_mean > 0 else None,
-                    "macd_line": float(macd_line.iloc[-1]), "macd_signal": float(macd_signal.iloc[-1]),
-                    "macd_histogram": float(macd_line.iloc[-1] - macd_signal.iloc[-1]),
-                    "open": float(current.open), "high": float(current.high),
-                    "low": float(current.low), "close": float(current.close),
-                    "volume": float(current.volume), "context_15m": signal.get("context"),
-                    "context_rsi14": signal.get("context_rsi14"),
-                    "context_rsi_aligned": signal.get("context_rsi_aligned"),
-                    "context_rsi_score": signal.get("context_rsi_score"),
-                }
+                signal["armed_candle_open_ms"] = state_metadata.get("armed_candle_open_ms")
+                signal["state_cycle_id"] = state_metadata.get("cycle_id")
+                signal["bars_since_armed"] = (
+                    max(0, (closed_ts - int(state_metadata["armed_candle_open_ms"])) // 300_000)
+                    if state_metadata.get("armed_candle_open_ms") is not None else None
+                )
+                signal["indicator_snapshot"] = build_indicator_snapshot(
+                    ind, df5, signal,
+                    candle_open_ms=closed_ts,
+                    config_version=CONFIG_VERSION,
+                    cooldown_candles=COOLDOWN_CANDLES,
+                    state_metadata=state_metadata,
+                )
             except Exception as snapshot_error:
                 log.warning("signal snapshot enrichment failed symbol=%s error_type=%s", display_symbol, type(snapshot_error).__name__)
             if candidate_store is None:

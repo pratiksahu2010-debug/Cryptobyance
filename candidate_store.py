@@ -352,6 +352,26 @@ class CandidateStore:
             )
         return {str(row["direction"]): str(row["state"]) for row in rows}
 
+    async def load_symbol_state_metadata(self, strategy_key: str, symbol: str) -> dict[str, dict]:
+        """Load cycle and armed-candle metadata for a point-in-time signal snapshot."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT direction,state,armed_candle_open_ms,cycle_id,
+                          last_processed_candle_open_ms,setup_invalidated
+                   FROM strategy_signal_states
+                   WHERE strategy_key=$1 AND symbol=$2""", strategy_key, symbol
+            )
+        return {
+            str(row["direction"]): {
+                "state": str(row["state"]),
+                "armed_candle_open_ms": row["armed_candle_open_ms"],
+                "cycle_id": int(row["cycle_id"]),
+                "last_processed_candle_open_ms": row["last_processed_candle_open_ms"],
+                "setup_invalidated": bool(row["setup_invalidated"]),
+            }
+            for row in rows
+        }
+
     async def advance_symbol_state(
         self, *, strategy_key: str, symbol: str, direction: str,
         candle_open_ms: int, setup_valid: bool, invalidation: bool,
