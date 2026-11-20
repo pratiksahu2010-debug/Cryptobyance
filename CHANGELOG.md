@@ -19,5 +19,5 @@ All notable implementation changes for the state-machine bot are recorded here.
 
 ## Verification notes
 
-- The merged changes were covered by GitHub Actions compile and unit/integration suites. The latest merged CI run for PR #57 passed 208 tests; PR #58 adds further bucket-coverage changes and must pass CI before merge.
+- GitHub Actions compile and unit/integration checks passed for PR #58: **209 tests passed**. The latest CI run included the SQLite integration tests, weekly digest persistence, Telegram reply-note handling, replay-to-trainer preview, and independent Wilder indicator reference checks.
 - Synthetic and local SQLite tests do not prove live CoinDCX connectivity, Render startup, production PostgreSQL migration behavior, or real Telegram delivery.
