@@ -26,6 +26,7 @@ def build_indicator_snapshot(
     ema21 = float(current.ema21)
     vwap = float(current.vwap)
     close = float(current.close)
+    atr_value = float(current.atr) if pd.notna(current.atr) else None
     if ema21 == 0 or vwap == 0:
         raise ValueError("EMA21 and VWAP must be non-zero for percentage features")
 
