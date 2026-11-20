@@ -57,6 +57,11 @@ def _translate_sql(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...
         "CROSS JOIN json_each(c.rejection_reasons) AS r",
     )
     query = query.replace("r.reason", "r.value")
+    query = re.sub(
+        r"([A-Za-z_][A-Za-z0-9_.]*)\\s*\\?\\s*'([^']+)'",
+        r"EXISTS (SELECT 1 FROM json_each(\\1) WHERE value='\\2')",
+        query,
+    )
 
     # UTC hour extraction; SQLite stores CURRENT_TIMESTAMP in UTC.
     query = re.sub(
