@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hmac
+import io
 import json
 import logging
 import os
@@ -73,6 +75,11 @@ class FeedbackRequest(BaseModel):
 class CandidateFeedbackRequest(BaseModel):
     candidate_id: int
     category: str = "MISSED_OPPORTUNITY"
+    comment: str = ""
+
+class RelabelRequest(BaseModel):
+    signal_id: int
+    category: str
     comment: str = ""
 
 
@@ -753,6 +760,33 @@ async def journal_candidate_feedback(payload: CandidateFeedbackRequest, request:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"saved": True, "feedback_id": feedback_id}
 
+@app.post("/journal/api/relabel")
+async def journal_relabel(payload: RelabelRequest, request: Request):
+    require_journal_token(request)
+    try:
+        feedback_id = await get_journal().relabel_signal(
+            payload.signal_id, payload.category, payload.comment
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"saved": True, "relabelled": True, "feedback_id": feedback_id}
+
+
+@app.get("/journal/api/pending")
+async def journal_pending(request: Request, limit: int = 100):
+    require_journal_token(request)
+    return await get_journal().pending_entries(limit)
+
+
+@app.get("/journal/api/stats")
+async def journal_stats(request: Request, days: int = 30):
+    require_journal_token(request)
+    if days < 1 or days > 365:
+        raise HTTPException(status_code=422, detail="days must be between 1 and 365")
+    return await get_journal().stats(days)
+
 
 @app.post("/journal/api/observation")
 async def journal_manual_observation(payload: ManualObservationRequest, request: Request):
@@ -818,11 +852,124 @@ async def journal_export(request: Request):
         headers={"Content-Disposition": 'attachment; filename="cryptobyance-journal.json"'},
     )
 
+@app.get("/journal/export.csv")
+async def journal_export_csv(request: Request):
+    require_journal_token(request)
+    entries = await get_journal().entries(5000)
+    output = io.StringIO()
+    fields = [
+        "signal_id", "symbol", "direction", "delivered_at", "config_version",
+        "entry", "stop", "target", "target1", "target2", "atr",
+        "adx", "rsi", "ema9", "ema21", "vwap", "relative_volume_20",
+        "outcome_status", "first_hit", "result", "realized_r",
+        "best_favorable_r", "worst_adverse_r", "best_favorable_pct",
+        "worst_adverse_pct", "best_favorable_atr", "worst_adverse_atr",
+        "feedback_labels", "feedback_notes", "feature_snapshot",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for item in entries:
+        payload = item.get("payload") or {}
+        snapshot = payload.get("indicator_snapshot") or payload.get("diagnostics") or {}
+        feedback = item.get("feedback") or []
+        writer.writerow({
+            "signal_id": item.get("id"),
+            "symbol": item.get("symbol"),
+            "direction": item.get("direction"),
+            "delivered_at": item.get("delivered_at"),
+            "config_version": payload.get("config_version"),
+            "entry": payload.get("entry"),
+            "stop": payload.get("stop"),
+            "target": payload.get("target"),
+            "target1": payload.get("target1"),
+            "target2": payload.get("target2"),
+            "atr": payload.get("atr"),
+            "adx": payload.get("adx"),
+            "rsi": payload.get("rsi"),
+            "ema9": payload.get("ema9"),
+            "ema21": payload.get("ema21"),
+            "vwap": payload.get("vwap"),
+            "relative_volume_20": snapshot.get("relative_volume_20"),
+            "outcome_status": item.get("outcome_status"),
+            "first_hit": item.get("first_hit"),
+            "result": item.get("result"),
+            "realized_r": item.get("realized_r"),
+            "best_favorable_r": item.get("best_favorable_r"),
+            "worst_adverse_r": item.get("worst_adverse_r"),
+            "best_favorable_pct": item.get("best_favorable_pct"),
+            "worst_adverse_pct": item.get("worst_adverse_pct"),
+            "best_favorable_atr": item.get("best_favorable_atr"),
+            "worst_adverse_atr": item.get("worst_adverse_atr"),
+            "feedback_labels": "|".join(str(f.get("category", "")) for f in feedback),
+            "feedback_notes": " | ".join(str(f.get("comment", "")) for f in feedback),
+            "feature_snapshot": json.dumps(snapshot, ensure_ascii=False, default=str),
+        })
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="cryptobyance-signals.csv"'},
+    )
+
 
 @app.get("/learning")
 async def learning_summary(request: Request):
     require_journal_token(request)
     return await get_journal().learning_summary()
+
+
+async def _telegram_send_message(chat_id: str, message: str) -> None:
+    token = settings.telegram_bot_token
+    if not token:
+        raise RuntimeError("Telegram bot token is not configured")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "disable_web_page_preview": True},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("ok"):
+            raise RuntimeError("Telegram sendMessage was rejected")
+
+
+async def _telegram_send_csv(chat_id: str, entries: list[dict]) -> None:
+    token = settings.telegram_bot_token
+    if not token:
+        raise RuntimeError("Telegram bot token is not configured")
+    output = io.StringIO()
+    fields = ["signal_id", "symbol", "direction", "delivered_at", "config_version",
+              "entry", "stop", "target", "target1", "target2", "outcome_status",
+              "first_hit", "result", "realized_r", "best_favorable_r",
+              "worst_adverse_r", "feedback_labels", "feedback_notes", "feature_snapshot"]
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    for item in entries:
+        payload = item.get("payload") or {}
+        feedback = item.get("feedback") or []
+        writer.writerow({
+            "signal_id": item.get("id"), "symbol": item.get("symbol"),
+            "direction": item.get("direction"), "delivered_at": item.get("delivered_at"),
+            "config_version": payload.get("config_version"), "entry": payload.get("entry"),
+            "stop": payload.get("stop"), "target": payload.get("target"),
+            "target1": payload.get("target1"), "target2": payload.get("target2"),
+            "outcome_status": item.get("outcome_status"), "first_hit": item.get("first_hit"),
+            "result": item.get("result"), "realized_r": item.get("realized_r"),
+            "best_favorable_r": item.get("best_favorable_r"),
+            "worst_adverse_r": item.get("worst_adverse_r"),
+            "feedback_labels": "|".join(str(f.get("category", "")) for f in feedback),
+            "feedback_notes": " | ".join(str(f.get("comment", "")) for f in feedback),
+            "feature_snapshot": json.dumps(payload.get("indicator_snapshot") or payload.get("diagnostics") or {}, default=str),
+        })
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data={"chat_id": chat_id, "caption": "CryptoByance delivered-signal export"},
+            files={"document": ("cryptobyance-signals.csv", output.getvalue().encode("utf-8"), "text/csv")},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("ok"):
+            raise RuntimeError("Telegram sendDocument was rejected")
 
 
 @app.post("/telegram/webhook")
@@ -834,7 +981,71 @@ async def telegram_webhook(request: Request):
     if not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
     update = await request.json()
-    callback = update.get("callback_query") if isinstance(update, dict) else None
+    if not isinstance(update, dict):
+        return {"ok": True, "ignored": True}
+    message = update.get("message")
+    if isinstance(message, dict):
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id", ""))
+        if not chat_id or chat_id != str(settings.telegram_chat_id):
+            return {"ok": True, "ignored": True}
+        command_text = str(message.get("text") or "").strip()
+        if not command_text.startswith("/"):
+            return {"ok": True, "ignored": True}
+        tokens = command_text.split()
+        command = tokens[0].split("@", 1)[0].lower()
+        journal = get_journal()
+        try:
+            if command == "/stats":
+                days = int(tokens[1]) if len(tokens) > 1 else 30
+                if not 1 <= days <= 365:
+                    raise ValueError("days must be between 1 and 365")
+                report = await journal.stats(days)
+                totals = report["totals"]
+                false_rate = totals.get("false_signal_rate")
+                false_text = f"{100.0 * false_rate:.1f}%" if false_rate is not None else "n/a"
+                message_text = (
+                    f"Stats ({days}d)\nDelivered: {totals.get('delivered', 0)}\n"
+                    f"Wins: {totals.get('wins', 0)} | Losses: {totals.get('losses', 0)} | "
+                    f"Timeouts: {totals.get('timeouts', 0)}\n"
+                    f"Unresolved: {totals.get('unresolved', 0)}\n"
+                    f"False-signal rate (Fake/Bad/Late): {false_text}\n"
+                    f"Average net R: {totals.get('avg_net_realized_r')}"
+                )
+                await _telegram_send_message(chat_id, message_text)
+            elif command == "/pending":
+                pending = await journal.pending_entries(20)
+                if not pending:
+                    message_text = "No delivered signals are waiting for feedback."
+                else:
+                    message_text = "Pending feedback:\n" + "\n".join(
+                        f"#{x['id']} {x['symbol']} {x['direction']} · {x.get('outcome_status') or 'OPEN'}"
+                        for x in pending
+                    )
+                await _telegram_send_message(chat_id, message_text[:4000])
+            elif command == "/relabel":
+                if len(tokens) != 3:
+                    raise ValueError("Usage: /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>")
+                aliases = {
+                    "GOOD": "GOOD_ENTRY", "BAD": "BAD_SIGNAL", "LATE": "LATE_ENTRY",
+                    "FAKE": "FAKE_SIGNAL", "SKIP": "SKIP",
+                }
+                category = aliases.get(tokens[2].upper(), tokens[2].upper())
+                feedback_id = await journal.relabel_signal(int(tokens[1]), category)
+                await _telegram_send_message(chat_id, f"Signal #{tokens[1]} relabelled as {category} (feedback #{feedback_id}).")
+            elif command == "/export":
+                await _telegram_send_csv(chat_id, await journal.entries(5000))
+            else:
+                await _telegram_send_message(chat_id, "Commands: /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
+            return {"ok": True, "command": command}
+        except (ValueError, LookupError) as exc:
+            await _telegram_send_message(chat_id, f"Command error: {exc}")
+            return {"ok": True, "command": command, "error": str(exc)}
+        except Exception as exc:
+            log.warning("Telegram journal command failed command=%s error_type=%s", command, type(exc).__name__)
+            await _telegram_send_message(chat_id, "Command failed; check the bot service logs.")
+            return {"ok": True, "command": command, "error": type(exc).__name__}
+    callback = update.get("callback_query")
     if not isinstance(callback, dict):
         return {"ok": True, "ignored": True}
     parts = str(callback.get("data", "")).split("|")
