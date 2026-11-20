@@ -76,6 +76,65 @@ class SQLitePersistenceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         learning = await self.journal.learning_summary()
         self.assertEqual(learning["delivered_signal_totals"]["delivered_signals"], 1)
 
+    async def test_retention_prunes_telemetry_but_preserves_signal_audit(self):
+        old = "2000-01-01 00:00:00"
+        async with self.store.pool.acquire() as conn:
+            async with conn.transaction():
+                signal = await conn.fetchrow(
+                    """INSERT INTO signal_history(
+                         idempotency_key,symbol,direction,candle_open_ms,payload,status,
+                         created_at,delivered_at)
+                       VALUES('retention-test','BTC/USDT','LONG',1800000,'{}','SENT',$1,$1)
+                       RETURNING id""", old)
+                signal_id = int(signal["id"])
+                await conn.execute(
+                    """INSERT INTO signal_outcomes(
+                         signal_id,symbol,direction,signal_candle_open_ms,entry,stop,target,
+                         risk_per_unit,last_observed_candle_open_ms,created_at,updated_at)
+                       VALUES($1,'BTC/USDT','LONG',1800000,100,98,104,2,1800000,$2,$2)""",
+                    signal_id, old)
+                await conn.execute(
+                    """INSERT INTO journal_feedback(signal_id,category,comment,source,created_at)
+                       VALUES($1,'GOOD_ENTRY','keep this feedback','telegram',$2)""",
+                    signal_id, old)
+                await conn.execute(
+                    """INSERT INTO telegram_outbox(
+                         signal_id,idempotency_key,payload,status,created_at,sent_at)
+                       VALUES($1,'retention-outbox','{}','SENT',$2,$2)""",
+                    signal_id, old)
+                await conn.execute(
+                    """INSERT INTO strategy_state_events(
+                         strategy_key,symbol,direction,from_state,to_state,candle_open_ms,created_at)
+                       VALUES('retention','BTC/USDT','LONG','IDLE','ARMED',1800000,$1)""", old)
+                await conn.execute(
+                    """INSERT INTO shadow_signal_history(
+                         proposal_version,proposal_id,symbol,direction,candle_open_ms,payload,created_at)
+                       VALUES('v-retention',99,'BTC/USDT','LONG',1800000,'{}',$1)""", old)
+                await conn.execute(
+                    """INSERT INTO training_daily_reviews(window_start,window_end,summary,created_at)
+                       VALUES($1,$2,'{}',$1)""", old, "2000-01-02 00:00:00")
+                await conn.execute(
+                    """INSERT INTO training_weekly_digests(
+                         window_start,window_end,summary,status,created_at,sent_at)
+                       VALUES($1,$2,'{}','SENT',$1,$1)""", old, "2000-01-08 00:00:00")
+                await conn.execute(
+                    """INSERT INTO scanner_runtime(instance_key,status,updated_at)
+                       VALUES('old-instance','{}',$1)""", old)
+
+        result = await self.store.cleanup(now_ms=1_800_000, retention_days=365)
+        self.assertEqual(result["deleted"], 6)
+        self.assertEqual(result["retention_deleted"]["telegram_outbox"], 1)
+        async with self.store.pool.acquire() as conn:
+            for table in (
+                "strategy_state_events", "shadow_signal_history", "training_daily_reviews",
+                "training_weekly_digests", "telegram_outbox", "scanner_runtime",
+            ):
+                row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {table}")
+                self.assertEqual(row["n"], 0, table)
+            for table in ("signal_history", "signal_outcomes", "journal_feedback", "config_history"):
+                row = await conn.fetchrow(f"SELECT COUNT(*) AS n FROM {table}")
+                self.assertEqual(row["n"], 1, table)
+
     async def test_weekly_digest_is_persisted_idempotently_and_retried(self):
         window_end = datetime(2026, 11, 16, tzinfo=timezone.utc)
         window_start = window_end - timedelta(days=7)
