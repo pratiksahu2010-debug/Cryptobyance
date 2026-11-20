@@ -11,9 +11,11 @@ class FakeClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = 0
+        self.requests = []
 
     async def post(self, url, json, timeout):
         self.calls += 1
+        self.requests.append({"url": url, "json": json, "timeout": timeout})
         result = self.responses.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -60,6 +62,14 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("5m candle close:", message)
         self.assertNotIn("Signal generated:", message)
         self.assertEqual(message.count("UTC"), 1)
+
+    async def test_feedback_keyboard_contains_good_bad_late_fake_skip(self):
+        client = FakeClient([httpx.Response(200, json={"ok": True})])
+        notifier = TelegramNotifier(client, "123:secret", "456")
+        self.assertTrue(await notifier.send(self._signal(), signal_id=77))
+        keyboard = client.requests[0]["json"]["reply_markup"]["inline_keyboard"]
+        labels = [button["callback_data"].split("|")[2] for row in keyboard for button in row]
+        self.assertEqual(labels, ["GOOD_ENTRY", "BAD_SIGNAL", "LATE_ENTRY", "FAKE_SIGNAL", "SKIP"])
 
     async def test_retries_rate_limit_then_succeeds(self):
         client = FakeClient([
