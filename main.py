@@ -1373,6 +1373,22 @@ async def telegram_webhook(request: Request):
             return {"ok": True, "ignored": True}
         command_text = str(message.get("text") or "").strip()
         if not command_text.startswith("/"):
+            # Plain-text replies to a bot alert are notes, not grades. The
+            # dedicated Good/Bad/Late/Fake/Skip buttons remain the label source.
+            replied = message.get("reply_to_message") or {}
+            replied_sender = replied.get("from") or {}
+            replied_text = str(replied.get("text") or "")
+            signal_match = re.search(r"Signal ID:\\s*(\\d+)", replied_text)
+            if command_text and replied_sender.get("is_bot") is True and signal_match:
+                signal_id = int(signal_match.group(1))
+                feedback_id = await get_journal().add_feedback(
+                    signal_id, "NEEDS_REVIEW", command_text, "telegram"
+                )
+                await _telegram_send_message(
+                    chat_id, f"Note saved for signal #{signal_id} (note #{feedback_id}). "
+                    "Use the alert buttons or /relabel to grade the signal separately."
+                )
+                return {"ok": True, "note_saved": True, "signal_id": signal_id}
             return {"ok": True, "ignored": True}
         tokens = command_text.split()
         command = tokens[0].split("@", 1)[0].lower()
