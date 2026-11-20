@@ -11,6 +11,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.timeframe, "5m")
         self.assertEqual(settings.context_timeframe, "15m")
         self.assertEqual(settings.adx_min, 20)
+        self.assertEqual(settings.signal_cooldown_candles, 4)
         self.assertEqual(settings.ema_fast, 9)
         self.assertEqual(settings.ema_slow, 21)
 
