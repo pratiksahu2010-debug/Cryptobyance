@@ -213,7 +213,7 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
 ```
 
-Telegram must be able to reach the public HTTPS webhook. Dashboard feedback works independently of webhook configuration.
+Telegram must be able to reach the public HTTPS webhook. Dashboard feedback works independently of webhook configuration. Reply to a delivered bot alert with ordinary text to attach a `NEEDS_REVIEW` note to that signal. A reply note is not a grade and does not remove the signal from `/pending`; use the inline buttons or `/relabel` for a manual label.
 
 ### API
 
