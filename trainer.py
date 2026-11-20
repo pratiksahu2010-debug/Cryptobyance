@@ -105,10 +105,10 @@ def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
         "vwap_distance_pct": ([0.10, 0.30, 0.60], lambda x: (
             abs(_finite(x["features"].get("price_vwap_distance_pct")))
             if x["features"].get("price_vwap_distance_pct") is not None
-            else (abs((_finite(x["features"].get("close")) - _finite(x["features"].get("vwap"))) /
-                      abs(_finite(x["features"].get("vwap"))) * 100
-                      if _finite(x["features"].get("close")) is not None
-                      and _finite(x["features"].get("vwap")) not in (None, 0) else None)
+            else (abs(_finite(x["features"].get("close")) - _finite(x["features"].get("vwap"))) /
+                  abs(_finite(x["features"].get("vwap"))) * 100
+                  if _finite(x["features"].get("close")) is not None
+                  and _finite(x["features"].get("vwap")) not in (None, 0) else None)
         )),
         "relative_volume_20": ([1, 1.5, 2], lambda x: _finite(x["features"].get("relative_volume_20"))),
         "hour_utc": ([6, 12, 18], lambda x: float(x["hour_utc"]) if x["hour_utc"] is not None else None),
