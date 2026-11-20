@@ -892,15 +892,31 @@ class EngineTests(unittest.TestCase):
             signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
         self.assertEqual(signal["candle_close"], signal["candle"] + 300_000)
 
-    def test_signal_stop_and_target_preserve_configured_risk_reward(self):
+    def test_production_setup_uses_swing_stop_and_swing_r_targets(self):
+        from unittest.mock import patch
+        five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
+        with patch("strategy.indicators", side_effect=[five, fifteen]):
+            signal = evaluate_setup(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        risk = signal["entry"] - signal["stop"]
+        self.assertEqual(signal["risk_model"], "swing_structure")
+        self.assertAlmostEqual(signal["stop"], 97.0, places=8)
+        self.assertAlmostEqual(signal["target1"], signal["entry"] + risk * 1.0, places=8)
+        self.assertAlmostEqual(signal["target2"], signal["entry"] + risk * 2.0, places=8)
+        self.assertAlmostEqual(signal["risk_distance"], risk, places=8)
+
+    def test_legacy_signal_keeps_atr_stop_and_consistent_supplemental_targets(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         with patch("strategy.indicators", side_effect=[five, fifteen]):
             signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
         risk = signal["entry"] - signal["stop"]
         reward = signal["target"] - signal["entry"]
+        self.assertEqual(signal["risk_model"], "legacy_atr")
         self.assertAlmostEqual(risk, signal["atr"] * 1.5, places=8)
         self.assertAlmostEqual(reward / risk, 1.5, places=8)
+        self.assertAlmostEqual(signal["target1"], signal["entry"] + risk * 1.0, places=8)
+        self.assertAlmostEqual(signal["target2"], signal["entry"] + risk * 2.0, places=8)
+        self.assertAlmostEqual(signal["risk_distance"], risk, places=8)
 
 
 if __name__ == "__main__":
