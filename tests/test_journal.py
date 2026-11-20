@@ -86,6 +86,7 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
             fetchrows=[
                 {"id": 7, "base_config_version": "v2", "proposed_config_version": "v3",
                  "proposed_config": json.dumps({"adx_min": 22.0}), "status": "PROPOSED"},
+                None,
                 {"config_version": "v2", "config": json.dumps(current)},
             ],
             fetchrows_result=[{"config_version": "v2"}],
@@ -103,6 +104,7 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
         conn = FakeConnection(fetchrows=[
             {"id": 8, "base_config_version": "v2", "proposed_config_version": "v3",
              "proposed_config": '{"adx_min":22}', "status": "PROPOSED"},
+            None,
             {"config_version": "v3", "config": '{"adx_min":24}'},
         ])
         journal = SignalJournal(FakeStore(conn))
@@ -114,6 +116,7 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
         previous_config = {"adx_min": 20.0, "rsi_long_min": 52.0}
         conn = FakeConnection(fetchrows=[
             {"config_version": "v3", "config": '{"adx_min":22}', "previous_version": "v2"},
+            None,
             {"config_version": "v2", "config": json.dumps(previous_config)},
         ])
         journal = SignalJournal(FakeStore(conn))
