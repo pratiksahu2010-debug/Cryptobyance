@@ -193,6 +193,17 @@ def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
     return pd.concat([base, derived], axis=1)
 
 
+def context_rsi_is_aligned(side: str, context_rsi: float, midline: float = 50.0) -> bool:
+    """Return whether 15m RSI supports direction; this is confidence-only, never a veto."""
+    if side not in {"LONG", "SHORT"}:
+        raise ValueError(f"unsupported signal side: {side}")
+    if not np.isfinite(float(context_rsi)) or not 0 <= float(context_rsi) <= 100:
+        raise ValueError("context_rsi must be a finite value from 0 to 100")
+    if not np.isfinite(float(midline)) or not 0 <= float(midline) <= 100:
+        raise ValueError("midline must be a finite value from 0 to 100")
+    return float(context_rsi) >= float(midline) if side == "LONG" else float(context_rsi) <= float(midline)
+
+
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Simple completed-5m EMA/VWAP/RSI/ADX strategy with a hard 15m EMA veto.
 
@@ -235,7 +246,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         return None
     context_row = context_frame.iloc[-1]
     if not all(pd.notna(v) and np.isfinite(float(v))
-               for v in (context_row.ema9, context_row.ema21)):
+               for v in (context_row.ema9, context_row.ema21, context_row.rsi)):
         return None
     if float(context_row.ema9) > float(context_row.ema21):
         context = "15m bullish"
@@ -261,8 +272,10 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
+    context_rsi = float(context_row.rsi)
+    context_rsi_aligned = context_rsi_is_aligned(side, context_rsi, settings.context_rsi_midline)
     diagnostics = {
-        "version": 2,
+        "version": 3,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
         "ema9_slope_atr_3bars": (float(c.ema9) - float(prev5.ema9)) / atr_value,
         "ema21_slope_atr_3bars": (float(c.ema21) - float(prev5.ema21)) / atr_value,
@@ -271,6 +284,9 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "adx14": float(c.adx),
         "atr_pct_of_price": 100.0 * atr_value / entry,
         "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
+        "context_rsi14": context_rsi,
+        "context_rsi_midline": float(settings.context_rsi_midline),
+        "context_rsi_aligned": context_rsi_aligned,
         "context_ema9_slope_pct_3bars": 100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9),
     }
     if not all(np.isfinite(float(value)) for value in diagnostics.values()):
@@ -285,7 +301,11 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
         "atr": atr_value, "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
-        "context": context, "diagnostics": diagnostics,
+        "context": context,
+        "context_rsi14": context_rsi,
+        "context_rsi_aligned": context_rsi_aligned,
+        "context_rsi_score": 1 if context_rsi_aligned else 0,
+        "diagnostics": diagnostics,
     }
 
 
