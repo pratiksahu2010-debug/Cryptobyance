@@ -104,6 +104,30 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
         self.assertTrue(await store.enqueue_signal(signal, None, cooldown_candles=3))
 
+    async def test_shadow_signal_is_persisted_without_telegram_outbox(self):
+        conn = FakeConnection(fetchrows=[{"id": 501}])
+        store = CandidateStore(FakePool(conn))
+        signal = {
+            "symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
+            "entry": 100.0, "stop": 98.0, "target": 104.0,
+        }
+        self.assertTrue(await store.record_shadow_signal(9, "v3", signal))
+        query, args = conn.fetchrow_calls[0]
+        self.assertIn("INSERT INTO shadow_signal_history", query)
+        self.assertIn("ON CONFLICT", query)
+        self.assertEqual(args[:5], ("v3", 9, "BTC/USDT", "LONG", 1_800_000))
+        self.assertEqual(conn.execute.await_count, 0)
+
+    async def test_shadow_signal_counts_are_scoped_to_proposal_version(self):
+        conn = FakeConnection()
+        conn.fetchrow = AsyncMock(return_value={
+            "total": 7, "longs": 4, "shorts": 3, "symbols": 5,
+        })
+        store = CandidateStore(FakePool(conn))
+        counts = await store.shadow_signal_counts("v3")
+        self.assertEqual(counts, {"total": 7, "longs": 4, "shorts": 3, "symbols": 5})
+        self.assertIn("WHERE proposal_version=$1", conn.fetchrow.await_args.args[0])
+
     async def test_load_symbol_state_metadata_returns_armed_cycle_details(self):
         conn = FakeConnection()
         conn.fetch.return_value = [{
