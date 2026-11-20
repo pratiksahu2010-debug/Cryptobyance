@@ -269,6 +269,9 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     "open": float(current.open), "high": float(current.high),
                     "low": float(current.low), "close": float(current.close),
                     "volume": float(current.volume), "context_15m": signal.get("context"),
+                    "context_rsi14": signal.get("context_rsi14"),
+                    "context_rsi_aligned": signal.get("context_rsi_aligned"),
+                    "context_rsi_score": signal.get("context_rsi_score"),
                 }
             except Exception as snapshot_error:
                 log.warning("signal snapshot enrichment failed symbol=%s error_type=%s", display_symbol, type(snapshot_error).__name__)
