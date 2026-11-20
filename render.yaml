@@ -43,3 +43,5 @@ services:
         sync: false
       - key: SIGNAL_COOLDOWN_CANDLES
         value: "4"
+      - key: DB_RETENTION_DAYS
+        value: "365"
