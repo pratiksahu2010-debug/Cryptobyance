@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS journal_feedback (
     id BIGSERIAL PRIMARY KEY,
     signal_id BIGINT NOT NULL REFERENCES signal_history(id) ON DELETE RESTRICT,
     category TEXT NOT NULL CHECK (category IN (
-      'GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','MISSED_OPPORTUNITY',
+      'GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL','SKIP','MISSED_OPPORTUNITY',
       'STOP_LOSS_TOO_TIGHT','TARGET_TOO_CLOSE','WRONG_DIRECTION','NEEDS_REVIEW'
     )),
     comment TEXT NOT NULL DEFAULT '',
@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS journal_feedback (
 );
 CREATE INDEX IF NOT EXISTS ix_journal_feedback_signal_created
  ON journal_feedback(signal_id,created_at DESC);
+ALTER TABLE journal_feedback DROP CONSTRAINT IF EXISTS journal_feedback_category_check;
+ALTER TABLE journal_feedback ADD CONSTRAINT journal_feedback_category_check
+ CHECK (category IN (
+   'GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL','SKIP','MISSED_OPPORTUNITY',
+   'STOP_LOSS_TOO_TIGHT','TARGET_TOO_CLOSE','WRONG_DIRECTION','NEEDS_REVIEW'
+ ));
 CREATE TABLE IF NOT EXISTS journal_candidates (
     id BIGSERIAL PRIMARY KEY,
     symbol TEXT NOT NULL,
@@ -84,7 +90,7 @@ CREATE TABLE IF NOT EXISTS training_daily_reviews (
 """
 
 FEEDBACK_CATEGORIES = {
-    "GOOD_ENTRY", "BAD_SIGNAL", "LATE_ENTRY", "MISSED_OPPORTUNITY",
+    "GOOD_ENTRY", "BAD_SIGNAL", "LATE_ENTRY", "FAKE_SIGNAL", "SKIP", "MISSED_OPPORTUNITY",
     "STOP_LOSS_TOO_TIGHT", "TARGET_TOO_CLOSE", "WRONG_DIRECTION", "NEEDS_REVIEW",
 }
 
@@ -321,13 +327,147 @@ class SignalJournal:
     async def add_telegram_feedback(self, signal_id: int, category: str) -> int:
         return await self.add_feedback(signal_id, category, "", "telegram")
 
+    async def relabel_signal(self, signal_id: int, category: str, comment: str = "") -> int:
+        """Replace the latest manual label for a delivered signal, or create one."""
+        category = str(category).strip().upper()
+        if category not in FEEDBACK_CATEGORIES:
+            raise ValueError("unsupported feedback category")
+        comment = str(comment or "").strip()[:1000]
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                signal = await conn.fetchrow(
+                    "SELECT id FROM signal_history WHERE id=$1 AND status='SENT' FOR UPDATE",
+                    int(signal_id),
+                )
+                if signal is None:
+                    raise LookupError("delivered signal not found")
+                latest = await conn.fetchrow(
+                    """SELECT id FROM journal_feedback
+                       WHERE signal_id=$1 ORDER BY created_at DESC,id DESC
+                       LIMIT 1 FOR UPDATE""", int(signal_id))
+                if latest:
+                    row = await conn.fetchrow(
+                        """UPDATE journal_feedback SET category=$2,comment=$3,
+                               source='api',created_at=NOW()
+                           WHERE id=$1 RETURNING id""",
+                        int(latest["id"]), category, comment)
+                else:
+                    row = await conn.fetchrow(
+                        """INSERT INTO journal_feedback(signal_id,category,comment,source)
+                           VALUES($1,$2,$3,'api') RETURNING id""",
+                        int(signal_id), category, comment)
+        return int(row["id"])
+
+    async def pending_entries(self, limit: int = 100) -> list[dict]:
+        """Delivered signals that have never received a manual label."""
+        limit = max(1, min(int(limit), 5000))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.id,s.symbol,s.direction,s.delivered_at,
+                          s.payload->>'config_version' AS config_version,
+                          o.status AS outcome_status,o.result,o.realized_r
+                   FROM signal_history s
+                   LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM journal_feedback f WHERE f.signal_id=s.id
+                     )
+                   ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
+        return [
+            {**dict(row),
+             "delivered_at": row["delivered_at"].isoformat() if row["delivered_at"] else None}
+            for row in rows
+        ]
+
+    async def stats(self, days: int = 30) -> dict:
+        """Aggregate labels, outcomes and performance dimensions for a time window."""
+        days = max(1, min(int(days), 365))
+        async with self.pool.acquire() as conn:
+            labels = await conn.fetch(
+                """SELECT f.category,COUNT(*) AS count
+                   FROM journal_feedback f
+                   JOIN signal_history s ON s.id=f.signal_id
+                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                   GROUP BY f.category ORDER BY count DESC,f.category""", days)
+            totals = await conn.fetchrow(
+                """WITH latest_feedback AS (
+                     SELECT DISTINCT ON (signal_id) signal_id,category
+                     FROM journal_feedback ORDER BY signal_id,created_at DESC,id DESC
+                   ), labeled AS (
+                     SELECT s.id,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                            f.category,
+                            CASE WHEN f.category='GOOD_ENTRY' THEN 'WIN'
+                                 WHEN f.category IN ('BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL','WRONG_DIRECTION') THEN 'LOSS'
+                                 ELSE o.result END AS effective_result
+                     FROM signal_history s
+                     LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                     LEFT JOIN latest_feedback f ON f.signal_id=s.id
+                     WHERE s.status='SENT'
+                       AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                   )
+                   SELECT COUNT(*) AS delivered,
+                          COUNT(*) FILTER (WHERE effective_result='WIN') AS wins,
+                          COUNT(*) FILTER (WHERE effective_result='LOSS') AS losses,
+                          COUNT(*) FILTER (WHERE effective_result='TIMEOUT') AS timeouts,
+                          COUNT(*) FILTER (WHERE effective_result IS NULL) AS unresolved,
+                          COUNT(*) FILTER (WHERE category IN ('FAKE_SIGNAL','BAD_SIGNAL','LATE_ENTRY')) AS false_labels,
+                          COUNT(*) FILTER (WHERE category IN ('GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL')) AS manual_labels,
+                          ROUND(AVG(realized_r)::numeric,3) AS avg_net_realized_r,
+                          ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
+                          ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
+                   FROM labeled""", days)
+            by_side = await conn.fetch(
+                """SELECT s.direction,COUNT(*) AS signals,
+                          COUNT(*) FILTER (WHERE o.result='WIN') AS auto_wins,
+                          COUNT(*) FILTER (WHERE o.result='LOSS') AS auto_losses,
+                          ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                   GROUP BY s.direction ORDER BY s.direction""", days)
+            by_symbol = await conn.fetch(
+                """SELECT s.symbol,s.direction,COUNT(*) AS signals,
+                          COUNT(*) FILTER (WHERE o.result='WIN') AS wins,
+                          COUNT(*) FILTER (WHERE o.result='LOSS') AS losses,
+                          COUNT(*) FILTER (WHERE o.result='TIMEOUT') AS timeouts,
+                          ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                   GROUP BY s.symbol,s.direction ORDER BY s.symbol,s.direction""", days)
+            by_hour = await conn.fetch(
+                """SELECT EXTRACT(HOUR FROM s.delivered_at AT TIME ZONE 'UTC')::integer AS hour_utc,
+                          COUNT(*) AS signals,ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                   GROUP BY hour_utc ORDER BY hour_utc""", days)
+            by_config = await conn.fetch(
+                """SELECT COALESCE(s.payload->>'config_version','unknown') AS config_version,
+                          COUNT(*) AS signals,ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
+                   FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                   GROUP BY 1 ORDER BY 1""", days)
+        totals_dict = dict(totals) if totals else {}
+        manual = int(totals_dict.get("manual_labels") or 0)
+        false_labels = int(totals_dict.get("false_labels") or 0)
+        totals_dict["false_signal_rate"] = round(false_labels / manual, 4) if manual else None
+        return {
+            "window_days": days,
+            "totals": totals_dict,
+            "labels": [dict(row) for row in labels],
+            "by_side": [dict(row) for row in by_side],
+            "by_symbol": [dict(row) for row in by_symbol],
+            "by_hour_utc": [dict(row) for row in by_hour],
+            "by_config_version": [dict(row) for row in by_config],
+        }
+
     async def entries(self, limit: int = 100) -> list[dict]:
-        limit = max(1, min(int(limit), 250))
+        limit = max(1, min(int(limit), 5000))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
                           s.payload::text AS payload,o.status AS outcome_status,
-                          o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                          o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                          o.best_favorable_pct,o.worst_adverse_pct,
+                          o.best_favorable_atr,o.worst_adverse_atr,
                           (SELECT json_agg(json_build_object(
                               'id',f.id,'category',f.category,'comment',f.comment,
                               'source',f.source,'created_at',f.created_at)

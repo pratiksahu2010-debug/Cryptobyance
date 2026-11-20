@@ -10,6 +10,10 @@ class JournalSchemaTests(unittest.TestCase):
         self.assertIn("UNIQUE(symbol,direction,candle_open_ms)", JOURNAL_DDL)
         self.assertIn("ON DELETE RESTRICT", JOURNAL_DDL)
 
+    def test_feedback_categories_include_fake_and_skip(self):
+        self.assertIn("FAKE_SIGNAL", FEEDBACK_CATEGORIES)
+        self.assertIn("SKIP", FEEDBACK_CATEGORIES)
+
     def test_feedback_categories_cover_signal_and_missed_setup_review(self):
         self.assertIn("GOOD_ENTRY", FEEDBACK_CATEGORIES)
         self.assertIn("BAD_SIGNAL", FEEDBACK_CATEGORIES)
