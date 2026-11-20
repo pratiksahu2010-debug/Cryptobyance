@@ -4,6 +4,7 @@ All notable implementation changes for the state-machine bot are recorded here.
 
 ## 2026-11-20
 
+- **PR #60 — Source archive:** added an automatic GitHub Actions ZIP artifact containing the complete source tree and deployment/schema files, excluding local secrets.
 - **PR #58 — Training bucket coverage:** added explicit ATR% feature snapshots and diagnostics for cooldown bars, directional RSI bands, EMA spread magnitude, VWAP distance, relative volume, and UTC-hour buckets.
 - **PR #57 — Feedback and replay training:** Telegram text replies to bot alerts are stored as `NEEDS_REVIEW` notes without grading; notes do not remove a signal from `/pending` or override manual grades. Replay outcomes now pass through the offline trainer and walk-forward guards. Proposals include OOS resolved-signals-per-day estimates.
 - **PR #56 — Weekly digest and retention:** added idempotent Monday UTC weekly Telegram digests and configurable `DB_RETENTION_DAYS` telemetry pruning while retaining core signal/outcome/feedback/config audit data.
