@@ -6,11 +6,13 @@ import csv
 import hmac
 import io
 import json
+import math
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -43,6 +45,75 @@ CONCURRENCY = settings.concurrency
 COOLDOWN_CANDLES = settings.signal_cooldown_candles
 TIMEFRAME = settings.timeframe
 CONTEXT_TF = settings.context_timeframe
+
+RUNTIME_CONFIG_KEYS = (
+    "scan_interval_seconds", "concurrency", "signal_cooldown_candles",
+    "timeframe", "context_timeframe", "adx_min", "ema_fast", "ema_slow",
+    "rsi_period", "adx_period", "rsi_long_min", "rsi_long_max",
+    "rsi_short_min", "rsi_short_max", "context_rsi_midline",
+    "swing_lookback_bars", "tp1_r", "tp2_r", "atr_stop_multiplier",
+    "min_risk_reward", "outcome_horizon_bars", "outcome_cost_pct",
+    "training_min_samples", "training_min_bucket_samples", "log_level",
+)
+
+
+def _runtime_config_payload(runtime_settings) -> dict:
+    return {key: getattr(runtime_settings, key) for key in RUNTIME_CONFIG_KEYS}
+
+
+def apply_runtime_config(config_payload: dict, version: str) -> None:
+    """Hot-reload approved settings consistently across imported strategy modules."""
+    global settings, CONFIG_VERSION, COOLDOWN_CANDLES, CONCURRENCY, TIMEFRAME, CONTEXT_TF, LOG_LEVEL
+    import config as config_module
+    import strategy as strategy_module
+    import candidate_store as candidate_store_module
+    import journal as journal_module
+
+    values = {key: config_payload[key] for key in RUNTIME_CONFIG_KEYS if key in config_payload}
+    updated = replace(settings, **values)
+    numeric_values = (
+        updated.adx_min, updated.rsi_long_min, updated.rsi_long_max,
+        updated.rsi_short_min, updated.rsi_short_max, updated.tp1_r,
+        updated.tp2_r, updated.atr_stop_multiplier, updated.min_risk_reward,
+        updated.outcome_cost_pct,
+    )
+    if not all(math.isfinite(float(value)) for value in numeric_values):
+        raise ValueError("approved runtime configuration contains non-finite values")
+    if (updated.timeframe != "5m" or updated.context_timeframe != "15m"
+            or not 0.01 <= updated.adx_min <= 100
+            or updated.ema_fast >= updated.ema_slow
+            or not 0 <= updated.rsi_long_min < updated.rsi_long_max <= 100
+            or not 0 <= updated.rsi_short_min < updated.rsi_short_max <= 100
+            or updated.tp1_r <= 0 or updated.tp2_r <= updated.tp1_r
+            or updated.signal_cooldown_candles < 1
+            or not 0 <= updated.outcome_cost_pct <= 5
+            or not 1 <= updated.outcome_horizon_bars <= 288):
+        raise ValueError("approved runtime configuration has invalid strategy or risk settings")
+
+    settings = updated
+    CONFIG_VERSION = str(version)
+    config_module.settings = updated
+    config_module.CONFIG_VERSION = str(version)
+    strategy_module.settings = updated
+    strategy_module.ADX_MIN = updated.adx_min
+    strategy_module.EMA_FAST = updated.ema_fast
+    strategy_module.EMA_SLOW = updated.ema_slow
+    strategy_module.RSI_PERIOD = updated.rsi_period
+    strategy_module.ADX_PERIOD = updated.adx_period
+    strategy_module.ATR_STOP_MULT = updated.atr_stop_multiplier
+    strategy_module.MIN_RR = updated.min_risk_reward
+    candidate_store_module.settings = updated
+    journal_module.ADX_MIN = updated.adx_min
+    journal_module.ATR_STOP_MULT = updated.atr_stop_multiplier
+    journal_module.MIN_RR = updated.min_risk_reward
+    COOLDOWN_CANDLES = updated.signal_cooldown_candles
+    CONCURRENCY = updated.concurrency
+    TIMEFRAME = updated.timeframe
+    CONTEXT_TF = updated.context_timeframe
+    LOG_LEVEL = updated.log_level
+    logging.getLogger().setLevel(updated.log_level)
+    state["config_version"] = str(version)
+
 
 state: dict[str, Any] = {
     "started_at": time.time(), "session_started_at": None, "scans": 0, "last_scan": None,
@@ -413,6 +484,12 @@ async def scanner_session() -> None:
     try:
         journal_service = SignalJournal(candidate_store)
         await journal_service.initialize()
+        await journal_service.ensure_initial_config(
+            CONFIG_VERSION, _runtime_config_payload(settings)
+        )
+        active_config = await journal_service.active_config()
+        if active_config:
+            apply_runtime_config(active_config["config"], active_config["version"])
     except BaseException:
         await candidate_store.close()
         raise
@@ -814,6 +891,47 @@ async def list_training_proposals(request: Request, limit: int = 20):
     return await get_journal().training_proposals(limit)
 
 
+@app.post("/journal/api/proposals/{proposal_id}/approve")
+async def approve_training_proposal(proposal_id: int, request: Request):
+    require_journal_token(request)
+    try:
+        result = await get_journal().approve_proposal(proposal_id, "journal_api")
+        apply_runtime_config(result["config"], result["version"])
+        return {"approved": True, **result}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/journal/api/proposals/{proposal_id}/reject")
+async def reject_training_proposal(proposal_id: int, request: Request):
+    require_journal_token(request)
+    try:
+        return await get_journal().reject_proposal(proposal_id, "journal_api")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/journal/api/rollback")
+async def rollback_runtime_config(request: Request):
+    require_journal_token(request)
+    try:
+        result = await get_journal().rollback_config("journal_api")
+        apply_runtime_config(result["config"], result["version"])
+        return {"rolled_back": True, **result}
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/journal/api/config-history")
+async def journal_config_history(request: Request, limit: int = 30):
+    require_journal_token(request)
+    return await get_journal().config_history(limit)
+
+
 @app.post("/journal/api/training-instructions")
 async def add_training_instruction(payload: TrainingInstructionRequest, request: Request):
     require_journal_token(request)
@@ -1035,6 +1153,29 @@ async def telegram_webhook(request: Request):
                         for x in proposals
                     )
                 await _telegram_send_message(chat_id, message_text[:4000])
+            elif command == "/approve":
+                if len(tokens) != 2:
+                    raise ValueError("Usage: /approve <proposal_id>")
+                approved = await journal.approve_proposal(int(tokens[1]), chat_id)
+                apply_runtime_config(approved["config"], approved["version"])
+                await _telegram_send_message(
+                    chat_id,
+                    f"Approved proposal #{tokens[1]}. Active config is now {approved['version']}; "
+                    f"previous version {approved['previous_version']}.",
+                )
+            elif command == "/reject":
+                if len(tokens) != 2:
+                    raise ValueError("Usage: /reject <proposal_id>")
+                rejected = await journal.reject_proposal(int(tokens[1]), chat_id)
+                await _telegram_send_message(chat_id, f"Proposal #{tokens[1]} rejected.")
+            elif command == "/rollback":
+                rolled = await journal.rollback_config(chat_id)
+                apply_runtime_config(rolled["config"], rolled["version"])
+                await _telegram_send_message(
+                    chat_id,
+                    f"Runtime configuration rolled back to {rolled['version']} "
+                    f"(replaced {rolled['previous_version']}).",
+                )
             elif command == "/stats":
                 days = int(tokens[1]) if len(tokens) > 1 else 30
                 if not 1 <= days <= 365:
@@ -1075,7 +1216,7 @@ async def telegram_webhook(request: Request):
             elif command == "/export":
                 await _telegram_send_csv(chat_id, await journal.entries(5000))
             else:
-                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
+                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /approve <id>, /reject <id>, /rollback, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
             return {"ok": True, "command": command}
         except (ValueError, LookupError) as exc:
             await _telegram_send_message(chat_id, f"Command error: {exc}")

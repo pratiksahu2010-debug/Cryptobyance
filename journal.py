@@ -103,6 +103,30 @@ CREATE TABLE IF NOT EXISTS training_proposals (
 );
 CREATE INDEX IF NOT EXISTS ix_training_proposals_status_created
  ON training_proposals(status,created_at DESC);
+CREATE TABLE IF NOT EXISTS config_history (
+    config_version TEXT PRIMARY KEY,
+    config JSONB NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ACTIVE','INACTIVE')),
+    previous_version TEXT,
+    approved_by TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    activated_at TIMESTAMPTZ,
+    deactivated_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_config_history_one_active
+ ON config_history(status) WHERE status='ACTIVE';
+CREATE TABLE IF NOT EXISTS config_history_events (
+    id BIGSERIAL PRIMARY KEY,
+    action TEXT NOT NULL CHECK(action IN ('INITIALIZE','APPROVE','REJECT','ROLLBACK')),
+    config_version TEXT NOT NULL,
+    previous_version TEXT,
+    actor TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_config_history_events_created
+ ON config_history_events(created_at DESC);
 """
 
 FEEDBACK_CATEGORIES = {
@@ -648,6 +672,186 @@ class SignalJournal:
             )
         proposal["proposal_id"] = int(row["id"])
         return proposal
+
+    async def ensure_initial_config(self, version: str, config: dict) -> None:
+        """Seed the active config once; never overwrite an approved config at boot."""
+        encoded = json.dumps(config, separators=(",", ":"), allow_nan=False)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                active = await conn.fetchrow(
+                    "SELECT config_version FROM config_history WHERE status='ACTIVE' FOR UPDATE")
+                if active:
+                    return
+                existing = await conn.fetchrow(
+                    "SELECT config_version FROM config_history WHERE config_version=$1 FOR UPDATE",
+                    version)
+                if existing:
+                    await conn.execute(
+                        """UPDATE config_history SET status='ACTIVE',activated_at=NOW(),
+                               deactivated_at=NULL WHERE config_version=$1""", version)
+                else:
+                    await conn.execute(
+                        """INSERT INTO config_history(
+                             config_version,config,status,approved_by,reason,activated_at)
+                           VALUES($1,$2::jsonb,'ACTIVE','system','Initial runtime configuration',NOW())""",
+                        version, encoded)
+                await conn.execute(
+                    """INSERT INTO config_history_events(action,config_version,actor,reason)
+                       VALUES('INITIALIZE',$1,'system','Initial runtime configuration')""", version)
+
+    async def active_config(self) -> dict | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT config_version,config::text AS config
+                   FROM config_history WHERE status='ACTIVE' LIMIT 1""")
+        if row is None:
+            return None
+        config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
+        return {"version": row["config_version"], "config": config}
+
+    async def config_history(self, limit: int = 30) -> dict:
+        limit = max(1, min(int(limit), 100))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT config_version,status,previous_version,approved_by,reason,
+                          created_at,activated_at,deactivated_at
+                   FROM config_history ORDER BY created_at DESC,config_version DESC LIMIT $1""",
+                limit)
+            events = await conn.fetch(
+                """SELECT action,config_version,previous_version,actor,reason,created_at
+                   FROM config_history_events ORDER BY created_at DESC,id DESC LIMIT $1""",
+                limit)
+        return {
+            "versions": [
+                {**dict(row),
+                 "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                 "activated_at": row["activated_at"].isoformat() if row["activated_at"] else None,
+                 "deactivated_at": row["deactivated_at"].isoformat() if row["deactivated_at"] else None}
+                for row in rows
+            ],
+            "events": [
+                {**dict(row), "created_at": row["created_at"].isoformat() if row["created_at"] else None}
+                for row in events
+            ],
+        }
+
+    async def approve_proposal(self, proposal_id: int, actor: str,
+                               reason: str = "Approved via Telegram") -> dict:
+        actor = str(actor or "unknown")[:120]
+        reason = str(reason or "Approved via Telegram")[:500]
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                proposal = await conn.fetchrow(
+                    """SELECT id,base_config_version,proposed_config_version,
+                              proposed_config::text AS proposed_config,status
+                       FROM training_proposals WHERE id=$1 FOR UPDATE""", int(proposal_id))
+                if proposal is None:
+                    raise LookupError("training proposal not found")
+                if proposal["status"] != "PROPOSED":
+                    raise ValueError("only a PROPOSED item can be approved")
+                active = await conn.fetchrow(
+                    """SELECT config_version,config::text AS config
+                       FROM config_history WHERE status='ACTIVE' FOR UPDATE""")
+                if active is None:
+                    raise RuntimeError("active runtime config is not initialized")
+                if active["config_version"] != proposal["base_config_version"]:
+                    raise ValueError("proposal is stale; run /train again against the current config")
+                current_config = json.loads(active["config"]) if isinstance(active["config"], str) else dict(active["config"])
+                proposed_delta = json.loads(proposal["proposed_config"])
+                merged_config = {**current_config, **proposed_delta}
+                versions = await conn.fetch("SELECT config_version FROM config_history")
+                max_number = max(
+                    (int(str(row["config_version"]).lstrip("v"))
+                     for row in versions if str(row["config_version"]).lstrip("v").isdigit()),
+                    default=1,
+                )
+                proposed_version = proposal["proposed_config_version"]
+                if any(row["config_version"] == proposed_version for row in versions):
+                    proposed_version = f"v{max_number + 1}"
+                await conn.execute(
+                    """UPDATE config_history SET status='INACTIVE',deactivated_at=NOW()
+                       WHERE config_version=$1""", active["config_version"])
+                await conn.execute(
+                    """INSERT INTO config_history(
+                         config_version,config,status,previous_version,approved_by,reason,activated_at)
+                       VALUES($1,$2::jsonb,'ACTIVE',$3,$4,$5,NOW())""",
+                    proposed_version,
+                    json.dumps(merged_config, separators=(",", ":"), allow_nan=False),
+                    active["config_version"], actor, reason)
+                await conn.execute(
+                    """UPDATE training_proposals SET status='APPROVED',
+                           proposed_config_version=$2,reviewer_note=$3,reviewed_at=NOW()
+                       WHERE id=$1""", int(proposal_id), proposed_version, reason)
+                await conn.execute(
+                    """INSERT INTO config_history_events(
+                         action,config_version,previous_version,actor,reason)
+                       VALUES('APPROVE',$1,$2,$3,$4)""",
+                    proposed_version, active["config_version"], actor, reason)
+        return {"version": proposed_version, "config": merged_config,
+                "previous_version": active["config_version"]}
+
+    async def reject_proposal(self, proposal_id: int, actor: str,
+                              reason: str = "Rejected via Telegram") -> dict:
+        actor = str(actor or "unknown")[:120]
+        reason = str(reason or "Rejected via Telegram")[:500]
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                proposal = await conn.fetchrow(
+                    """SELECT id,base_config_version,proposed_config_version,status
+                       FROM training_proposals WHERE id=$1 FOR UPDATE""", int(proposal_id))
+                if proposal is None:
+                    raise LookupError("training proposal not found")
+                if proposal["status"] != "PROPOSED":
+                    raise ValueError("only a PROPOSED item can be rejected")
+                await conn.execute(
+                    """UPDATE training_proposals SET status='REJECTED',
+                           reviewer_note=$2,reviewed_at=NOW() WHERE id=$1""",
+                    int(proposal_id), reason)
+                await conn.execute(
+                    """INSERT INTO config_history_events(
+                         action,config_version,previous_version,actor,reason)
+                       VALUES('REJECT',$1,$2,$3,$4)""",
+                    proposal["proposed_config_version"], proposal["base_config_version"],
+                    actor, reason)
+        return {"id": int(proposal_id), "status": "REJECTED"}
+
+    async def rollback_config(self, actor: str, reason: str = "Rollback via Telegram") -> dict:
+        actor = str(actor or "unknown")[:120]
+        reason = str(reason or "Rollback via Telegram")[:500]
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                active = await conn.fetchrow(
+                    """SELECT config_version,config::text AS config,previous_version
+                       FROM config_history WHERE status='ACTIVE' FOR UPDATE""")
+                if active is None or not active["previous_version"]:
+                    raise LookupError("no previous approved configuration is available")
+                previous = await conn.fetchrow(
+                    """SELECT config_version,config::text AS config
+                       FROM config_history WHERE config_version=$1 AND status='INACTIVE' FOR UPDATE""",
+                    active["previous_version"])
+                if previous is None:
+                    raise LookupError("previous configuration record is missing")
+                await conn.execute(
+                    """UPDATE config_history SET status='INACTIVE',deactivated_at=NOW()
+                       WHERE config_version=$1""", active["config_version"])
+                await conn.execute(
+                    """UPDATE config_history SET status='ACTIVE',activated_at=NOW(),
+                           deactivated_at=NULL,approved_by=$2,reason=$3
+                       WHERE config_version=$1""",
+                    previous["config_version"], actor, reason)
+                await conn.execute(
+                    """UPDATE training_proposals SET status='ROLLED_BACK',
+                           reviewer_note=$2,reviewed_at=NOW()
+                       WHERE proposed_config_version=$1 AND status='APPROVED'""",
+                    active["config_version"], reason)
+                await conn.execute(
+                    """INSERT INTO config_history_events(
+                         action,config_version,previous_version,actor,reason)
+                       VALUES('ROLLBACK',$1,$2,$3,$4)""",
+                    previous["config_version"], active["config_version"], actor, reason)
+        config = json.loads(previous["config"]) if isinstance(previous["config"], str) else dict(previous["config"])
+        return {"version": previous["config_version"], "config": config,
+                "previous_version": active["config_version"]}
 
     async def training_proposals(self, limit: int = 20) -> list[dict]:
         limit = max(1, min(int(limit), 100))
