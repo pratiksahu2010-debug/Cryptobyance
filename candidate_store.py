@@ -451,24 +451,17 @@ class CandidateStore:
                 return True
 
     async def update_open_outcomes(self, symbol: str, candles: list[dict]) -> int:
-        """Update MFE/MAE and conservative stop/target outcomes from later closed 5m bars.
-
-        Only delivered signals are measured. The signal candle itself is excluded
-        because entry is assumed at its close. If both stop and target occur in
-        one OHLC candle, the result is AMBIGUOUS rather than assuming an intrabar
-        path that OHLC data cannot prove.
-        """
-        normalized = []
-        for candle in candles:
-            ts = int(candle["timestamp"])
-            normalized.append((ts, float(candle["high"]), float(candle["low"])))
-        normalized.sort(key=lambda item: item[0])
+        """Advance delivered-signal outcomes over later completed 5m candles."""
+        ordered = sorted(candles, key=lambda candle: int(candle["timestamp"]))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT o.signal_id,o.direction,o.signal_candle_open_ms,o.entry,
-                          o.stop,o.target,o.risk_per_unit,o.best_favorable_r,
-                          o.worst_adverse_r,o.bars_observed,
-                          o.last_observed_candle_open_ms,o.data_gap,
+                          o.stop,o.target,o.target1,o.target2,o.atr_at_entry,
+                          o.risk_per_unit,o.outcome_horizon_bars,o.cost_pct,
+                          o.best_favorable_r,o.worst_adverse_r,
+                          o.best_favorable_pct,o.worst_adverse_pct,
+                          o.best_favorable_atr,o.worst_adverse_atr,
+                          o.bars_observed,o.last_observed_candle_open_ms,o.data_gap,
                           o.best_favorable_candle_open_ms,o.worst_adverse_candle_open_ms
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
@@ -477,82 +470,37 @@ class CandidateStore:
                 symbol)
             updated = 0
             for outcome in rows:
-                side = outcome["direction"]
-                entry = float(outcome["entry"])
-                stop = float(outcome["stop"])
-                target = float(outcome["target"])
-                risk = float(outcome["risk_per_unit"])
-                best = float(outcome["best_favorable_r"])
-                worst = float(outcome["worst_adverse_r"])
-                best_ts = outcome["best_favorable_candle_open_ms"]
-                worst_ts = outcome["worst_adverse_candle_open_ms"]
-                bars_seen = int(outcome["bars_observed"])
-                last_ts = int(outcome["last_observed_candle_open_ms"])
-                data_gap = bool(outcome["data_gap"])
-                status = "OPEN"
-                exit_ts = None
-                exit_price = None
-                realized_r = None
-
-                for ts, high, low in normalized:
-                    if ts <= last_ts or ts <= int(outcome["signal_candle_open_ms"]):
-                        continue
-                    if ts - last_ts != 300_000:
-                        # We cannot know whether stop or target was touched in
-                        # an unobserved candle. Never classify a later barrier
-                        # touch as a reliable win/loss after losing chronology.
-                        data_gap = True
-                        status = "AMBIGUOUS"
-                        exit_ts = ts
-                        bars_seen += 1
-                        last_ts = ts
-                        break
-                    if side == "LONG":
-                        favorable = max(0.0, (high - entry) / risk)
-                        adverse = max(0.0, (entry - low) / risk)
-                        stop_hit = low <= stop
-                        target_hit = high >= target
-                    else:
-                        favorable = max(0.0, (entry - low) / risk)
-                        adverse = max(0.0, (high - entry) / risk)
-                        stop_hit = high >= stop
-                        target_hit = low <= target
-                    if favorable > best:
-                        best = favorable
-                        best_ts = ts
-                    if adverse > worst:
-                        worst = adverse
-                        worst_ts = ts
-                    bars_seen += 1
-                    last_ts = ts
-                    if stop_hit and target_hit:
-                        status = "AMBIGUOUS"
-                        exit_ts = ts
-                    elif stop_hit:
-                        status = "STOP_LOSS"
-                        exit_ts = ts
-                        exit_price = stop
-                        realized_r = -1.0
-                    elif target_hit:
-                        status = "TARGET"
-                        exit_ts = ts
-                        exit_price = target
-                        realized_r = abs(target - entry) / risk
-                    if status != "OPEN":
-                        break
-
-                if bars_seen == int(outcome["bars_observed"]) and data_gap == bool(outcome["data_gap"]):
+                progress = advance_outcome(
+                    outcome, ordered,
+                    horizon_bars=settings.outcome_horizon_bars,
+                    cost_pct=settings.outcome_cost_pct,
+                )
+                if progress is None:
                     continue
                 await conn.execute(
                     """UPDATE signal_outcomes
-                       SET status=$2,best_favorable_r=$3,worst_adverse_r=$4,
-                           bars_observed=$5,last_observed_candle_open_ms=$6,
-                           exit_candle_open_ms=$7,exit_price=$8,realized_r=$9,
-                           data_gap=$10,best_favorable_candle_open_ms=$11,
-                           worst_adverse_candle_open_ms=$12,updated_at=NOW()
+                       SET status=$2,first_hit=$3,result=$4,
+                           best_favorable_r=$5,worst_adverse_r=$6,
+                           best_favorable_pct=$7,worst_adverse_pct=$8,
+                           best_favorable_atr=$9,worst_adverse_atr=$10,
+                           bars_observed=$11,bars_to_resolution=$12,
+                           last_observed_candle_open_ms=$13,
+                           exit_candle_open_ms=$14,exit_price=$15,realized_r=$16,
+                           data_gap=$17,best_favorable_candle_open_ms=$18,
+                           worst_adverse_candle_open_ms=$19,updated_at=NOW()
                        WHERE signal_id=$1 AND status='OPEN'""",
-                    int(outcome["signal_id"]),status,best,worst,bars_seen,last_ts,
-                    exit_ts,exit_price,realized_r,data_gap,best_ts,worst_ts)
+                    int(outcome["signal_id"]), progress["status"],
+                    progress["first_hit"], progress["result"],
+                    progress["best_favorable_r"], progress["worst_adverse_r"],
+                    progress["best_favorable_pct"], progress["worst_adverse_pct"],
+                    progress["best_favorable_atr"], progress["worst_adverse_atr"],
+                    progress["bars_observed"], progress["bars_to_resolution"],
+                    progress["last_observed_candle_open_ms"],
+                    progress["exit_candle_open_ms"], progress["exit_price"],
+                    progress["realized_r"], progress["data_gap"],
+                    progress["best_favorable_candle_open_ms"],
+                    progress["worst_adverse_candle_open_ms"],
+                )
                 updated += 1
             return updated
 
