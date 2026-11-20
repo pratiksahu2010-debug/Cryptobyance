@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 import asyncpg
 
+from config import settings
+from outcomes import advance_outcome
 from state_machine import STATE_DDL, advance_persisted_state, persist_signal_lifecycle
 
 DDL = """
@@ -56,12 +58,24 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
  entry DOUBLE PRECISION NOT NULL,
  stop DOUBLE PRECISION NOT NULL,
  target DOUBLE PRECISION NOT NULL,
+ target1 DOUBLE PRECISION,
+ target2 DOUBLE PRECISION,
+ atr_at_entry DOUBLE PRECISION,
  risk_per_unit DOUBLE PRECISION NOT NULL CHECK(risk_per_unit > 0),
+ outcome_horizon_bars INTEGER NOT NULL DEFAULT 12,
+ cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.10,
  status TEXT NOT NULL DEFAULT 'OPEN'
-   CHECK(status IN ('OPEN','TARGET','STOP_LOSS','AMBIGUOUS')),
+   CHECK(status IN ('OPEN','TARGET','STOP_LOSS','TIMEOUT','AMBIGUOUS')),
+ first_hit TEXT CHECK(first_hit IN ('TP1','TP2','SL','TIMEOUT','AMBIGUOUS')),
+ result TEXT CHECK(result IN ('WIN','LOSS','TIMEOUT')),
  best_favorable_r DOUBLE PRECISION NOT NULL DEFAULT 0,
  worst_adverse_r DOUBLE PRECISION NOT NULL DEFAULT 0,
+ best_favorable_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+ worst_adverse_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+ best_favorable_atr DOUBLE PRECISION,
+ worst_adverse_atr DOUBLE PRECISION,
  bars_observed INTEGER NOT NULL DEFAULT 0,
+ bars_to_resolution INTEGER,
  last_observed_candle_open_ms BIGINT NOT NULL,
  exit_candle_open_ms BIGINT,
  exit_price DOUBLE PRECISION,
@@ -72,10 +86,31 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-ALTER TABLE signal_outcomes
- ADD COLUMN IF NOT EXISTS best_favorable_candle_open_ms BIGINT;
-ALTER TABLE signal_outcomes
- ADD COLUMN IF NOT EXISTS worst_adverse_candle_open_ms BIGINT;
+ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_status_check;
+ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_status_check
+ CHECK(status IN ('OPEN','TARGET','STOP_LOSS','TIMEOUT','AMBIGUOUS'));
+ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_first_hit_check;
+ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_first_hit_check
+ CHECK(first_hit IS NULL OR first_hit IN ('TP1','TP2','SL','TIMEOUT','AMBIGUOUS'));
+ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_result_check;
+ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_result_check
+ CHECK(result IS NULL OR result IN ('WIN','LOSS','TIMEOUT'));
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS target1 DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS target2 DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS atr_at_entry DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS outcome_horizon_bars INTEGER NOT NULL DEFAULT 12;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.10;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS first_hit TEXT;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS result TEXT;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS best_favorable_pct DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_pct DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS best_favorable_atr DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_atr DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS bars_to_resolution INTEGER;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS best_favorable_candle_open_ms BIGINT;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_candle_open_ms BIGINT;
+UPDATE signal_outcomes SET target1=target WHERE target1 IS NULL;
+UPDATE signal_outcomes SET target2=target WHERE target2 IS NULL;
 CREATE INDEX IF NOT EXISTS ix_signal_outcomes_symbol_status
  ON signal_outcomes(symbol,status,last_observed_candle_open_ms);
 
@@ -107,7 +142,7 @@ CREATE TABLE IF NOT EXISTS scanner_runtime (
  status JSONB NOT NULL,
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-INSERT INTO schema_migrations(version) VALUES (1),(2) ON CONFLICT DO NOTHING;
+INSERT INTO schema_migrations(version) VALUES (1),(2),(5) ON CONFLICT DO NOTHING;
 """
 
 class CandidateStore:
