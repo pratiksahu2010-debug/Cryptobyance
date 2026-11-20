@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS scanner_runtime (
  status JSONB NOT NULL,
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS shadow_signal_history (
+ id BIGSERIAL PRIMARY KEY,
+ proposal_version TEXT NOT NULL,
+ proposal_id BIGINT NOT NULL,
+ symbol TEXT NOT NULL,
+ direction TEXT NOT NULL CHECK(direction IN ('LONG','SHORT')),
+ candle_open_ms BIGINT NOT NULL,
+ payload JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ UNIQUE(proposal_version,symbol,direction,candle_open_ms)
+);
+CREATE INDEX IF NOT EXISTS ix_shadow_signal_history_proposal
+ ON shadow_signal_history(proposal_version,created_at DESC);
 INSERT INTO schema_migrations(version) VALUES (1),(2),(5) ON CONFLICT DO NOTHING;
 """
 
@@ -342,6 +355,32 @@ class CandidateStore:
         # Retain candidate audit rows and all signal, delivery, cooldown and
         # runtime records. No automatic DELETE is performed by this cleanup.
         return {"expired": int(expired_tag.rsplit(" ", 1)[-1]), "deleted": 0}
+
+    async def record_shadow_signal(self, proposal_id: int, proposal_version: str,
+                                   signal: dict) -> bool:
+        """Persist a would-be alert idempotently; never enqueue it for Telegram."""
+        payload = json.dumps(signal, separators=(",", ":"), allow_nan=False)
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO shadow_signal_history(
+                     proposal_version,proposal_id,symbol,direction,candle_open_ms,payload)
+                   VALUES($1,$2,$3,$4,$5,$6::jsonb)
+                   ON CONFLICT(proposal_version,symbol,direction,candle_open_ms) DO NOTHING
+                   RETURNING id""",
+                str(proposal_version), int(proposal_id), str(signal["symbol"]),
+                str(signal["side"]), int(signal["candle"]), payload)
+        return row is not None
+
+    async def shadow_signal_counts(self, proposal_version: str) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT COUNT(*) AS total,
+                          COUNT(*) FILTER (WHERE direction='LONG') AS longs,
+                          COUNT(*) FILTER (WHERE direction='SHORT') AS shorts,
+                          COUNT(DISTINCT symbol) AS symbols
+                   FROM shadow_signal_history WHERE proposal_version=$1""",
+                str(proposal_version))
+        return {key: int(row[key] or 0) for key in ("total", "longs", "shorts", "symbols")}
 
     async def load_symbol_states(self, strategy_key: str, symbol: str) -> dict[str, str]:
         """Load durable direction states so RSI is computed only for ARMED sides."""
