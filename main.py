@@ -1569,6 +1569,6 @@ async def telegram_webhook(request: Request):
 
 @app.get("/ping", response_class=Response)
 async def ping() -> Response:
-    """Return an empty 204 response; do not perform scanner or external work."""
-    return Response(status_code=204)
+    """Return HTTP 200 for platform keepalive; do not perform scanner or external work."""
+    return Response(content="OK", status_code=200, media_type="text/plain")
 

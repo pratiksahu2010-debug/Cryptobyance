@@ -22,6 +22,11 @@ class HealthOutcomeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["summary"]["totals"]["delivered_signals"], 5)
         self.assertNotIn("payload", payload)
 
+    async def test_ping_returns_http_200_for_keepalive(self):
+        response = await main.ping()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b"OK")
+
     async def test_readiness_returns_service_unavailable_until_scanner_is_healthy(self):
         with patch("main.build_health_payload", return_value={"ok": False, "scanner_running": False}):
             response = await main.readiness()
