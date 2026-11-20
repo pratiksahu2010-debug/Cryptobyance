@@ -283,7 +283,7 @@ Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By de
 
 ## Signal feature snapshot
 
-Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
+Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR and ATR% of price, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
 
 These fields are research telemetry only. They do not add entry gates or alter the live signal decision.
 
@@ -305,3 +305,17 @@ All endpoints require the configured `JOURNAL_API_TOKEN`. Only one shadow propos
 4. The first startup creates/migrates the local database. Keep the DB file private and back it up before deleting or replacing it.
 
 SQLite integration tests cover schema creation, durable state/idempotency, signal-to-outbox delivery, outcome creation, feedback, analytics, and config history. SQLite is a local convenience backend; do not copy its file into Render or share it across workers.
+
+
+## Known limitations and verification status
+
+- CI runs compile checks and synthetic/unit/integration tests. Live CoinDCX REST/WebSocket connectivity, Render deployment, production PostgreSQL migrations, and real Telegram delivery/webhook callbacks have not been verified from this development session.
+- The historical replay assumes entry at the signal candle close. It models an estimated round-trip percentage cost but does not model exchange-specific bid/ask spread, funding, market impact, partial fills, or latency. It is not an execution simulator.
+- Shadow mode records would-be signals using an isolated persisted state machine. It does not simulate exchange fills or send shadow alerts.
+- This CoinDCX crypto strategy has no separate index feed; `index_trend` is stored as `null`, while the completed 15m EMA trend is captured.
+- Trainer buckets are descriptive and require the configured minimum samples. Only bounded ADX/RSI threshold candidates are searched automatically; cooldown, EMA spread, VWAP distance, relative volume, and time-of-day remain diagnostics until a replayable counterfactual is available.
+- SQLite is a single-process local-development backend. Render must use PostgreSQL and one Uvicorn worker. Do not use the SQLite file for multiple workers or production replicas.
+- Weekly digests require valid Telegram credentials and chat configuration. Failed sends remain pending and are retried; without credentials they are retained but not delivered.
+- Retention defaults to 365 days for non-critical telemetry. Core signal history, outcomes, feedback, proposals, config history, and config audit events are not automatically deleted.
+
+See [CHANGELOG.md](CHANGELOG.md) for the implementation history.
