@@ -70,6 +70,8 @@ class Settings:
     tp2_r: float
     atr_stop_multiplier: float
     min_risk_reward: float
+    outcome_horizon_bars: int
+    outcome_cost_pct: float
     log_level: str
     telegram_bot_token: str = field(repr=False)
     telegram_chat_id: str = field(repr=False)
@@ -124,6 +126,8 @@ class Settings:
             tp2_r=tp2_r,
             atr_stop_multiplier=_number("ATR_STOP_MULTIPLIER", "1.5", 0.000001),
             min_risk_reward=_number("MIN_RISK_REWARD", "1.5", 0.000001),
+            outcome_horizon_bars=_integer("OUTCOME_HORIZON_BARS", "12", 1, 288),
+            outcome_cost_pct=_number("OUTCOME_COST_PCT", "0.10", 0, 5),
             log_level=log_level,
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
