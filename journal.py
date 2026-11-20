@@ -416,7 +416,7 @@ class SignalJournal:
         async with self.pool.acquire() as conn:
             totals = await conn.fetchrow(
                 """SELECT COUNT(*) AS delivered,
-                   COUNT(*) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS')) AS resolved,
+                   COUNT(*) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT')) AS resolved,
                    COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
                    COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
                    ROUND(AVG(o.realized_r)::numeric,3) AS avg_realized_r
@@ -468,6 +468,7 @@ class SignalJournal:
                 """SELECT COUNT(*) AS delivered_signals,
                           COUNT(*) FILTER (WHERE o.status='TARGET') AS targets,
                           COUNT(*) FILTER (WHERE o.status='STOP_LOSS') AS stop_losses,
+                          COUNT(*) FILTER (WHERE o.status='TIMEOUT') AS timeouts,
                           COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
                           COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_realized_r
@@ -485,7 +486,8 @@ class SignalJournal:
                 """SELECT reason,COUNT(*) AS count FROM journal_candidates c
                    CROSS JOIN LATERAL jsonb_array_elements_text(c.rejection_reasons) AS r(reason)
                    GROUP BY reason ORDER BY count DESC LIMIT 20""")
-        sample = int(totals["targets"] or 0) + int(totals["stop_losses"] or 0)
+        sample = (int(totals["targets"] or 0) + int(totals["stop_losses"] or 0)
+                  + int(totals["timeouts"] or 0))
         recommendations = []
         if sample < 30:
             recommendations.append("Collect at least 30 resolved delivered signals before judging live rule quality.")

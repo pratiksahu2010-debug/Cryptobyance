@@ -233,47 +233,60 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         conn = FakeConnection()
         conn.fetch.return_value = [{
             "signal_id": 7, "direction": "LONG", "signal_candle_open_ms": 1_800_000,
-            "entry": 100.0, "stop": 98.0, "target": 103.0, "risk_per_unit": 2.0,
-            "best_favorable_r": 0.0, "worst_adverse_r": 0.0, "bars_observed": 0,
-            "last_observed_candle_open_ms": 1_800_000, "data_gap": False,
-            "best_favorable_candle_open_ms": None, "worst_adverse_candle_open_ms": None,
+            "entry": 100.0, "stop": 98.0, "target": 104.0,
+            "target1": 102.0, "target2": 104.0, "atr_at_entry": 4.0,
+            "risk_per_unit": 2.0, "outcome_horizon_bars": 12, "cost_pct": 0.10,
+            "best_favorable_r": 0.0, "worst_adverse_r": 0.0,
+            "best_favorable_pct": 0.0, "worst_adverse_pct": 0.0,
+            "best_favorable_atr": None, "worst_adverse_atr": None,
+            "bars_observed": 0, "last_observed_candle_open_ms": 1_800_000,
+            "data_gap": False, "best_favorable_candle_open_ms": None,
+            "worst_adverse_candle_open_ms": None,
         }]
         store = CandidateStore(FakePool(conn))
         updated = await store.update_open_outcomes("BTC/USDT", [
-            {"timestamp": 2_100_000, "high": 104.0, "low": 99.0},
+            {"timestamp": 2_100_000, "high": 104.0, "low": 99.0, "close": 103.0},
         ])
         self.assertEqual(updated, 1)
         query = conn.fetch.await_args.args[0]
         self.assertIn("s.status='SENT'", query)
         args = conn.execute.await_args.args
         self.assertEqual(args[2], "TARGET")
-        self.assertAlmostEqual(args[3], 2.0)
-        self.assertAlmostEqual(args[4], 0.5)
-        self.assertEqual(args[5], 1)
-        self.assertEqual(args[8], 103.0)
-        self.assertAlmostEqual(args[9], 1.5)
-        self.assertFalse(args[10])
-        self.assertEqual(args[11], 2_100_000)
-        self.assertEqual(args[12], 2_100_000)
-
-    async def test_same_bar_stop_and_target_is_ambiguous_not_a_win(self):
+        self.assertEqual(args[3], "TP1")
+        self.assertEqual(args[4], "WIN")
+        self.assertAlmostEqual(args[5], 2.0)
+        self.assertAlmostEqual(args[6], 0.5)
+        self.assertAlmostEqual(args[7], 4.0)
+        self.assertAlmostEqual(args[8], 1.0)
+        self.assertAlmostEqual(args[9], 1.0)
+        self.assertAlmostEqual(args[10], 0.25)
+        self.assertEqual(args[11], 1)
+        self.assertEqual(args[12], 1)
+        self.assertEqual(args[14], 2_100_000)
+        self.assertEqual(args[15], 102.0)
+        self.assertAlmostEqual(args[16], 0.95)
+        self.assertFalse(args[17])
+    async def test_same_bar_stop_and_target_is_conservative_loss(self):
         conn = FakeConnection()
         conn.fetch.return_value = [{
             "signal_id": 8, "direction": "LONG", "signal_candle_open_ms": 1_800_000,
-            "entry": 100.0, "stop": 98.0, "target": 103.0, "risk_per_unit": 2.0,
-            "best_favorable_r": 0.0, "worst_adverse_r": 0.0, "bars_observed": 0,
+            "entry": 100.0, "stop": 98.0, "target": 104.0,
+            "target1": 102.0, "target2": 104.0, "atr_at_entry": 4.0,
+            "risk_per_unit": 2.0, "best_favorable_r": 0.0,
+            "worst_adverse_r": 0.0, "bars_observed": 0,
             "last_observed_candle_open_ms": 1_800_000, "data_gap": False,
             "best_favorable_candle_open_ms": None, "worst_adverse_candle_open_ms": None,
         }]
         store = CandidateStore(FakePool(conn))
         await store.update_open_outcomes("BTC/USDT", [
-            {"timestamp": 2_100_000, "high": 104.0, "low": 97.0},
+            {"timestamp": 2_100_000, "high": 105.0, "low": 97.0, "close": 100.0},
         ])
         args = conn.execute.await_args.args
-        self.assertEqual(args[2], "AMBIGUOUS")
-        self.assertIsNone(args[9])
-        self.assertIsNone(args[8])
-
+        self.assertEqual(args[2], "STOP_LOSS")
+        self.assertEqual(args[3], "SL")
+        self.assertEqual(args[4], "LOSS")
+        self.assertAlmostEqual(args[16], -1.05)
+        self.assertFalse(args[17])
     async def test_outcome_tracker_flags_missing_candle_intervals(self):
         conn = FakeConnection()
         conn.fetch.return_value = [{
@@ -285,20 +298,28 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         }]
         store = CandidateStore(FakePool(conn))
         await store.update_open_outcomes("ETH/USDT", [
-            {"timestamp": 2_400_000, "high": 101.0, "low": 99.0},
+            {"timestamp": 2_400_000, "high": 101.0, "low": 99.0, "close": 100.0},
         ])
         args = conn.execute.await_args.args
         self.assertEqual(args[2], "AMBIGUOUS")
-        self.assertTrue(args[10])
-        self.assertEqual(args[7], 2_400_000)
-        self.assertIsNone(args[8])
-
+        self.assertEqual(args[3], "AMBIGUOUS")
+        self.assertIsNone(args[4])
+        self.assertTrue(args[17])
+        self.assertEqual(args[13], 2_400_000)
+        self.assertIsNone(args[15])
     async def test_schema_has_durable_signal_outbox_cooldown_and_runtime(self):
         for table in ("signal_history", "signal_outcomes", "telegram_outbox", "signal_cooldowns", "scanner_runtime", "schema_migrations"):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", DDL)
         self.assertIn("UNIQUE(symbol,direction,candle_open_ms)", DDL)
         self.assertIn("best_favorable_candle_open_ms", DDL)
         self.assertIn("worst_adverse_candle_open_ms", DDL)
+        self.assertIn("target1 DOUBLE PRECISION", DDL)
+        self.assertIn("target2 DOUBLE PRECISION", DDL)
+        self.assertIn("outcome_horizon_bars", DDL)
+        self.assertIn("first_hit", DDL)
+        self.assertIn("best_favorable_pct", DDL)
+        self.assertIn("best_favorable_atr", DDL)
+        self.assertIn("'TIMEOUT'", DDL)
         self.assertIn("ON DELETE RESTRICT", DDL)
         self.assertIn("strategy_signal_states", STATE_DDL)
         self.assertIn("strategy_state_events", STATE_DDL)
