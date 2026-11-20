@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -975,6 +976,16 @@ def build_health_payload() -> dict[str, Any]:
 @app.get("/health")
 async def health():
     return build_health_payload()
+
+
+@app.get("/ready")
+async def readiness():
+    """Render readiness probe: non-2xx until the scanner completes a fresh healthy cycle."""
+    payload = build_health_payload()
+    return JSONResponse(
+        status_code=200 if payload["ok"] else 503,
+        content=payload,
+    )
 
 
 @app.get("/performance")
