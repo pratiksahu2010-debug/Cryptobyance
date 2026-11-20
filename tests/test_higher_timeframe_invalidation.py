@@ -1,4 +1,4 @@
-"""Regression tests for higher-timeframe trend-reversal invalidation."""
+"""Regression tests that 15m context never blocks a valid 5m setup."""
 import unittest
 from unittest.mock import patch
 
@@ -47,15 +47,15 @@ class HigherTimeframeInvalidationTests(unittest.TestCase):
         with patch("strategy.indicators", return_value=five):
             return evaluate_state_inputs(five, fifteen, armed_sides={side})
 
-    def test_bearish_15m_reversal_invalidates_armed_long(self):
+    def test_bearish_15m_context_does_not_invalidate_armed_long(self):
         result = self._evaluate("LONG", "BEARISH")
-        self.assertTrue(result["LONG"]["invalidation"])
-        self.assertFalse(result["LONG"]["setup_valid"])
+        self.assertFalse(result["LONG"]["invalidation"])
+        self.assertTrue(result["LONG"]["setup_valid"])
 
-    def test_bullish_15m_reversal_invalidates_armed_short(self):
+    def test_bullish_15m_context_does_not_invalidate_armed_short(self):
         result = self._evaluate("SHORT", "BULLISH")
-        self.assertTrue(result["SHORT"]["invalidation"])
-        self.assertFalse(result["SHORT"]["setup_valid"])
+        self.assertFalse(result["SHORT"]["invalidation"])
+        self.assertTrue(result["SHORT"]["setup_valid"])
 
     def test_aligned_15m_trend_does_not_invalidate_matching_setup(self):
         long_result = self._evaluate("LONG", "BULLISH")
@@ -65,16 +65,21 @@ class HigherTimeframeInvalidationTests(unittest.TestCase):
         self.assertFalse(short_result["SHORT"]["invalidation"])
         self.assertTrue(short_result["SHORT"]["setup_valid"])
 
-    def test_flat_15m_ema_context_invalidates_both_directions(self):
-        self.assertTrue(self._evaluate("LONG", "FLAT")["LONG"]["invalidation"])
-        self.assertTrue(self._evaluate("SHORT", "FLAT")["SHORT"]["invalidation"])
+    def test_flat_15m_context_does_not_invalidate_either_direction(self):
+        long_result = self._evaluate("LONG", "FLAT")
+        short_result = self._evaluate("SHORT", "FLAT")
+        self.assertFalse(long_result["LONG"]["invalidation"])
+        self.assertTrue(long_result["LONG"]["setup_valid"])
+        self.assertFalse(short_result["SHORT"]["invalidation"])
+        self.assertTrue(short_result["SHORT"]["setup_valid"])
 
-    def test_invalid_15m_data_defers_without_false_invalidation(self):
+    def test_invalid_15m_data_does_not_defer_valid_5m_setup(self):
         five = self._five_minute_inputs("LONG")
         fifteen = self._fifteen_minute_raw("BULLISH")
         fifteen["close"] = np.nan
         with patch("strategy.indicators", return_value=five):
-            self.assertIsNone(evaluate_state_inputs(five, fifteen, armed_sides={"LONG"}))
+            result = evaluate_state_inputs(five, fifteen, armed_sides={"LONG"})
+        self.assertTrue(result["LONG"]["setup_valid"])
 
 
 if __name__ == "__main__":
