@@ -4,6 +4,7 @@ The journal is observational: it never changes strategy rules or places orders.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from datetime import datetime, timezone, timedelta
@@ -622,8 +623,9 @@ class SignalJournal:
             "rsi_short_min": settings.rsi_short_min,
             "rsi_short_max": settings.rsi_short_max,
         }
-        proposal = build_training_proposal(
-            dataset, current, base_config_version=CONFIG_VERSION,
+        proposal = await asyncio.to_thread(
+            build_training_proposal, dataset, current,
+            base_config_version=CONFIG_VERSION,
             min_samples=settings.training_min_samples,
             min_bucket_samples=settings.training_min_bucket_samples,
         )
