@@ -8,6 +8,16 @@ import strategy
 
 
 class RuntimeConfigReloadTests(unittest.TestCase):
+    def test_invalid_approved_config_is_rejected_before_hot_reload(self):
+        old_settings = main.settings
+        old_version = main.CONFIG_VERSION
+        payload = main._runtime_config_payload(old_settings)
+        payload["rsi_long_min"] = payload["rsi_long_max"]
+        with self.assertRaisesRegex(ValueError, "invalid strategy or risk settings"):
+            main.apply_runtime_config(payload, "v99")
+        self.assertIs(main.settings, old_settings)
+        self.assertEqual(main.CONFIG_VERSION, old_version)
+
     def test_approved_config_hot_reloads_strategy_and_scanner_globals(self):
         old_settings = main.settings
         old_version = main.CONFIG_VERSION
