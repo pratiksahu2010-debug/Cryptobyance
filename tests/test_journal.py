@@ -102,7 +102,7 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
              "proposed_config": '{"adx_min":22}', "status": "PROPOSED"},
             {"config_version": "v3", "config": '{"adx_min":24}'},
         ])
-        journal = SignalJournal(FakePool(conn))
+        journal = SignalJournal(FakeStore(conn))
         with self.assertRaisesRegex(ValueError, "stale"):
             await journal.approve_proposal(8, "12345")
         conn.execute.assert_not_awaited()
@@ -113,13 +113,13 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
             {"config_version": "v3", "config": '{"adx_min":22}', "previous_version": "v2"},
             {"config_version": "v2", "config": json.dumps(previous_config)},
         ])
-        journal = SignalJournal(FakePool(conn))
+        journal = SignalJournal(FakeStore(conn))
         result = await journal.rollback_config("12345")
         self.assertEqual(result["version"], "v2")
         self.assertEqual(result["previous_version"], "v3")
         self.assertEqual(result["config"]["adx_min"], 20.0)
         self.assertEqual(conn.execute.await_count, 4)
-        self.assertIn("INSERT INTO config_history", conn.execute.await_args_list[1].args[0])
+        self.assertIn("UPDATE config_history SET status='ACTIVE'", conn.execute.await_args_list[1].args[0])
         self.assertIn("'ACTIVE'", conn.execute.await_args_list[1].args[0])
 
 
