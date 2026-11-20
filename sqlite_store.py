@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +121,14 @@ def _translate_sql(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...
         query = re.sub(r"\$\d+", "?", query)
     else:
         params = ()
-    return query, params
+    normalized = []
+    for value in params:
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                value = value.astimezone(timezone.utc).replace(tzinfo=None)
+            value = value.strftime("%Y-%m-%d %H:%M:%S.%f") if value.microsecond else value.strftime("%Y-%m-%d %H:%M:%S")
+        normalized.append(value)
+    return query, tuple(normalized)
 
 
 class SQLiteRow(dict):

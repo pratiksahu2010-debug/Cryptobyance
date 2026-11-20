@@ -529,8 +529,8 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
     async def run_cleanup() -> None:
         result = await candidate_store.cleanup(int(time.time() * 1000))
         log.info(
-            "PostgreSQL retention sweep complete expired_candidates=%d deleted_records=%d",
-            result["expired"], result["deleted"],
+            "Database retention sweep complete expired_candidates=%d retention_days=%d deleted_telemetry=%d details=%s",
+            result["expired"], result["retention_days"], result["deleted"], result["retention_deleted"],
         )
 
     # Startup cleanup catches up if the free web service slept through 02:00.
@@ -566,6 +566,93 @@ async def daily_training_review_loop(journal: SignalJournal) -> None:
         except Exception as exc:
             log.warning("24-hour training review failed error_type=%s", type(exc).__name__)
         await asyncio.sleep(24 * 60 * 60)
+
+
+async def weekly_digest_loop(journal: SignalJournal) -> None:
+    """Persist and deliver one idempotent UTC weekly performance digest."""
+    async def create_digest(window_start: datetime, window_end: datetime) -> None:
+        summary = await journal.build_weekly_digest(window_start, window_end)
+        digest_id = await journal.save_weekly_digest(summary, window_start, window_end)
+        log.info("Weekly digest prepared id=%s resolved=%s", digest_id,
+                 summary.get("resolved_sample", 0))
+
+    async def deliver_pending() -> None:
+        if not settings.telegram_bot_token or not settings.telegram_chat_id:
+            return
+        for item in await journal.pending_weekly_digests(limit=5):
+            summary = item["summary"]
+            totals = summary.get("totals", {}).get("totals", {})
+            resolved = int(totals.get("wins") or 0) + int(totals.get("losses") or 0) + int(totals.get("timeouts") or 0)
+            win_rate = round(100 * int(totals.get("wins") or 0) / resolved, 2) if resolved else "n/a"
+            best = summary.get("best_symbols") or []
+            worst = summary.get("worst_symbols") or []
+            weakest = summary.get("weakest_parameter_bucket")
+            lines = [
+                "WEEKLY SIGNAL REVIEW (UTC)",
+                f"Window: {summary.get('window_start')} → {summary.get('window_end')}",
+                f"Resolved samples: {summary.get('resolved_sample', 0)}",
+                f"Win rate: {win_rate}% · "
+                f"Expectancy: {totals.get('avg_net_realized_r', 'n/a')}R",
+                f"False-signal rate: {totals.get('false_signal_rate', 'n/a')}",
+                "Best symbols:",
+            ]
+            lines.extend(
+                f"• {row['symbol']}: {row['expectancy_r']}R ({row['resolved']} resolved)"
+                for row in best
+            )
+            lines.append("Weakest symbols:")
+            lines.extend(
+                f"• {row['symbol']}: {row['expectancy_r']}R ({row['resolved']} resolved)"
+                for row in worst
+            )
+            if weakest:
+                lines.append(
+                    f"Weakest sampled bucket: {weakest['parameter']} {weakest['bucket']} — "
+                    f"{weakest['expectancy_r']}R across {weakest['sample_count']} samples"
+                )
+            else:
+                lines.append("Weakest sampled bucket: insufficient samples")
+            lines.append(f"Manual-label conflicts: {summary.get('manual_label_conflicts', 0)}")
+            lines.append("Research summary only. Live settings were not changed.")
+            try:
+                await _telegram_send_message(settings.telegram_chat_id, "\n".join(lines))
+                await journal.mark_weekly_digest_sent(item["id"])
+                log.info("Weekly digest sent id=%s", item["id"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await journal.mark_weekly_digest_attempt(item["id"])
+                log.warning("Weekly digest delivery failed id=%s error_type=%s",
+                            item["id"], type(exc).__name__)
+
+    now = datetime.now(timezone.utc)
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    try:
+        await create_digest(this_monday - timedelta(days=7), this_monday)
+        await deliver_pending()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning("Weekly digest startup review failed error_type=%s", type(exc).__name__)
+
+    next_run = this_monday.replace(hour=0, minute=10) + timedelta(days=7)
+    while True:
+        try:
+            await deliver_pending()
+            now = datetime.now(timezone.utc)
+            if now >= next_run:
+                week_end = next_run.replace(hour=0, minute=0)
+                await create_digest(week_end - timedelta(days=7), week_end)
+                await deliver_pending()
+                next_run += timedelta(days=7)
+            await asyncio.sleep(min(3600.0, max(30.0, (next_run - datetime.now(timezone.utc)).total_seconds())))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Weekly digest loop failed error_type=%s", type(exc).__name__)
+            await asyncio.sleep(300)
 
 
 async def scanner_session() -> None:
@@ -637,6 +724,7 @@ async def scanner_session() -> None:
     cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="database-nightly-cleanup")
     outbox_task = asyncio.create_task(telegram_outbox_loop(candidate_store, notifier), name="telegram-outbox")
     training_review_task = asyncio.create_task(daily_training_review_loop(journal_service), name="daily-training-review")
+    weekly_digest_task = asyncio.create_task(weekly_digest_loop(journal_service), name="weekly-digest")
     try:
         startup_attempt = 0
         while True:
@@ -781,7 +869,8 @@ async def scanner_session() -> None:
         cleanup_task.cancel()
         outbox_task.cancel()
         training_review_task.cancel()
-        for background_task in (cleanup_task, outbox_task, training_review_task):
+        weekly_digest_task.cancel()
+        for background_task in (cleanup_task, outbox_task, training_review_task, weekly_digest_task):
             try:
                 await background_task
             except asyncio.CancelledError:

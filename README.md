@@ -83,7 +83,7 @@ The WebSocket candle cache and indicator calculations stay in memory; the bot do
 
 The strategy module has no network or application-lifecycle dependencies. Telegram's own sender retries rate limits, server errors and transient network failures up to three attempts; the durable outbox retries failed delivery cycles with backoff and marks an alert DEAD after 12 cycles for manual review. The scanner supervisor restarts a failed scanner session with bounded backoff. On startup/restart, candles that closed before the new scanner session began are ignored so old setups are not replayed as fresh alerts.
 
-A retention sweep runs on startup and nightly at 02:00 India time. It marks pending candidates EXPIRED after their evaluation window but does not delete database rows. All candidate records (including expired/invalid and triggered records), signal history, Telegram outbox records (including SENT/DEAD), cooldown state and runtime checkpoints are retained. No automatic PostgreSQL DELETE or time-based data pruning is performed. Scanner runtime has one upserted checkpoint row; logs remain in Render's logging service rather than being copied into PostgreSQL.
+A retention sweep runs on startup and nightly at 02:00 India time. It marks pending candidates EXPIRED after their evaluation window and applies the bounded telemetry policy described below. Candidate audit rows, signal history, outcomes, feedback, config history/events, and unsent/dead Telegram outbox records are retained. Sent outbox rows and non-critical state/shadow/research telemetry are pruned after `DB_RETENTION_DAYS`. Scanner runtime uses an upserted checkpoint row; logs remain in Render's logging service rather than being copied into PostgreSQL.
 
 ## Run locally
 
@@ -260,6 +260,12 @@ The trainer refuses to generate a proposal below `TRAINING_MIN_SAMPLES=100` reso
 Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. Run a proposal in isolated shadow mode with `/shadow <id> [days]` (1–30 days), inspect it with `/shadow_status`, and stop it early with `/shadow_stop`. Shadow mode evaluates the same completed 5m/15m candles with a separate durable state-machine key, stores would-be signals in `shadow_signal_history`, and never inserts them into the Telegram outbox. Live thresholds remain unchanged. When the shadow period expires or is stopped, the proposal returns to `PROPOSED` so it can be explicitly approved or rejected. Then approve with `/approve <id>`, reject with `/reject <id>`, and restore the previous approved configuration with `/rollback`. The protected API equivalents are `POST /journal/api/proposals/{id}/approve`, `POST /journal/api/proposals/{id}/reject`, and `POST /journal/api/rollback`. Every activation and rollback is written to `config_history` and `config_history_events` with actor, time, reason, and previous version. The approved config is hot-reloaded in the running scanner and loaded again on restart; the Telegram chat ID must match the configured owner chat before these commands are accepted.
 
 EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual.
+
+## Weekly digest and database retention
+
+A weekly digest is generated for the last completed UTC week and sent to the configured Telegram chat on Monday shortly after 00:00 UTC. It reports resolved sample count, win rate, expectancy after configured costs, false-signal rate, best/worst symbols (minimum three resolved samples), and the weakest sufficiently sampled feature bucket. Digests are persisted before delivery and retried after failures/restarts; they never change live settings.
+
+`DB_RETENTION_DAYS` (default 365, allowed 30–3650) prunes only non-critical telemetry: state transition events, shadow signal rows, daily research summaries and weekly digests after successful send, sent Telegram outbox rows, and stale scanner checkpoints. Signal history, outcomes, feedback, proposals, configuration history, and configuration audit events are retained indefinitely.
 
 ## Historical replay / backtest
 

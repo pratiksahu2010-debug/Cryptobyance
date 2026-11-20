@@ -550,18 +550,41 @@ class CandidateStore:
             "outbox": [dict(row) for row in outbox],
         }
 
-    async def cleanup(self, now_ms: int) -> dict[str, int]:
-        """Expire stale pending candidates without deleting any persisted records."""
+    async def cleanup(self, now_ms: int, retention_days: int | None = None) -> dict:
+        """Expire pending candidates and prune only bounded, non-critical telemetry."""
         latest_completed_open_ms = ((now_ms // 300_000) - 1) * 300_000
+        retention_days = int(retention_days if retention_days is not None else settings.db_retention_days)
+        if not 30 <= retention_days <= 3650:
+            raise ValueError("retention_days must be between 30 and 3650")
+        retention_tables = (
+            ("strategy_state_events", "created_at < NOW()-($1 * INTERVAL '1 day')"),
+            ("shadow_signal_history", "created_at < NOW()-($1 * INTERVAL '1 day')"),
+            ("training_daily_reviews", "created_at < NOW()-($1 * INTERVAL '1 day')"),
+            ("training_weekly_digests", "status='SENT' AND sent_at < NOW()-($1 * INTERVAL '1 day')"),
+            ("telegram_outbox", "status='SENT' AND sent_at < NOW()-($1 * INTERVAL '1 day')"),
+            ("scanner_runtime", "updated_at < NOW()-($1 * INTERVAL '1 day')"),
+        )
+        retention_counts = {}
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 expired_tag = await conn.execute(
                     """UPDATE signal_candidates SET status='EXPIRED',updated_at=NOW()
                        WHERE status='PENDING' AND expires_after_candle_open_ms < $1""",
                     latest_completed_open_ms)
-        # Retain candidate audit rows and all signal, delivery, cooldown and
-        # runtime records. No automatic DELETE is performed by this cleanup.
-        return {"expired": int(expired_tag.rsplit(" ", 1)[-1]), "deleted": 0}
+                for table, predicate in retention_tables:
+                    tag = await conn.execute(
+                        f"DELETE FROM {table} WHERE {predicate}", retention_days
+                    )
+                    retention_counts[table] = int(tag.rsplit(" ", 1)[-1])
+        deleted = sum(retention_counts.values())
+        # Signal history, outcomes, user feedback, proposals, config history,
+        # and config audit events are intentionally retained indefinitely.
+        return {
+            "expired": int(expired_tag.rsplit(" ", 1)[-1]),
+            "deleted": deleted,
+            "retention_days": retention_days,
+            "retention_deleted": retention_counts,
+        }
 
     async def record_shadow_signal(self, proposal_id: int, proposal_version: str,
                                    signal: dict) -> bool:

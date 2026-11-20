@@ -12,6 +12,7 @@ class JournalSchemaTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS training_proposals", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS config_history", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS config_history_events", JOURNAL_DDL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS training_weekly_digests", JOURNAL_DDL)
         self.assertIn("uq_config_history_one_shadow", JOURNAL_DDL)
         self.assertIn("'SHADOW'", JOURNAL_DDL)
         self.assertIn("SHADOW_START", JOURNAL_DDL)

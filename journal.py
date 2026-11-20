@@ -127,6 +127,19 @@ CREATE TABLE IF NOT EXISTS config_history_events (
 );
 CREATE INDEX IF NOT EXISTS ix_config_history_events_created
  ON config_history_events(created_at DESC);
+CREATE TABLE IF NOT EXISTS training_weekly_digests (
+    id BIGSERIAL PRIMARY KEY,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    summary JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','SENT')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent_at TIMESTAMPTZ,
+    UNIQUE(window_start,window_end)
+);
+CREATE INDEX IF NOT EXISTS ix_training_weekly_digests_pending
+ ON training_weekly_digests(status,created_at);
 ALTER TABLE config_history DROP CONSTRAINT IF EXISTS config_history_status_check;
 ALTER TABLE config_history ADD CONSTRAINT config_history_status_check
  CHECK(status IN ('ACTIVE','INACTIVE','SHADOW'));
@@ -431,18 +444,27 @@ class SignalJournal:
             for row in rows
         ]
 
-    async def stats(self, days: int = 30) -> dict:
+    async def stats(self, days: int = 30, *,
+                    window_start: datetime | None = None,
+                    window_end: datetime | None = None) -> dict:
         """Aggregate labels, outcomes and performance dimensions for a time window."""
         days = max(1, min(int(days), 365))
+        date_filter = "s.delivered_at >= NOW()-($1 * INTERVAL '1 day')"
+        date_args: tuple = (days,)
+        if window_start is not None or window_end is not None:
+            if window_start is None or window_end is None or window_start >= window_end:
+                raise ValueError("stats requires both ordered window_start and window_end")
+            date_filter = "s.delivered_at >= $1 AND s.delivered_at < $2"
+            date_args = (window_start, window_end)
         async with self.pool.acquire() as conn:
             labels = await conn.fetch(
-                """SELECT f.category,COUNT(*) AS count
+                f"""SELECT f.category,COUNT(*) AS count
                    FROM journal_feedback f
                    JOIN signal_history s ON s.id=f.signal_id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY f.category ORDER BY count DESC,f.category""", days)
+                   WHERE s.status='SENT' AND {date_filter}
+                   GROUP BY f.category ORDER BY count DESC,f.category""", *date_args)
             totals = await conn.fetchrow(
-                """WITH latest_feedback AS (
+                f"""WITH latest_feedback AS (
                      SELECT signal_id,category FROM (
                        SELECT signal_id,category,
                               ROW_NUMBER() OVER (
@@ -460,7 +482,7 @@ class SignalJournal:
                      LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                      LEFT JOIN latest_feedback f ON f.signal_id=s.id
                      WHERE s.status='SENT'
-                       AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                       AND {date_filter}
                    )
                    SELECT COUNT(*) AS delivered,
                           COUNT(*) FILTER (WHERE effective_result='WIN') AS wins,
@@ -472,36 +494,36 @@ class SignalJournal:
                           ROUND(AVG(realized_r)::numeric,3) AS avg_net_realized_r,
                           ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
                           ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
-                   FROM labeled""", days)
+                   FROM labeled""", *date_args)
             by_side = await conn.fetch(
-                """SELECT s.direction,COUNT(*) AS signals,
+                f"""SELECT s.direction,COUNT(*) AS signals,
                           COUNT(*) FILTER (WHERE o.result='WIN') AS auto_wins,
                           COUNT(*) FILTER (WHERE o.result='LOSS') AS auto_losses,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY s.direction ORDER BY s.direction""", days)
+                   WHERE s.status='SENT' AND {date_filter}
+                   GROUP BY s.direction ORDER BY s.direction""", *date_args)
             by_symbol = await conn.fetch(
-                """SELECT s.symbol,s.direction,COUNT(*) AS signals,
+                f"""SELECT s.symbol,s.direction,COUNT(*) AS signals,
                           COUNT(*) FILTER (WHERE o.result='WIN') AS wins,
                           COUNT(*) FILTER (WHERE o.result='LOSS') AS losses,
                           COUNT(*) FILTER (WHERE o.result='TIMEOUT') AS timeouts,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY s.symbol,s.direction ORDER BY s.symbol,s.direction""", days)
+                   WHERE s.status='SENT' AND {date_filter}
+                   GROUP BY s.symbol,s.direction ORDER BY s.symbol,s.direction""", *date_args)
             by_hour = await conn.fetch(
-                """SELECT EXTRACT(HOUR FROM s.delivered_at AT TIME ZONE 'UTC')::integer AS hour_utc,
+                f"""SELECT EXTRACT(HOUR FROM s.delivered_at AT TIME ZONE 'UTC')::integer AS hour_utc,
                           COUNT(*) AS signals,ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY hour_utc ORDER BY hour_utc""", days)
+                   WHERE s.status='SENT' AND {date_filter}
+                   GROUP BY hour_utc ORDER BY hour_utc""", *date_args)
             by_config = await conn.fetch(
-                """SELECT COALESCE(s.payload->>'config_version','unknown') AS config_version,
+                f"""SELECT COALESCE(s.payload->>'config_version','unknown') AS config_version,
                           COUNT(*) AS signals,ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY 1 ORDER BY 1""", days)
+                   WHERE s.status='SENT' AND {date_filter}
+                   GROUP BY 1 ORDER BY 1""", *date_args)
         totals_dict = dict(totals) if totals else {}
         manual = int(totals_dict.get("manual_labels") or 0)
         false_labels = int(totals_dict.get("false_labels") or 0)
@@ -1056,6 +1078,152 @@ class SignalJournal:
             item["reviewed_at"] = item["reviewed_at"].isoformat() if item["reviewed_at"] else None
             result.append(item)
         return result
+
+    async def build_weekly_digest(self, window_start: datetime | None = None,
+                                  window_end: datetime | None = None) -> dict:
+        """Summarize a completed UTC week and its weakest sufficiently sampled feature bucket."""
+        from config import settings
+        from trainer import _analysis_buckets, prepare_samples
+
+        window_end = window_end or datetime.now(timezone.utc)
+        window_start = window_start or (window_end - timedelta(days=7))
+        if window_start.tzinfo is None:
+            window_start = window_start.replace(tzinfo=timezone.utc)
+        if window_end.tzinfo is None:
+            window_end = window_end.replace(tzinfo=timezone.utc)
+        if window_start >= window_end:
+            raise ValueError("weekly digest window_start must be earlier than window_end")
+        days = max(1, min(14, int((window_end-window_start).total_seconds() / 86400)))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.id AS signal_id,s.direction,s.candle_open_ms,
+                          s.payload::text AS payload,o.result AS auto_result,o.realized_r,
+                          (SELECT f.category FROM journal_feedback f
+                           WHERE f.signal_id=s.id
+                           ORDER BY f.created_at DESC,f.id DESC LIMIT 1) AS manual_label
+                   FROM signal_history s
+                   JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT'
+                     AND s.delivered_at >= $1 AND s.delivered_at < $2
+                     AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
+                     AND o.result IN ('WIN','LOSS','TIMEOUT')
+                     AND o.realized_r IS NOT NULL
+                   ORDER BY s.candle_open_ms,s.id""", window_start, window_end)
+            symbols = await conn.fetch(
+                """SELECT s.symbol,COUNT(*) AS resolved,
+                          COUNT(*) FILTER (WHERE o.result='WIN') AS wins,
+                          COUNT(*) FILTER (WHERE o.result='LOSS') AS losses,
+                          COUNT(*) FILTER (WHERE o.result='TIMEOUT') AS timeouts,
+                          ROUND(AVG(o.realized_r)::numeric,3) AS expectancy_r
+                   FROM signal_history s JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT'
+                     AND s.delivered_at >= $1 AND s.delivered_at < $2
+                     AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
+                     AND o.realized_r IS NOT NULL
+                   GROUP BY s.symbol HAVING COUNT(*) >= 3
+                   ORDER BY expectancy_r DESC,s.symbol""", window_start, window_end)
+        dataset = []
+        for row in rows:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            features = dict(payload.get("indicator_snapshot") or payload.get("diagnostics") or {})
+            ema9, ema21 = features.get("ema9"), features.get("ema21")
+            close, vwap = features.get("close"), features.get("vwap")
+            try:
+                if ema9 is not None and ema21 not in (None, 0):
+                    features["ema_spread_pct"] = abs(float(ema9)-float(ema21)) / abs(float(ema21)) * 100
+                if close is not None and vwap not in (None, 0):
+                    features["price_vwap_distance_pct"] = (float(close)-float(vwap)) / abs(float(vwap)) * 100
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+            features["hour_utc"] = (int(row["candle_open_ms"]) // 3_600_000) % 24
+            dataset.append({
+                "signal_id": int(row["signal_id"]),
+                "direction": row["direction"],
+                "candle_open_ms": int(row["candle_open_ms"]),
+                "features": features,
+                "auto_result": row["auto_result"],
+                "realized_r": float(row["realized_r"]),
+                "manual_label": row["manual_label"],
+            })
+        samples, conflicts = prepare_samples(dataset)
+        buckets = _analysis_buckets(samples, settings.training_min_bucket_samples)
+        weakest = None
+        for parameter, analysis in buckets.items():
+            for item in analysis["buckets"]:
+                metrics = item.get("metrics")
+                if not metrics or metrics.get("expectancy_r") is None:
+                    continue
+                candidate = {
+                    "parameter": parameter, "bucket": item["bucket"],
+                    "sample_count": item["sample_count"],
+                    "expectancy_r": metrics["expectancy_r"],
+                    "win_rate": metrics["win_rate"],
+                    "false_signal_rate": metrics["false_signal_rate"],
+                }
+                if weakest is None or candidate["expectancy_r"] < weakest["expectancy_r"]:
+                    weakest = candidate
+        eligible_symbols = [dict(row) for row in symbols]
+        return {
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "window_days": round((window_end-window_start).total_seconds()/86400, 2),
+            "resolved_sample": len(samples),
+            "manual_label_conflicts": conflicts,
+            "totals": await self.stats(days, window_start=window_start, window_end=window_end),
+            "best_symbols": eligible_symbols[:3],
+            "worst_symbols": list(reversed(eligible_symbols[-3:])),
+            "weakest_parameter_bucket": weakest,
+            "confidence_note": (
+                "Descriptive weekly review only. Small samples are excluded from symbol rankings and feature buckets. "
+                "This report never changes live thresholds."
+            ),
+            "live_strategy_changed": False,
+            "orders_enabled": False,
+        }
+
+    async def save_weekly_digest(self, summary: dict,
+                                 window_start: datetime,
+                                 window_end: datetime) -> int:
+        encoded = json.dumps(summary, default=str, separators=(",", ":"), allow_nan=False)
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO training_weekly_digests(window_start,window_end,summary)
+                   VALUES($1,$2,$3::jsonb)
+                   ON CONFLICT(window_start,window_end) DO NOTHING RETURNING id""",
+                window_start, window_end, encoded)
+            if row:
+                return int(row["id"])
+            existing = await conn.fetchrow(
+                """SELECT id FROM training_weekly_digests
+                   WHERE window_start=$1 AND window_end=$2""", window_start, window_end)
+        return int(existing["id"])
+
+    async def pending_weekly_digests(self, limit: int = 5) -> list[dict]:
+        limit = max(1, min(int(limit), 20))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id,summary::text AS summary,attempts
+                   FROM training_weekly_digests WHERE status='PENDING'
+                   ORDER BY created_at,id LIMIT $1""", limit)
+        return [
+            {"id": int(row["id"]),
+             "summary": json.loads(row["summary"]) if isinstance(row["summary"], str) else dict(row["summary"]),
+             "attempts": int(row["attempts"])}
+            for row in rows
+        ]
+
+    async def mark_weekly_digest_sent(self, digest_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE training_weekly_digests SET status='SENT',
+                       attempts=attempts+1,sent_at=NOW()
+                   WHERE id=$1 AND status='PENDING'""", int(digest_id))
+
+    async def mark_weekly_digest_attempt(self, digest_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE training_weekly_digests SET attempts=attempts+1
+                   WHERE id=$1 AND status='PENDING'""", int(digest_id))
 
     async def daily_training_review(self) -> dict:
         async with self.pool.acquire() as conn:

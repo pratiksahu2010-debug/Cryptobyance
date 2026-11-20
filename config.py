@@ -74,6 +74,7 @@ class Settings:
     outcome_cost_pct: float
     training_min_samples: int
     training_min_bucket_samples: int
+    db_retention_days: int
     log_level: str
     telegram_bot_token: str = field(repr=False)
     telegram_chat_id: str = field(repr=False)
@@ -132,6 +133,7 @@ class Settings:
             outcome_cost_pct=_number("OUTCOME_COST_PCT", "0.10", 0, 5),
             training_min_samples=_integer("TRAINING_MIN_SAMPLES", "100", 30, 100000),
             training_min_bucket_samples=_integer("TRAINING_MIN_BUCKET_SAMPLES", "30", 5, 10000),
+            db_retention_days=_integer("DB_RETENTION_DAYS", "365", 30, 3650),
             log_level=log_level,
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
