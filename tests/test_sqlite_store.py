@@ -63,10 +63,20 @@ class SQLitePersistenceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["totals"]["tracked_outcomes"], 1)
         self.assertEqual(summary["totals"]["open"], 1)
 
+        note_id = await self.journal.add_feedback(
+            1, "NEEDS_REVIEW", "Telegram reply note", "telegram"
+        )
+        self.assertGreater(note_id, 0)
+        pending_before_grade = await self.journal.pending_entries()
+        self.assertEqual([row["id"] for row in pending_before_grade], [1])
+        exported = await self.journal.entries(10)
+        self.assertEqual(exported[0]["feedback"][0]["comment"], "Telegram reply note")
+
         feedback_id = await self.journal.add_feedback(
-            1, "GOOD_ENTRY", "SQLite integration feedback"
+            1, "GOOD_ENTRY", "SQLite integration feedback", "telegram"
         )
         self.assertGreater(feedback_id, 0)
+        self.assertEqual(await self.journal.pending_entries(), [])
         stats = await self.journal.stats(30)
         self.assertEqual(stats["totals"]["delivered"], 1)
         self.assertEqual(stats["totals"]["manual_labels"], 1)
