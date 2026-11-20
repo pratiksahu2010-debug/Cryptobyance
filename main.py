@@ -550,7 +550,7 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("PostgreSQL nightly cleanup failed; scanner will continue")
+            log.exception("Database nightly cleanup failed; scanner will continue")
 
 
 async def daily_training_review_loop(journal: SignalJournal) -> None:
@@ -573,11 +573,25 @@ async def scanner_session() -> None:
     session_started_ms = int(time.time() * 1000)
     state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
-    if not settings.database_url:
-        raise RuntimeError('DATABASE_URL is required for persistent signal candidates; set the Render internal PostgreSQL URL')
+    database_dsn = settings.database_url
+    if not database_dsn:
+        # Render must use PostgreSQL for durable production persistence. SQLite
+        # is a zero-extra-dependency fallback for a developer's local run only.
+        if os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER"):
+            raise RuntimeError("DATABASE_URL is required on Render; configure the PostgreSQL internal URL")
+        local_path = os.getenv("LOCAL_SQLITE_PATH", "./cryptobyance-local.db").strip()
+        if local_path.startswith("sqlite://"):
+            database_dsn = local_path
+        elif os.path.isabs(local_path):
+            database_dsn = "sqlite:////" + local_path.lstrip("/")
+        else:
+            database_dsn = "sqlite:///" + local_path
+        log.warning("DATABASE_URL is unset; using local SQLite persistence at %s",
+                    database_dsn)
+    state["database_backend"] = "sqlite-local" if database_dsn.startswith("sqlite://") else "postgresql"
     # Connect persistence before allocating network clients so a missing or
     # unavailable database cannot leak HTTP/Socket.IO clients on each retry.
-    candidate_store = await CandidateStore.connect(settings.database_url)
+    candidate_store = await CandidateStore.connect(database_dsn)
     try:
         journal_service = SignalJournal(candidate_store)
         await journal_service.initialize()
@@ -606,7 +620,7 @@ async def scanner_session() -> None:
         previous_checkpoint = await candidate_store.load_runtime()
         state["previous_runtime_checkpoint"] = previous_checkpoint
         if previous_checkpoint:
-            log.info("Loaded previous PostgreSQL scanner checkpoint updated_at=%s",
+            log.info("Loaded previous database scanner checkpoint updated_at=%s",
                      previous_checkpoint["updated_at"])
     except Exception as exc:
         state["last_error"] = f"previous database checkpoint unavailable: {type(exc).__name__}"
@@ -616,7 +630,7 @@ async def scanner_session() -> None:
     notifier = TelegramNotifier(telegram_client, settings.telegram_bot_token, settings.telegram_chat_id)
     state['telegram_configured'] = notifier.configured
     semaphore = asyncio.Semaphore(CONCURRENCY)
-    cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="postgres-nightly-cleanup")
+    cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="database-nightly-cleanup")
     outbox_task = asyncio.create_task(telegram_outbox_loop(candidate_store, notifier), name="telegram-outbox")
     training_review_task = asyncio.create_task(daily_training_review_loop(journal_service), name="daily-training-review")
     try:
