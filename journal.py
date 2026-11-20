@@ -541,6 +541,34 @@ class SignalJournal:
 
     async def entries(self, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit), 5000))
+        if getattr(self.pool, "is_sqlite", False):
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
+                              s.payload::text AS payload,o.status AS outcome_status,
+                              o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                              o.best_favorable_pct,o.worst_adverse_pct,
+                              o.best_favorable_atr,o.worst_adverse_atr
+                       FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                       WHERE s.status='SENT'
+                       ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
+                result = []
+                for row in rows:
+                    item = dict(row)
+                    item["payload"] = json.loads(item.pop("payload"))
+                    item["created_at"] = item["created_at"].isoformat() if item["created_at"] else None
+                    item["delivered_at"] = item["delivered_at"].isoformat() if item["delivered_at"] else None
+                    feedback_rows = await conn.fetch(
+                        """SELECT id,category,comment,source,created_at
+                           FROM journal_feedback WHERE signal_id=$1
+                           ORDER BY created_at DESC,id DESC""", int(item["id"]))
+                    item["feedback"] = [
+                        {**dict(feedback),
+                         "created_at": feedback["created_at"].isoformat() if feedback["created_at"] else None}
+                        for feedback in feedback_rows
+                    ]
+                    result.append(item)
+            return result
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
