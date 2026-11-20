@@ -240,7 +240,8 @@ class SQLitePool:
     async def connect(cls, dsn: str) -> "SQLitePool":
         path = sqlite_path_from_dsn(dsn)
         if path != ":memory:":
-            Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+            path = str(Path(path).expanduser())
+            Path(path).resolve().parent.mkdir(parents=True, exist_ok=True)
         raw = sqlite3.connect(path, timeout=10, isolation_level=None, check_same_thread=False)
         raw.row_factory = sqlite3.Row
         raw.execute("PRAGMA foreign_keys=ON")
