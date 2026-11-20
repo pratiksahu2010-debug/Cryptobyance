@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS training_proposals (
     changes JSONB NOT NULL,
     metrics JSONB NOT NULL,
     status TEXT NOT NULL DEFAULT 'PROPOSED'
-      CHECK(status IN ('PROPOSED','APPROVED','REJECTED','ROLLED_BACK')),
+      CHECK(status IN ('PROPOSED','APPROVED','REJECTED','ROLLED_BACK','SHADOW')),
     reviewer_note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reviewed_at TIMESTAMPTZ
@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS ix_training_proposals_status_created
 CREATE TABLE IF NOT EXISTS config_history (
     config_version TEXT PRIMARY KEY,
     config JSONB NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('ACTIVE','INACTIVE')),
+    status TEXT NOT NULL CHECK(status IN ('ACTIVE','INACTIVE','SHADOW')),
     previous_version TEXT,
     approved_by TEXT NOT NULL DEFAULT '',
     reason TEXT NOT NULL DEFAULT '',
@@ -118,7 +118,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_config_history_one_active
  ON config_history(status) WHERE status='ACTIVE';
 CREATE TABLE IF NOT EXISTS config_history_events (
     id BIGSERIAL PRIMARY KEY,
-    action TEXT NOT NULL CHECK(action IN ('INITIALIZE','APPROVE','REJECT','ROLLBACK')),
+    action TEXT NOT NULL CHECK(action IN ('INITIALIZE','APPROVE','REJECT','ROLLBACK','SHADOW_START','SHADOW_STOP','SHADOW_EXPIRE')),
     config_version TEXT NOT NULL,
     previous_version TEXT,
     actor TEXT NOT NULL DEFAULT '',
