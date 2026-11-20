@@ -707,9 +707,10 @@ class EngineTests(unittest.TestCase):
         previous = state.copy()
         try:
             state.update(
-                running=True, market_metadata_ready=True, active_symbols=3,
-                last_scan_epoch=time.time(), last_cycle_symbols_ok=3,
-                last_cycle_symbols_failed=0,
+                running=True, market_metadata_ready=True,
+                database_connected=True, telegram_configured=True,
+                active_symbols=3, last_scan_epoch=time.time(),
+                last_cycle_symbols_ok=3, last_cycle_symbols_failed=0,
             )
             self.assertTrue(build_health_payload()["ok"])
         finally:

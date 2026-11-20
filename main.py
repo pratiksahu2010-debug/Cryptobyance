@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -929,6 +930,7 @@ def build_health_payload() -> dict[str, Any]:
     scan_fresh = bool(scan_age is not None and scan_age <= max(180, CANDLE_INTERVAL_SECONDS + CANDLE_CLOSE_GRACE_SECONDS + 60))
     healthy = bool(
         state["running"] and state["market_metadata_ready"]
+        and state["database_connected"] and state["telegram_configured"]
         and state["active_symbols"] > 0 and cycle_complete and scan_fresh
         and state["last_cycle_symbols_failed"] == 0
         and state["last_cycle_symbols_ok"] == state["active_symbols"]
@@ -975,6 +977,16 @@ def build_health_payload() -> dict[str, Any]:
 @app.get("/health")
 async def health():
     return build_health_payload()
+
+
+@app.get("/ready")
+async def readiness():
+    """Render readiness probe: non-2xx until the scanner completes a fresh healthy cycle."""
+    payload = build_health_payload()
+    return JSONResponse(
+        status_code=200 if payload["ok"] else 503,
+        content=payload,
+    )
 
 
 @app.get("/performance")

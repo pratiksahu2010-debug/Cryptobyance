@@ -13,7 +13,8 @@ class DeploymentDefaultsTests(unittest.TestCase):
 
     def test_render_blueprint_configures_health_check_endpoint(self):
         render = (ROOT / "render.yaml").read_text()
-        self.assertIn("    healthCheckPath: /health", render)
+        self.assertIn("    healthCheckPath: /ready", render)
+        self.assertIn('@app.get("/ready")', (ROOT / "main.py").read_text())
 
     def test_example_environment_uses_adx_minimum_20(self):
         example = (ROOT / ".env.example").read_text()
