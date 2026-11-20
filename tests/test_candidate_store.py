@@ -104,6 +104,28 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
         self.assertTrue(await store.enqueue_signal(signal, None, cooldown_candles=3))
 
+    async def test_restart_gap_invalidates_armed_state_before_trigger(self):
+        conn = FakeConnection(fetchrows=[{
+            "state": "ARMED",
+            "last_processed_candle_open_ms": 1_800_000,
+            "setup_invalidated": False,
+            "cooldown_until_candle_open_ms": None,
+        }])
+        store = CandidateStore(FakePool(conn))
+        action = await store.advance_symbol_state(
+            strategy_key="coindcx_per_symbol_v2",
+            symbol="BTC/USDT", direction="LONG",
+            candle_open_ms=2_400_000, setup_valid=True,
+            invalidation=False, trigger=True, cooldown_candles=4,
+        )
+        self.assertEqual(action, "INVALIDATED")
+        update = next(call.args[0] for call in conn.execute.await_args_list
+                      if "UPDATE strategy_signal_states" in call.args[0])
+        self.assertIn("state=$4", update)
+        self.assertIn("strategy_state_events", "\\n".join(
+            call.args[0] for call in conn.execute.await_args_list
+        ))
+
     async def test_performance_summary_returns_aggregate_and_symbol_breakdown(self):
         conn = FakeConnection(fetchrows=[{
             "delivered_signals": 12, "delivery_failed": 1, "queued": 2,

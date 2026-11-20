@@ -27,6 +27,7 @@ def advance_state(
     trigger: bool,
     cooldown_remaining: int = 0,
     invalidated_during_cooldown: bool = False,
+    missed_candles: bool = False,
 ) -> StateDecision:
     """Pure transition rules for one side on one new CLOSED candle."""
     if current_state not in VALID_STATES:
@@ -34,7 +35,10 @@ def advance_state(
     if current_state == "IDLE":
         return StateDecision("ARMED", "ARMED") if setup_valid else StateDecision("IDLE", "NONE")
     if current_state == "ARMED":
-        if invalidation:
+        # An armed setup is valid only while every intervening completed candle
+        # has been evaluated. After a restart/scan gap, its invalidation history
+        # is unknown, so discard it and require a fresh setup cycle.
+        if invalidation or missed_candles:
             return StateDecision("IDLE", "INVALIDATED", True)
         if trigger:
             # The caller must atomically create the signal and enter COOLDOWN.
@@ -116,6 +120,11 @@ async def advance_persisted_state(
             return "DUPLICATE"
 
     state = str(row["state"]) if row else "IDLE"
+    previous_candle_open_ms = row["last_processed_candle_open_ms"] if row else None
+    missed_candles = (
+        previous_candle_open_ms is not None
+        and int(candle_open_ms) - int(previous_candle_open_ms) > CANDLE_INTERVAL_MS
+    )
     invalidated_before = bool(row["setup_invalidated"]) if row else False
     cooldown_until = row["cooldown_until_candle_open_ms"] if row else None
     remaining = 0
@@ -126,6 +135,7 @@ async def advance_persisted_state(
         state, setup_valid=setup_valid, invalidation=invalidation, trigger=trigger,
         cooldown_remaining=remaining,
         invalidated_during_cooldown=invalidated_before,
+        missed_candles=missed_candles,
     )
     if decision.action == "TRIGGER":
         # Keep ARMED and its prior-candle checkpoint unchanged until enqueue_signal
