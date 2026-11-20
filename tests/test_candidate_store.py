@@ -36,6 +36,10 @@ class FakePool:
 
 
 class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shadow_signal_table_is_part_of_store_migration(self):
+        self.assertIn("CREATE TABLE IF NOT EXISTS shadow_signal_history", DDL)
+        self.assertIn("UNIQUE(proposal_version,symbol,direction,candle_open_ms)", DDL)
+
     async def test_connect_repairs_legacy_outcome_rows(self):
         conn = FakeConnection()
         pool = FakePool(conn)
