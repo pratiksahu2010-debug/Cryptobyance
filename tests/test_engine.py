@@ -750,27 +750,33 @@ class EngineTests(unittest.TestCase):
         frame["ema21"] = 100.0
         return frame
 
-    def test_signal_diagnostics_are_persisted_and_never_change_signal_gates(self):
+    def test_15m_context_calculates_ema_only_and_never_calculates_rsi(self):
         from unittest.mock import patch
 
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
-        # A bearish 15m RSI should reduce confidence, never veto the bullish
-        # 15m EMA trend plus otherwise valid 5m LONG signal.
         fifteen["rsi"] = 40.0
-        with patch("strategy.indicators", side_effect=[five, fifteen]):
+        calls = []
+
+        def fake_indicators(frame, include_rsi=True):
+            calls.append(include_rsi)
+            return five.copy() if len(calls) == 1 else fifteen.copy()
+
+        with patch("strategy.indicators", side_effect=fake_indicators):
             signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal["side"], "LONG")
-        self.assertFalse(signal["context_rsi_aligned"])
-        self.assertEqual(signal["context_rsi_score"], 0)
-        diagnostics = signal["diagnostics"]
-        self.assertEqual(diagnostics["version"], 4)
-        self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
-        self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
-        self.assertAlmostEqual(diagnostics["context_ema_spread_pct"], 1.0)
-        self.assertAlmostEqual(diagnostics["context_rsi14"], 40.0)
-        self.assertTrue(all(np.isfinite(value) for value in diagnostics.values()))
+        self.assertEqual(calls, [True, False])
+        self.assertNotIn("context_rsi14", signal)
+        self.assertNotIn("context_rsi_aligned", signal)
+        self.assertNotIn("context_rsi_score", signal)
+        self.assertNotIn("context_rsi14", signal["diagnostics"])
+        self.assertEqual(signal["diagnostics"]["version"], 5)
+        self.assertAlmostEqual(signal["diagnostics"]["ema_spread_atr"], 0.5)
+        self.assertAlmostEqual(signal["diagnostics"]["price_vwap_distance_atr"], 1.0)
+        self.assertAlmostEqual(signal["diagnostics"]["context_ema_spread_pct"], 1.0)
+        self.assertTrue(all(np.isfinite(value) for value in signal["diagnostics"].values()))
+
 
     def test_short_signal_diagnostics_keep_directional_signs(self):
         from unittest.mock import patch
