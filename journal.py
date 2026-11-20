@@ -127,6 +127,18 @@ CREATE TABLE IF NOT EXISTS config_history_events (
 );
 CREATE INDEX IF NOT EXISTS ix_config_history_events_created
  ON config_history_events(created_at DESC);
+ALTER TABLE config_history DROP CONSTRAINT IF EXISTS config_history_status_check;
+ALTER TABLE config_history ADD CONSTRAINT config_history_status_check
+ CHECK(status IN ('ACTIVE','INACTIVE','SHADOW'));
+ALTER TABLE config_history ADD COLUMN IF NOT EXISTS shadow_until TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_config_history_one_shadow
+ ON config_history(status) WHERE status='SHADOW';
+ALTER TABLE training_proposals DROP CONSTRAINT IF EXISTS training_proposals_status_check;
+ALTER TABLE training_proposals ADD CONSTRAINT training_proposals_status_check
+ CHECK(status IN ('PROPOSED','APPROVED','REJECTED','ROLLED_BACK','SHADOW'));
+ALTER TABLE config_history_events DROP CONSTRAINT IF EXISTS config_history_events_action_check;
+ALTER TABLE config_history_events ADD CONSTRAINT config_history_events_action_check
+ CHECK(action IN ('INITIALIZE','APPROVE','REJECT','ROLLBACK','SHADOW_START','SHADOW_STOP','SHADOW_EXPIRE'));
 """
 
 FEEDBACK_CATEGORIES = {
@@ -672,6 +684,129 @@ class SignalJournal:
             )
         proposal["proposal_id"] = int(row["id"])
         return proposal
+
+    async def start_shadow_proposal(self, proposal_id: int, actor: str,
+                                   days: int = 3, reason: str = "Shadow test") -> dict:
+        """Run a proposed config in parallel without changing live settings."""
+        actor = str(actor or "unknown")[:120]
+        reason = str(reason or "Shadow test")[:500]
+        days = int(days)
+        if not 1 <= days <= 30:
+            raise ValueError("shadow duration must be between 1 and 30 days")
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                proposal = await conn.fetchrow(
+                    """SELECT id,base_config_version,proposed_config_version,
+                              proposed_config::text AS proposed_config,status
+                       FROM training_proposals WHERE id=$1 FOR UPDATE""", int(proposal_id))
+                if proposal is None:
+                    raise LookupError("training proposal not found")
+                if proposal["status"] != "PROPOSED":
+                    raise ValueError("only a PROPOSED item can enter shadow mode")
+                active = await conn.fetchrow(
+                    """SELECT config_version,config::text AS config
+                       FROM config_history WHERE status='ACTIVE' FOR UPDATE""")
+                if active is None:
+                    raise RuntimeError("active runtime config is not initialized")
+                if active["config_version"] != proposal["base_config_version"]:
+                    raise ValueError("proposal is stale; run /train again against the current config")
+                existing_shadow = await conn.fetchrow(
+                    """SELECT config_version FROM config_history
+                       WHERE status='SHADOW' AND shadow_until > NOW() FOR UPDATE""")
+                if existing_shadow:
+                    raise ValueError(f"shadow config {existing_shadow['config_version']} is already running")
+                current = json.loads(active["config"]) if isinstance(active["config"], str) else dict(active["config"])
+                delta = json.loads(proposal["proposed_config"])
+                merged = {**current, **delta}
+                versions = await conn.fetch("SELECT config_version FROM config_history")
+                max_number = max(
+                    (int(str(row["config_version"]).lstrip("v"))
+                     for row in versions if str(row["config_version"]).lstrip("v").isdigit()),
+                    default=1,
+                )
+                version = proposal["proposed_config_version"]
+                if any(row["config_version"] == version for row in versions):
+                    version = f"v{max_number + 1}"
+                await conn.execute(
+                    """INSERT INTO config_history(
+                         config_version,config,status,previous_version,approved_by,reason,shadow_until)
+                       VALUES($1,$2::jsonb,'SHADOW',$3,$4,$5,NOW()+($6 * INTERVAL '1 day'))""",
+                    version, json.dumps(merged, separators=(",", ":"), allow_nan=False),
+                    active["config_version"], actor, reason, days)
+                await conn.execute(
+                    """UPDATE training_proposals SET status='SHADOW',
+                           proposed_config_version=$2,reviewer_note=$3,reviewed_at=NOW()
+                       WHERE id=$1""", int(proposal_id), version, reason)
+                await conn.execute(
+                    """INSERT INTO config_history_events(
+                         action,config_version,previous_version,actor,reason)
+                       VALUES('SHADOW_START',$1,$2,$3,$4)""",
+                    version, active["config_version"], actor, f"{reason}; duration={days}d")
+                shadow = await conn.fetchrow(
+                    """SELECT shadow_until FROM config_history WHERE config_version=$1""", version)
+        return {"id": int(proposal_id), "version": version, "config": merged,
+                "base_version": active["config_version"], "shadow_until": shadow["shadow_until"].isoformat()}
+
+    async def active_shadow_config(self) -> dict | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT config_version,config::text AS config,shadow_until
+                   FROM config_history WHERE status='SHADOW' AND shadow_until > NOW()
+                   ORDER BY created_at DESC LIMIT 1""")
+        if row is None:
+            return None
+        config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
+        return {"version": row["config_version"], "config": config,
+                "shadow_until": row["shadow_until"].isoformat()}
+
+    async def stop_shadow(self, actor: str, reason: str = "Shadow test stopped") -> dict:
+        actor = str(actor or "unknown")[:120]
+        reason = str(reason or "Shadow test stopped")[:500]
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                shadow = await conn.fetchrow(
+                    """SELECT config_version,previous_version FROM config_history
+                       WHERE status='SHADOW' FOR UPDATE""")
+                if shadow is None:
+                    raise LookupError("no shadow configuration is running")
+                await conn.execute(
+                    """UPDATE config_history SET status='INACTIVE',deactivated_at=NOW()
+                       WHERE config_version=$1""", shadow["config_version"])
+                await conn.execute(
+                    """UPDATE training_proposals SET status='PROPOSED',
+                           reviewer_note=$2,reviewed_at=NULL
+                       WHERE proposed_config_version=$1 AND status='SHADOW'""",
+                    shadow["config_version"], reason)
+                await conn.execute(
+                    """INSERT INTO config_history_events(
+                         action,config_version,previous_version,actor,reason)
+                       VALUES('SHADOW_STOP',$1,$2,$3,$4)""",
+                    shadow["config_version"], shadow["previous_version"], actor, reason)
+        return {"version": shadow["config_version"], "status": "STOPPED"}
+
+    async def expire_shadow_if_needed(self) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                shadow = await conn.fetchrow(
+                    """SELECT config_version,previous_version FROM config_history
+                       WHERE status='SHADOW' AND shadow_until <= NOW() FOR UPDATE""")
+                if shadow is None:
+                    return False
+                await conn.execute(
+                    """UPDATE config_history SET status='INACTIVE',deactivated_at=NOW()
+                       WHERE config_version=$1""", shadow["config_version"])
+                await conn.execute(
+                    """UPDATE training_proposals SET status='PROPOSED',
+                           reviewer_note='Shadow period expired; awaiting human approval',
+                           reviewed_at=NULL
+                       WHERE proposed_config_version=$1 AND status='SHADOW'""",
+                    shadow["config_version"])
+                await conn.execute(
+                    """INSERT INTO config_history_events(
+                         action,config_version,previous_version,actor,reason)
+                       VALUES('SHADOW_EXPIRE',$1,$2,'system','Configured shadow duration elapsed')""",
+                    shadow["config_version"], shadow["previous_version"])
+        return True
 
     async def ensure_initial_config(self, version: str, config: dict) -> None:
         """Seed the active config once; never overwrite an approved config at boot."""
