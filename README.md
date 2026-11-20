@@ -22,7 +22,9 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 
 **15-minute veto:** LONG is allowed only when 15m EMA(9) > EMA(21); SHORT only when 15m EMA(9) < EMA(21). Missing, stale, invalid, or insufficient 15m context defers state processing rather than firing on stale data. At least 35 contiguous 15m bars and 60 contiguous 5m bars are required.
 
-**Risk levels:** stop loss is the prior swing low for LONG or prior swing high for SHORT, using `SWING_LOOKBACK_BARS` (default 10; signal candle excluded). TP1 and TP2 are configured at `TP1_R` (default 1R) and `TP2_R` (default 2R) of the entry-to-stop risk. These are informational planning levels, not exchange orders or guaranteed fills.
+**Production risk levels:** the scanner uses the prior swing low for LONG or prior swing high for SHORT, using `SWING_LOOKBACK_BARS` (default 10; signal candle excluded). TP1 and TP2 are configured at `TP1_R` (default 1R) and `TP2_R` (default 2R) of that swing-based risk. Production signal payloads identify this as `risk_model=swing_structure` and include the actual risk distance and percentage. These are informational planning levels, not exchange orders or guaranteed fills.
+
+**Legacy compatibility:** the public `evaluate_signal()` helper intentionally retains its historical ATR stop and single `target` contract (`ATR_STOP_MULTIPLIER` and `MIN_RISK_REWARD`). Its supplemental `target1`/`target2` fields are recalculated from that same ATR risk distance, and its payload identifies `risk_model=legacy_atr`. These two legacy environment variables do not affect the production scanner or Telegram alerts.
 
 All setup thresholds, RSI bands, the 15m RSI confidence midline (`CONTEXT_RSI_MIDLINE`, default 50) and cooldown length are configurable through environment settings loaded by `config.py`. The bot remains signal-only and no indicator combination guarantees profitability; validate with chronological backtests and forward observation before risking capital.
 
