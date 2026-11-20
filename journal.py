@@ -408,8 +408,8 @@ class SignalJournal:
                     raise LookupError("delivered signal not found")
                 latest = await conn.fetchrow(
                     """SELECT id FROM journal_feedback
-                       WHERE signal_id=$1 ORDER BY created_at DESC,id DESC
-                       LIMIT 1 FOR UPDATE""", int(signal_id))
+                       WHERE signal_id=$1 AND category <> 'NEEDS_REVIEW'
+                       ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE""", int(signal_id))
                 if latest:
                     row = await conn.fetchrow(
                         """UPDATE journal_feedback SET category=$2,comment=$3,
@@ -435,7 +435,8 @@ class SignalJournal:
                    LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                    WHERE s.status='SENT'
                      AND NOT EXISTS (
-                       SELECT 1 FROM journal_feedback f WHERE f.signal_id=s.id
+                       SELECT 1 FROM journal_feedback f
+                       WHERE f.signal_id=s.id AND f.category <> 'NEEDS_REVIEW'
                      )
                    ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
         return [
@@ -470,7 +471,7 @@ class SignalJournal:
                               ROW_NUMBER() OVER (
                                 PARTITION BY signal_id ORDER BY created_at DESC,id DESC
                               ) AS feedback_rank
-                       FROM journal_feedback
+                       FROM journal_feedback WHERE category <> 'NEEDS_REVIEW'
                      ) ranked_feedback WHERE feedback_rank=1
                    ), labeled AS (
                      SELECT s.id,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
@@ -540,6 +541,34 @@ class SignalJournal:
 
     async def entries(self, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit), 5000))
+        if getattr(self.pool, "is_sqlite", False):
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
+                              s.payload::text AS payload,o.status AS outcome_status,
+                              o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                              o.best_favorable_pct,o.worst_adverse_pct,
+                              o.best_favorable_atr,o.worst_adverse_atr
+                       FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
+                       WHERE s.status='SENT'
+                       ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
+                result = []
+                for row in rows:
+                    item = dict(row)
+                    item["payload"] = json.loads(item.pop("payload"))
+                    item["created_at"] = item["created_at"].isoformat() if item["created_at"] else None
+                    item["delivered_at"] = item["delivered_at"].isoformat() if item["delivered_at"] else None
+                    feedback_rows = await conn.fetch(
+                        """SELECT id,category,comment,source,created_at
+                           FROM journal_feedback WHERE signal_id=$1
+                           ORDER BY created_at DESC,id DESC""", int(item["id"]))
+                    item["feedback"] = [
+                        {**dict(feedback),
+                         "created_at": feedback["created_at"].isoformat() if feedback["created_at"] else None}
+                        for feedback in feedback_rows
+                    ]
+                    result.append(item)
+            return result
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
@@ -642,7 +671,7 @@ class SignalJournal:
                           s.payload::text AS payload,o.result AS auto_result,
                           o.realized_r,
                           (SELECT f.category FROM journal_feedback f
-                           WHERE f.signal_id=s.id
+                           WHERE f.signal_id=s.id AND f.category <> 'NEEDS_REVIEW'
                            ORDER BY f.created_at DESC,f.id DESC LIMIT 1) AS manual_label
                    FROM signal_history s
                    JOIN signal_outcomes o ON o.signal_id=s.id

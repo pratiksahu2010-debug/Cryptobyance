@@ -13,7 +13,8 @@ from typing import Any
 
 import pandas as pd
 
-from config import settings
+from config import settings, CONFIG_VERSION
+from trainer import build_training_proposal
 from outcomes import advance_outcome
 from state_machine import CANDLE_INTERVAL_MS, advance_state
 from strategy import evaluate_setup, evaluate_state_inputs
@@ -66,6 +67,64 @@ def _remaining_cooldown(until_ms: int | None, candle_open_ms: int) -> int:
     if until_ms is None:
         return 0
     return max(0, (int(until_ms) - int(candle_open_ms) + CANDLE_INTERVAL_MS - 1) // CANDLE_INTERVAL_MS)
+
+
+def build_replay_training_preview(trades: list[dict]) -> dict[str, Any]:
+    """Pass resolved synthetic replay outcomes through the same offline trainer."""
+    rows = []
+    for trade in trades:
+        result = str(trade.get("result") or "").upper()
+        realized_r = trade.get("realized_r")
+        if result not in {"WIN", "LOSS", "TIMEOUT"} or realized_r is None:
+            continue
+        entry = trade.get("entry")
+        vwap = trade.get("vwap")
+        ema9 = trade.get("ema9")
+        ema21 = trade.get("ema21")
+        features = dict(trade.get("diagnostics") or {})
+        features.update({
+            "adx14": trade.get("adx", features.get("adx14")),
+            "rsi14": trade.get("rsi", features.get("rsi14")),
+            "ema9": ema9, "ema21": ema21, "vwap": vwap,
+            "close": entry,
+            "hour_utc": (int(trade["signal_candle_open_ms"]) // 3_600_000) % 24,
+        })
+        if ema9 is not None and ema21 not in (None, 0):
+            features["ema_spread_pct"] = 100.0 * (float(ema9) - float(ema21)) / float(ema21)
+        if entry is not None and vwap not in (None, 0):
+            features["price_vwap_distance_pct"] = 100.0 * (float(entry) - float(vwap)) / float(vwap)
+        rows.append({
+            "signal_id": int(trade["signal_id"]),
+            "candle_open_ms": int(trade["signal_candle_open_ms"]),
+            "direction": trade["side"],
+            "features": features,
+            "auto_result": result,
+            "realized_r": float(realized_r),
+            "manual_label": None,
+        })
+    current_config = {
+        "adx_min": settings.adx_min,
+        "rsi_long_min": settings.rsi_long_min,
+        "rsi_long_max": settings.rsi_long_max,
+        "rsi_short_min": settings.rsi_short_min,
+        "rsi_short_max": settings.rsi_short_max,
+    }
+    proposal = build_training_proposal(
+        rows, current_config, base_config_version=CONFIG_VERSION,
+        min_samples=settings.training_min_samples,
+        min_bucket_samples=settings.training_min_bucket_samples,
+    )
+    return {
+        "status": proposal.get("status"),
+        "reason": proposal.get("reason"),
+        "sample_count": proposal.get("summary", {}).get("sample_count", 0),
+        "manual_label_conflicts": proposal.get("summary", {}).get("manual_label_conflicts", 0),
+        "expected_effect": proposal.get("expected_effect"),
+        "walk_forward": proposal.get("walk_forward"),
+        "synthetic_replay_data": True,
+        "persisted_to_database": False,
+        "live_settings_changed": False,
+    }
 
 
 def run_backtest(
@@ -196,6 +255,10 @@ def run_backtest(
             "risk_model": signal.get("risk_model"),
             "adx": signal.get("adx"),
             "rsi": signal.get("rsi"),
+            "ema9": signal.get("ema9"),
+            "ema21": signal.get("ema21"),
+            "vwap": signal.get("vwap"),
+            "atr": signal.get("atr"),
             "context": signal.get("context"),
             "diagnostics": signal.get("diagnostics"),
             "status": "OPEN",
@@ -257,7 +320,14 @@ def run_backtest(
         "assumed_entry": "signal candle close",
         "no_lookahead": True,
     }
-    return {"summary": summary, "trades": trade_rows}
+    training_preview = build_replay_training_preview(trade_rows)
+    summary["training_preview"] = {
+        "status": training_preview["status"],
+        "sample_count": training_preview["sample_count"],
+        "reason": training_preview["reason"],
+        "expected_effect": training_preview["expected_effect"],
+    }
+    return {"summary": summary, "trades": trade_rows, "training_preview": training_preview}
 
 
 def main() -> None:

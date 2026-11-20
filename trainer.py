@@ -268,6 +268,13 @@ def build_training_proposal(
     }
     oos_candidate_samples = [item for item in oos if _passes(item, best["config"])]
     oos_metrics = _metrics(oos_candidate_samples)
+    oos_span_days = max(
+        1.0, (oos[-1]["candle_open_ms"] - oos[0]["candle_open_ms"]) / 86_400_000
+    )
+    baseline_resolved_signals_per_day = round(len(oos) / oos_span_days, 2)
+    candidate_resolved_signals_per_day = round(
+        len(oos_candidate_samples) / oos_span_days, 2
+    )
     train_test_gap = (
         best["metrics"]["expectancy_r"] - oos_metrics["expectancy_r"]
         if oos_metrics["expectancy_r"] is not None else None
@@ -308,6 +315,12 @@ def build_training_proposal(
             "walk_forward_folds": fold_results,
             "train_test_gap_r": round(train_test_gap, 4) if train_test_gap is not None else None,
             "signals_retained_pct": round(100 * len(oos_candidate_samples) / len(oos), 2),
+            "baseline_resolved_signals_per_day": baseline_resolved_signals_per_day,
+            "candidate_resolved_signals_per_day": candidate_resolved_signals_per_day,
+            "signal_rate_basis": (
+                "Estimated from resolved delivered signals in the chronological OOS sample; "
+                "not a forecast of all future alerts."
+            ),
         },
         "confidence_note": (
             "Research proposal only. It passed both chronological out-of-sample folds, "

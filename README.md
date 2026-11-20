@@ -213,7 +213,7 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"
 ```
 
-Telegram must be able to reach the public HTTPS webhook. Dashboard feedback works independently of webhook configuration.
+Telegram must be able to reach the public HTTPS webhook. Dashboard feedback works independently of webhook configuration. Reply to a delivered bot alert with ordinary text to attach a `NEEDS_REVIEW` note to that signal. A reply note is not a grade and does not remove the signal from `/pending`; use the inline buttons or `/relabel` for a manual label.
 
 ### API
 
@@ -259,7 +259,7 @@ The trainer refuses to generate a proposal below `TRAINING_MIN_SAMPLES=100` reso
 
 Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. Run a proposal in isolated shadow mode with `/shadow <id> [days]` (1–30 days), inspect it with `/shadow_status`, and stop it early with `/shadow_stop`. Shadow mode evaluates the same completed 5m/15m candles with a separate durable state-machine key, stores would-be signals in `shadow_signal_history`, and never inserts them into the Telegram outbox. Live thresholds remain unchanged. When the shadow period expires or is stopped, the proposal returns to `PROPOSED` so it can be explicitly approved or rejected. Then approve with `/approve <id>`, reject with `/reject <id>`, and restore the previous approved configuration with `/rollback`. The protected API equivalents are `POST /journal/api/proposals/{id}/approve`, `POST /journal/api/proposals/{id}/reject`, and `POST /journal/api/rollback`. Every activation and rollback is written to `config_history` and `config_history_events` with actor, time, reason, and previous version. The approved config is hot-reloaded in the running scanner and loaded again on restart; the Telegram chat ID must match the configured owner chat before these commands are accepted.
 
-EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual.
+EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual. Proposal reports also estimate baseline and candidate resolved signals per day on the chronological out-of-sample window; this is explicitly an estimate from resolved delivered signals, not a forecast of every future alert.
 
 ## Weekly digest and database retention
 
@@ -279,7 +279,7 @@ Run:
 python backtest.py --candles-5m data/BTCUSDT_5m.csv --candles-15m data/BTCUSDT_15m.csv --trades-out results/trades.csv --summary-out results/summary.json
 ```
 
-Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By default the replay uses the current runtime ADX/RSI settings, cooldown, 12-bar outcome horizon, and estimated round-trip cost. A 15m candle is visible only after its close is at or before the current 5m candle close; no future 15m data is used. Entries are assumed at the signal candle close, outcomes are measured only on later 5m candles, and the summary reports net expectancy, win/loss/timeout counts, profit factor, max drawdown, and MFE/MAE. Results are historical estimates, not exchange fills.
+Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By default the replay uses the current runtime ADX/RSI settings, cooldown, 12-bar outcome horizon, and estimated round-trip cost. A 15m candle is visible only after its close is at or before the current 5m candle close; no future 15m data is used. Entries are assumed at the signal candle close, outcomes are measured only on later 5m candles, and the summary reports net expectancy, win/loss/timeout counts, profit factor, max drawdown, and MFE/MAE. Results are historical estimates, not exchange fills. The output also includes a `training_preview`: resolved synthetic replay outcomes are passed through the same offline trainer and walk-forward guards, but are not inserted into the live journal or used to change settings.
 
 ## Signal feature snapshot
 
