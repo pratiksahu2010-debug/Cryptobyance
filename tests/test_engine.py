@@ -753,15 +753,22 @@ class EngineTests(unittest.TestCase):
         from unittest.mock import patch
 
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
+        # A bearish 15m RSI should reduce confidence, never veto the bullish
+        # 15m EMA trend plus otherwise valid 5m LONG signal.
+        fifteen["rsi"] = 40.0
         with patch("strategy.indicators", side_effect=[five, fifteen]):
             signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
 
         self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertFalse(signal["context_rsi_aligned"])
+        self.assertEqual(signal["context_rsi_score"], 0)
         diagnostics = signal["diagnostics"]
-        self.assertEqual(diagnostics["version"], 2)
+        self.assertEqual(diagnostics["version"], 3)
         self.assertAlmostEqual(diagnostics["ema_spread_atr"], 0.5)
         self.assertAlmostEqual(diagnostics["price_vwap_distance_atr"], 1.0)
         self.assertAlmostEqual(diagnostics["context_ema_spread_pct"], 1.0)
+        self.assertAlmostEqual(diagnostics["context_rsi14"], 40.0)
         self.assertTrue(all(np.isfinite(value) for value in diagnostics.values()))
 
     def test_short_signal_diagnostics_keep_directional_signs(self):
