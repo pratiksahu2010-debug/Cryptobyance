@@ -408,8 +408,8 @@ class SignalJournal:
                     raise LookupError("delivered signal not found")
                 latest = await conn.fetchrow(
                     """SELECT id FROM journal_feedback
-                       WHERE signal_id=$1 ORDER BY created_at DESC,id DESC
-                       LIMIT 1 FOR UPDATE""", int(signal_id))
+                       WHERE signal_id=$1 AND category <> 'NEEDS_REVIEW'
+                       ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE""", int(signal_id))
                 if latest:
                     row = await conn.fetchrow(
                         """UPDATE journal_feedback SET category=$2,comment=$3,
@@ -435,7 +435,8 @@ class SignalJournal:
                    LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                    WHERE s.status='SENT'
                      AND NOT EXISTS (
-                       SELECT 1 FROM journal_feedback f WHERE f.signal_id=s.id
+                       SELECT 1 FROM journal_feedback f
+                       WHERE f.signal_id=s.id AND f.category <> 'NEEDS_REVIEW'
                      )
                    ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
         return [
@@ -470,7 +471,7 @@ class SignalJournal:
                               ROW_NUMBER() OVER (
                                 PARTITION BY signal_id ORDER BY created_at DESC,id DESC
                               ) AS feedback_rank
-                       FROM journal_feedback
+                       FROM journal_feedback WHERE category <> 'NEEDS_REVIEW'
                      ) ranked_feedback WHERE feedback_rank=1
                    ), labeled AS (
                      SELECT s.id,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
@@ -642,7 +643,7 @@ class SignalJournal:
                           s.payload::text AS payload,o.result AS auto_result,
                           o.realized_r,
                           (SELECT f.category FROM journal_feedback f
-                           WHERE f.signal_id=s.id
+                           WHERE f.signal_id=s.id AND f.category <> 'NEEDS_REVIEW'
                            ORDER BY f.created_at DESC,f.id DESC LIMIT 1) AS manual_label
                    FROM signal_history s
                    JOIN signal_outcomes o ON o.signal_id=s.id
