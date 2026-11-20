@@ -33,6 +33,25 @@ class HealthOutcomeDiagnosticsTests(unittest.TestCase):
             response = await main.readiness()
         self.assertEqual(response.status_code, 200)
 
+    def test_health_requires_database_telegram_and_a_fresh_complete_scan(self):
+        import time
+
+        ready_state = {
+            "running": True, "market_metadata_ready": True,
+            "database_connected": True, "telegram_configured": True,
+            "active_symbols": 2, "last_scan_epoch": time.time(),
+            "last_cycle_symbols_ok": 2, "last_cycle_symbols_failed": 0,
+        }
+        with patch.dict(main.state, ready_state):
+            self.assertTrue(main.build_health_payload()["ok"])
+
+        with patch.dict(main.state, {**ready_state, "database_connected": False}):
+            self.assertFalse(main.build_health_payload()["ok"])
+        with patch.dict(main.state, {**ready_state, "telegram_configured": False}):
+            self.assertFalse(main.build_health_payload()["ok"])
+        with patch.dict(main.state, {**ready_state, "last_cycle_symbols_failed": 1}):
+            self.assertFalse(main.build_health_payload()["ok"])
+
     def test_health_exposes_outcome_tracker_counters(self):
         with patch.dict(main.state, {
             "outcome_rows_updated": 17,
