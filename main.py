@@ -876,6 +876,47 @@ async def list_training_proposals(request: Request, limit: int = 20):
     return await get_journal().training_proposals(limit)
 
 
+@app.post("/journal/api/proposals/{proposal_id}/approve")
+async def approve_training_proposal(proposal_id: int, request: Request):
+    require_journal_token(request)
+    try:
+        result = await get_journal().approve_proposal(proposal_id, "journal_api")
+        apply_runtime_config(result["config"], result["version"])
+        return {"approved": True, **result}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/journal/api/proposals/{proposal_id}/reject")
+async def reject_training_proposal(proposal_id: int, request: Request):
+    require_journal_token(request)
+    try:
+        return await get_journal().reject_proposal(proposal_id, "journal_api")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/journal/api/rollback")
+async def rollback_runtime_config(request: Request):
+    require_journal_token(request)
+    try:
+        result = await get_journal().rollback_config("journal_api")
+        apply_runtime_config(result["config"], result["version"])
+        return {"rolled_back": True, **result}
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/journal/api/config-history")
+async def journal_config_history(request: Request, limit: int = 30):
+    require_journal_token(request)
+    return await get_journal().config_history(limit)
+
+
 @app.post("/journal/api/training-instructions")
 async def add_training_instruction(payload: TrainingInstructionRequest, request: Request):
     require_journal_token(request)
