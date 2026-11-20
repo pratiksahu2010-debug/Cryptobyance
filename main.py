@@ -1020,7 +1020,7 @@ async def get_shadow_status(request: Request):
     active = await get_journal().active_shadow_config()
     if not active:
         return {"running": False, "signals": {"total": 0, "longs": 0, "shorts": 0, "symbols": 0}}
-    counts = await get_candidate_store().shadow_signal_counts(active["version"])
+    counts = await get_journal().shadow_signal_counts(active["version"])
     return {"running": True, **active, "signals": counts}
 
 
@@ -1307,7 +1307,7 @@ async def telegram_webhook(request: Request):
                 if not active_shadow:
                     message_text = "No shadow proposal is running."
                 else:
-                    counts = await get_candidate_store().shadow_signal_counts(active_shadow["version"])
+                    counts = await get_journal().shadow_signal_counts(active_shadow["version"])
                     message_text = (
                         f"Shadow {active_shadow['version']} (proposal #{active_shadow['proposal_id']})\\n"
                         f"Expires: {active_shadow['shadow_until']}\\n"
