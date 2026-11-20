@@ -23,6 +23,7 @@ from pydantic import BaseModel
 load_dotenv()
 
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
+import strategy as strategy_module
 from strategy import evaluate_setup, evaluate_state_inputs, indicators, timeframe_milliseconds, validate_ohlcv
 from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
@@ -137,6 +138,80 @@ state: dict[str, Any] = {
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 journal_service: SignalJournal | None = None
+shadow_runtime_config: dict | None = None
+
+async def process_shadow_symbol(candidate_store, journal, symbol: str,
+                                df5, df15, candle_open_ms: int) -> None:
+    """Advance an isolated proposal state machine and persist would-be alerts only."""
+    global shadow_runtime_config
+    shadow = shadow_runtime_config
+    if not shadow:
+        return
+    try:
+        expiry = datetime.fromisoformat(shadow["shadow_until"])
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            shadow_runtime_config = None
+            await journal.expire_shadow_if_needed()
+            log.info("shadow config expired version=%s", shadow["version"])
+            return
+        config_values = {
+            key: value for key, value in shadow["config"].items()
+            if key in RUNTIME_CONFIG_KEYS
+        }
+        shadow_settings = replace(settings, **config_values)
+        if (shadow_settings.timeframe != "5m" or shadow_settings.context_timeframe != "15m"
+                or shadow_settings.ema_fast >= shadow_settings.ema_slow
+                or shadow_settings.rsi_long_min >= shadow_settings.rsi_long_max
+                or shadow_settings.rsi_short_min >= shadow_settings.rsi_short_max
+                or shadow_settings.tp2_r <= shadow_settings.tp1_r
+                or shadow_settings.signal_cooldown_candles < 1):
+            raise ValueError("shadow proposal contains invalid strategy settings")
+        strategy_key = f"shadow:{shadow['version']}"
+        persisted = await candidate_store.load_symbol_states(strategy_key, symbol)
+        armed_sides = {side for side, value in persisted.items() if value == "ARMED"}
+        with strategy_module.using_runtime_settings(shadow_settings):
+            inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+        if inputs is None:
+            return
+        triggered_side = None
+        for side in ("LONG", "SHORT"):
+            item = inputs[side]
+            action = await candidate_store.advance_symbol_state(
+                strategy_key=strategy_key, symbol=symbol, direction=side,
+                candle_open_ms=candle_open_ms,
+                setup_valid=item["setup_valid"], invalidation=item["invalidation"],
+                trigger=item["trigger"],
+                cooldown_candles=shadow_settings.signal_cooldown_candles,
+            )
+            if action == "TRIGGER":
+                triggered_side = side
+        if triggered_side is None:
+            return
+        with strategy_module.using_runtime_settings(shadow_settings):
+            setup = evaluate_setup(df5, df15)
+        if not setup or setup.get("side") != triggered_side:
+            log.warning("shadow trigger lacked matching setup symbol=%s version=%s",
+                        symbol, shadow["version"])
+            return
+        signal = {key: value for key, value in setup.items() if key != "adx_satisfied"}
+        signal.update({
+            "symbol": symbol, "candle": int(candle_open_ms),
+            "config_version": shadow["version"],
+            "proposal_id": int(shadow["proposal_id"]),
+            "shadow": True,
+        })
+        recorded = await candidate_store.record_shadow_signal(
+            int(shadow["proposal_id"]), shadow["version"], signal
+        )
+        if recorded:
+            log.info("SHADOW SIGNAL symbol=%s side=%s version=%s candle=%s (not sent)",
+                     symbol, triggered_side, shadow["version"], candle_open_ms)
+    except Exception as exc:
+        log.warning("shadow evaluation failed symbol=%s error_type=%s",
+                    symbol, type(exc).__name__)
+
 
 
 class FeedbackRequest(BaseModel):
@@ -272,6 +347,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         df15 = candidate15
             except ValueError as context_error:
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
+            # Shadow proposals run a separate durable state machine and never
+            # touch the live state, signal outbox, or Telegram notifier.
+            if candidate_store is not None and shadow_runtime_config:
+                await process_shadow_symbol(
+                    candidate_store, journal, display_symbol, df5, df15, closed_ts
+                )
             state_metadata = {}
             # Backward-compatible path for isolated scanner adapters/tests that
             # do not implement the v2 durable state API. The deployed
