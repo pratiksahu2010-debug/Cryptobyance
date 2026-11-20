@@ -75,6 +75,17 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(result["status"], "NO_OOS_IMPROVEMENT")
         self.assertIn("out-of-sample", result["reason"])
 
+    def test_missing_observational_features_do_not_crash_bucket_analysis(self):
+        rows = [sample(i) for i in range(100)]
+        for row in rows:
+            row["features"].pop("close", None)
+            row["features"].pop("vwap", None)
+        result = build_training_proposal(rows, CURRENT, min_bucket_samples=30)
+        self.assertIn("vwap_distance_pct", result["summary"]["bucket_analysis"])
+        self.assertEqual(
+            result["summary"]["bucket_analysis"]["vwap_distance_pct"]["available_samples"], 0
+        )
+
     def test_bucket_statistics_are_suppressed_below_minimum(self):
         rows = [sample(i) for i in range(100)]
         result = build_training_proposal(rows, CURRENT, min_bucket_samples=30)
