@@ -64,6 +64,9 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertIn("adx_min", result["changes"])
         self.assertGreaterEqual(result["proposed_config"]["adx_min"], CURRENT["adx_min"])
         self.assertEqual(len(result["expected_effect"]["walk_forward_folds"]), 2)
+        self.assertGreater(result["expected_effect"]["baseline_resolved_signals_per_day"], 0)
+        self.assertGreaterEqual(result["expected_effect"]["candidate_resolved_signals_per_day"], 0)
+        self.assertIn("not a forecast", result["expected_effect"]["signal_rate_basis"])
         self.assertTrue(all(
             fold["expectancy_improvement_r"] >= 0.02
             for fold in result["expected_effect"]["walk_forward_folds"]
