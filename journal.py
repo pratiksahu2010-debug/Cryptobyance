@@ -444,16 +444,25 @@ class SignalJournal:
             for row in rows
         ]
 
-    async def stats(self, days: int = 30) -> dict:
+    async def stats(self, days: int = 30, *,
+                    window_start: datetime | None = None,
+                    window_end: datetime | None = None) -> dict:
         """Aggregate labels, outcomes and performance dimensions for a time window."""
         days = max(1, min(int(days), 365))
+        date_filter = "${date_filter}"
+        date_args: tuple = (days,)
+        if window_start is not None or window_end is not None:
+            if window_start is None or window_end is None or window_start >= window_end:
+                raise ValueError("stats requires both ordered window_start and window_end")
+            date_filter = "s.delivered_at >= $1 AND s.delivered_at < $2"
+            date_args = (window_start, window_end)
         async with self.pool.acquire() as conn:
             labels = await conn.fetch(
                 """SELECT f.category,COUNT(*) AS count
                    FROM journal_feedback f
                    JOIN signal_history s ON s.id=f.signal_id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY f.category ORDER BY count DESC,f.category""", days)
+                   WHERE s.status='SENT' AND ${date_filter}
+                   GROUP BY f.category ORDER BY count DESC,f.category""", *date_args)
             totals = await conn.fetchrow(
                 """WITH latest_feedback AS (
                      SELECT signal_id,category FROM (
@@ -473,7 +482,7 @@ class SignalJournal:
                      LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                      LEFT JOIN latest_feedback f ON f.signal_id=s.id
                      WHERE s.status='SENT'
-                       AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                       AND ${date_filter}
                    )
                    SELECT COUNT(*) AS delivered,
                           COUNT(*) FILTER (WHERE effective_result='WIN') AS wins,
@@ -485,15 +494,15 @@ class SignalJournal:
                           ROUND(AVG(realized_r)::numeric,3) AS avg_net_realized_r,
                           ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
                           ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
-                   FROM labeled""", days)
+                   FROM labeled""", *date_args)
             by_side = await conn.fetch(
                 """SELECT s.direction,COUNT(*) AS signals,
                           COUNT(*) FILTER (WHERE o.result='WIN') AS auto_wins,
                           COUNT(*) FILTER (WHERE o.result='LOSS') AS auto_losses,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY s.direction ORDER BY s.direction""", days)
+                   WHERE s.status='SENT' AND ${date_filter}
+                   GROUP BY s.direction ORDER BY s.direction""", *date_args)
             by_symbol = await conn.fetch(
                 """SELECT s.symbol,s.direction,COUNT(*) AS signals,
                           COUNT(*) FILTER (WHERE o.result='WIN') AS wins,
@@ -501,20 +510,20 @@ class SignalJournal:
                           COUNT(*) FILTER (WHERE o.result='TIMEOUT') AS timeouts,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY s.symbol,s.direction ORDER BY s.symbol,s.direction""", days)
+                   WHERE s.status='SENT' AND ${date_filter}
+                   GROUP BY s.symbol,s.direction ORDER BY s.symbol,s.direction""", *date_args)
             by_hour = await conn.fetch(
                 """SELECT EXTRACT(HOUR FROM s.delivered_at AT TIME ZONE 'UTC')::integer AS hour_utc,
                           COUNT(*) AS signals,ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY hour_utc ORDER BY hour_utc""", days)
+                   WHERE s.status='SENT' AND ${date_filter}
+                   GROUP BY hour_utc ORDER BY hour_utc""", *date_args)
             by_config = await conn.fetch(
                 """SELECT COALESCE(s.payload->>'config_version','unknown') AS config_version,
                           COUNT(*) AS signals,ROUND(AVG(o.realized_r)::numeric,3) AS avg_net_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
-                   WHERE s.status='SENT' AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
-                   GROUP BY 1 ORDER BY 1""", days)
+                   WHERE s.status='SENT' AND ${date_filter}
+                   GROUP BY 1 ORDER BY 1""", *date_args)
         totals_dict = dict(totals) if totals else {}
         manual = int(totals_dict.get("manual_labels") or 0)
         false_labels = int(totals_dict.get("false_labels") or 0)
@@ -1160,7 +1169,7 @@ class SignalJournal:
             "window_days": round((window_end-window_start).total_seconds()/86400, 2),
             "resolved_sample": len(samples),
             "manual_label_conflicts": conflicts,
-            "totals": await self.stats(days),
+            "totals": await self.stats(days, window_start=window_start, window_end=window_end),
             "best_symbols": eligible_symbols[:3],
             "worst_symbols": list(reversed(eligible_symbols[-3:])),
             "weakest_parameter_bucket": weakest,
