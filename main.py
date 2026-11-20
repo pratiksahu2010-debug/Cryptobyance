@@ -11,6 +11,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -43,6 +44,61 @@ CONCURRENCY = settings.concurrency
 COOLDOWN_CANDLES = settings.signal_cooldown_candles
 TIMEFRAME = settings.timeframe
 CONTEXT_TF = settings.context_timeframe
+
+RUNTIME_CONFIG_KEYS = (
+    "scan_interval_seconds", "concurrency", "signal_cooldown_candles",
+    "timeframe", "context_timeframe", "adx_min", "ema_fast", "ema_slow",
+    "rsi_period", "adx_period", "rsi_long_min", "rsi_long_max",
+    "rsi_short_min", "rsi_short_max", "context_rsi_midline",
+    "swing_lookback_bars", "tp1_r", "tp2_r", "atr_stop_multiplier",
+    "min_risk_reward", "outcome_horizon_bars", "outcome_cost_pct",
+    "training_min_samples", "training_min_bucket_samples", "log_level",
+)
+
+
+def _runtime_config_payload(runtime_settings) -> dict:
+    return {key: getattr(runtime_settings, key) for key in RUNTIME_CONFIG_KEYS}
+
+
+def apply_runtime_config(config_payload: dict, version: str) -> None:
+    """Hot-reload approved settings consistently across imported strategy modules."""
+    global settings, CONFIG_VERSION, COOLDOWN_CANDLES, CONCURRENCY, TIMEFRAME, CONTEXT_TF, LOG_LEVEL
+    import config as config_module
+    import strategy as strategy_module
+    import candidate_store as candidate_store_module
+    import journal as journal_module
+
+    values = {key: config_payload[key] for key in RUNTIME_CONFIG_KEYS if key in config_payload}
+    updated = replace(settings, **values)
+    if (updated.rsi_long_min >= updated.rsi_long_max
+            or updated.rsi_short_min >= updated.rsi_short_max
+            or updated.tp2_r <= updated.tp1_r):
+        raise ValueError("approved runtime configuration has invalid RSI or target bands")
+
+    settings = updated
+    CONFIG_VERSION = str(version)
+    config_module.settings = updated
+    config_module.CONFIG_VERSION = str(version)
+    strategy_module.settings = updated
+    strategy_module.ADX_MIN = updated.adx_min
+    strategy_module.EMA_FAST = updated.ema_fast
+    strategy_module.EMA_SLOW = updated.ema_slow
+    strategy_module.RSI_PERIOD = updated.rsi_period
+    strategy_module.ADX_PERIOD = updated.adx_period
+    strategy_module.ATR_STOP_MULT = updated.atr_stop_multiplier
+    strategy_module.MIN_RR = updated.min_risk_reward
+    candidate_store_module.settings = updated
+    journal_module.ADX_MIN = updated.adx_min
+    journal_module.ATR_STOP_MULT = updated.atr_stop_multiplier
+    journal_module.MIN_RR = updated.min_risk_reward
+    COOLDOWN_CANDLES = updated.signal_cooldown_candles
+    CONCURRENCY = updated.concurrency
+    TIMEFRAME = updated.timeframe
+    CONTEXT_TF = updated.context_timeframe
+    LOG_LEVEL = updated.log_level
+    logging.getLogger().setLevel(updated.log_level)
+    state["config_version"] = str(version)
+
 
 state: dict[str, Any] = {
     "started_at": time.time(), "session_started_at": None, "scans": 0, "last_scan": None,
@@ -413,6 +469,12 @@ async def scanner_session() -> None:
     try:
         journal_service = SignalJournal(candidate_store)
         await journal_service.initialize()
+        await journal_service.ensure_initial_config(
+            CONFIG_VERSION, _runtime_config_payload(settings)
+        )
+        active_config = await journal_service.active_config()
+        if active_config:
+            apply_runtime_config(active_config["config"], active_config["version"])
     except BaseException:
         await candidate_store.close()
         raise
