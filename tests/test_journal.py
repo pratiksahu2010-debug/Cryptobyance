@@ -7,6 +7,7 @@ class JournalSchemaTests(unittest.TestCase):
     def test_journal_tables_are_additive_and_auditable(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_feedback", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_candidates", JOURNAL_DDL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS training_proposals", JOURNAL_DDL)
         self.assertIn("UNIQUE(symbol,direction,candle_open_ms)", JOURNAL_DDL)
         self.assertIn("ON DELETE RESTRICT", JOURNAL_DDL)
 

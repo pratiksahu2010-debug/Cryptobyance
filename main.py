@@ -802,6 +802,18 @@ async def journal_manual_observation(payload: ManualObservationRequest, request:
     return {"saved": True, "candidate_id": candidate_id}
 
 
+@app.post("/journal/api/train")
+async def run_offline_training(request: Request):
+    require_journal_token(request)
+    return await get_journal().train()
+
+
+@app.get("/journal/api/proposals")
+async def list_training_proposals(request: Request, limit: int = 20):
+    require_journal_token(request)
+    return await get_journal().training_proposals(limit)
+
+
 @app.post("/journal/api/training-instructions")
 async def add_training_instruction(payload: TrainingInstructionRequest, request: Request):
     require_journal_token(request)
@@ -996,7 +1008,34 @@ async def telegram_webhook(request: Request):
         command = tokens[0].split("@", 1)[0].lower()
         journal = get_journal()
         try:
-            if command == "/stats":
+            if command == "/train":
+                proposal = await journal.train()
+                if proposal.get("status") == "PROPOSED":
+                    message_text = (
+                        f"Training proposal #{proposal['proposal_id']} · {proposal['proposed_config_version']}\\n"
+                        f"Base: {proposal['base_config_version']} · Samples: {proposal['summary']['sample_count']}\\n"
+                        f"Changes: {json.dumps(proposal['changes'], separators=(',', ':'))}\\n"
+                        f"Expected OOS net R: {proposal['expected_effect']['out_of_sample']['expectancy_r']}\\n"
+                        "Not activated. Human approval is required."
+                    )
+                else:
+                    message_text = (
+                        f"Training: {proposal.get('status')}\\n"
+                        f"Samples: {proposal.get('summary', {}).get('sample_count', 0)}\\n"
+                        f"{proposal.get('reason', 'No proposal was generated.')}"
+                    )
+                await _telegram_send_message(chat_id, message_text[:4000])
+            elif command == "/proposals":
+                proposals = await journal.training_proposals(10)
+                if not proposals:
+                    message_text = "No training proposals are stored."
+                else:
+                    message_text = "Training proposals:\\n" + "\\n".join(
+                        f"#{x['id']} {x['status']} {x['base_config_version']}→{x['proposed_config_version']} · {x['changes']}"
+                        for x in proposals
+                    )
+                await _telegram_send_message(chat_id, message_text[:4000])
+            elif command == "/stats":
                 days = int(tokens[1]) if len(tokens) > 1 else 30
                 if not 1 <= days <= 365:
                     raise ValueError("days must be between 1 and 365")
@@ -1036,7 +1075,7 @@ async def telegram_webhook(request: Request):
             elif command == "/export":
                 await _telegram_send_csv(chat_id, await journal.entries(5000))
             else:
-                await _telegram_send_message(chat_id, "Commands: /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
+                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
             return {"ok": True, "command": command}
         except (ValueError, LookupError) as exc:
             await _telegram_send_message(chat_id, f"Command error: {exc}")

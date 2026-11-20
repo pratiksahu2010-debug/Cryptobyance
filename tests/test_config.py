@@ -16,6 +16,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.ema_slow, 21)
         self.assertEqual(settings.outcome_horizon_bars, 12)
         self.assertEqual(settings.outcome_cost_pct, 0.10)
+        self.assertEqual(settings.training_min_samples, 100)
+        self.assertEqual(settings.training_min_bucket_samples, 30)
 
     def test_rejects_unsupported_timeframes(self):
         with patch.dict("os.environ", {"TIMEFRAME": "1m"}, clear=True):
@@ -38,6 +40,9 @@ class SettingsTests(unittest.TestCase):
                 Settings.from_env()
         with patch.dict("os.environ", {"OUTCOME_COST_PCT": "-0.1"}, clear=True):
             with self.assertRaisesRegex(ValueError, "OUTCOME_COST_PCT"):
+                Settings.from_env()
+        with patch.dict("os.environ", {"TRAINING_MIN_SAMPLES": "10"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "TRAINING_MIN_SAMPLES"):
                 Settings.from_env()
 
     def test_secrets_are_not_in_settings_repr(self):
