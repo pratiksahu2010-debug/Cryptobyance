@@ -171,7 +171,19 @@ class SQLiteConnection:
         return SQLiteTransaction(self)
 
     def _execute_one(self, sql: str, args: tuple[Any, ...] = ()):
-        query, params = _translate_sql(sql, args)
+        # DDL scripts may put a SQL comment immediately before an ALTER TABLE.
+        # Strip leading comments before translation so the idempotent
+        # ADD COLUMN guard can recognize the statement and inspect PRAGMA.
+        source = str(sql).strip()
+        # Strip leading SQL comments before recognizing idempotent ALTERs.
+        # Keep real newline escapes in the regex (not literal backslash-n).
+        source = re.sub(
+            r"\\A\\s*(?:(?:--[^\\r\\n]*(?:\\r?\\n|\\Z))|(?:/\\*.*?\\*/\\s*))*",
+            "",
+            source,
+            flags=re.DOTALL,
+        ).lstrip()
+        query, params = _translate_sql(source, args)
         if not query:
             return None
         match = re.match(

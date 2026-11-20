@@ -36,6 +36,14 @@ class FakePool:
 
 
 class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_outcome_columns_are_added_before_constraints_reference_them(self):
+        first_hit_column = DDL.index("ADD COLUMN IF NOT EXISTS first_hit TEXT")
+        first_hit_constraint = DDL.index("ADD CONSTRAINT signal_outcomes_first_hit_check")
+        result_column = DDL.index("ADD COLUMN IF NOT EXISTS result TEXT")
+        result_constraint = DDL.index("ADD CONSTRAINT signal_outcomes_result_check")
+        self.assertLess(first_hit_column, first_hit_constraint)
+        self.assertLess(result_column, result_constraint)
+
     async def test_shadow_signal_table_is_part_of_store_migration(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS shadow_signal_history", DDL)
         self.assertIn("UNIQUE(proposal_version,symbol,direction,candle_open_ms)", DDL)
