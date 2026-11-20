@@ -1070,11 +1070,20 @@ class SignalJournal:
             result.append(item)
         return result
 
-    async def build_weekly_digest(self, days: int = 7) -> dict:
-        """Summarize last week's outcomes and weakest sufficiently sampled feature bucket."""
+    async def build_weekly_digest(self, window_start: datetime | None = None,
+                                  window_end: datetime | None = None) -> dict:
+        """Summarize a completed UTC week and its weakest sufficiently sampled feature bucket."""
+        from config import settings
         from trainer import _analysis_buckets, prepare_samples
 
-        days = max(1, min(int(days), 14))
+        window_end = window_end or datetime.now(timezone.utc)
+        window_start = window_start or (window_end - timedelta(days=7))
+        if window_start.tzinfo is None:
+            window_start = window_start.replace(tzinfo=timezone.utc)
+        if window_end.tzinfo is None:
+            window_end = window_end.replace(tzinfo=timezone.utc)
+        if window_start >= window_end:
+            raise ValueError("weekly digest window_start must be earlier than window_end")
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT s.id AS signal_id,s.direction,s.candle_open_ms,
@@ -1085,11 +1094,11 @@ class SignalJournal:
                    FROM signal_history s
                    JOIN signal_outcomes o ON o.signal_id=s.id
                    WHERE s.status='SENT'
-                     AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                     AND s.delivered_at >= $1 AND s.delivered_at < $2
                      AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
                      AND o.result IN ('WIN','LOSS','TIMEOUT')
                      AND o.realized_r IS NOT NULL
-                   ORDER BY s.candle_open_ms,s.id""", days)
+                   ORDER BY s.candle_open_ms,s.id""", window_start, window_end)
             symbols = await conn.fetch(
                 """SELECT s.symbol,COUNT(*) AS resolved,
                           COUNT(*) FILTER (WHERE o.result='WIN') AS wins,
@@ -1098,11 +1107,11 @@ class SignalJournal:
                           ROUND(AVG(o.realized_r)::numeric,3) AS expectancy_r
                    FROM signal_history s JOIN signal_outcomes o ON o.signal_id=s.id
                    WHERE s.status='SENT'
-                     AND s.delivered_at >= NOW()-($1 * INTERVAL '1 day')
+                     AND s.delivered_at >= $1 AND s.delivered_at < $2
                      AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
                      AND o.realized_r IS NOT NULL
                    GROUP BY s.symbol HAVING COUNT(*) >= 3
-                   ORDER BY expectancy_r DESC,s.symbol""", days)
+                   ORDER BY expectancy_r DESC,s.symbol""", window_start, window_end)
         dataset = []
         for row in rows:
             payload = json.loads(row["payload"]) if row["payload"] else {}
@@ -1145,7 +1154,9 @@ class SignalJournal:
                     weakest = candidate
         eligible_symbols = [dict(row) for row in symbols]
         return {
-            "window_days": days,
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "window_days": round((window_end-window_start).total_seconds()/86400, 2),
             "resolved_sample": len(samples),
             "manual_label_conflicts": conflicts,
             "totals": await self.stats(days),
