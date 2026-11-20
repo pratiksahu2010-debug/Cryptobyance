@@ -161,13 +161,25 @@ async def process_shadow_symbol(candidate_store, journal, symbol: str,
             if key in RUNTIME_CONFIG_KEYS
         }
         shadow_settings = replace(settings, **config_values)
-        if (shadow_settings.timeframe != "5m" or shadow_settings.context_timeframe != "15m"
+        shadow_numeric = (
+            shadow_settings.adx_min, shadow_settings.rsi_long_min,
+            shadow_settings.rsi_long_max, shadow_settings.rsi_short_min,
+            shadow_settings.rsi_short_max, shadow_settings.tp1_r,
+            shadow_settings.tp2_r, shadow_settings.atr_stop_multiplier,
+            shadow_settings.min_risk_reward, shadow_settings.outcome_cost_pct,
+        )
+        if (not all(math.isfinite(float(value)) for value in shadow_numeric)
+                or shadow_settings.timeframe != "5m"
+                or shadow_settings.context_timeframe != "15m"
+                or not 0.01 <= shadow_settings.adx_min <= 100
                 or shadow_settings.ema_fast >= shadow_settings.ema_slow
-                or shadow_settings.rsi_long_min >= shadow_settings.rsi_long_max
-                or shadow_settings.rsi_short_min >= shadow_settings.rsi_short_max
-                or shadow_settings.tp2_r <= shadow_settings.tp1_r
-                or shadow_settings.signal_cooldown_candles < 1):
-            raise ValueError("shadow proposal contains invalid strategy settings")
+                or not 0 <= shadow_settings.rsi_long_min < shadow_settings.rsi_long_max <= 100
+                or not 0 <= shadow_settings.rsi_short_min < shadow_settings.rsi_short_max <= 100
+                or shadow_settings.tp1_r <= 0 or shadow_settings.tp2_r <= shadow_settings.tp1_r
+                or shadow_settings.signal_cooldown_candles < 1
+                or not 0 <= shadow_settings.outcome_cost_pct <= 5
+                or not 1 <= shadow_settings.outcome_horizon_bars <= 288):
+            raise ValueError("shadow proposal contains invalid strategy or risk settings")
         strategy_key = f"shadow:{shadow['version']}"
         persisted = await candidate_store.load_symbol_states(strategy_key, symbol)
         armed_sides = {side for side, value in persisted.items() if value == "ARMED"}
