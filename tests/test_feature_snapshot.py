@@ -43,6 +43,7 @@ class FeatureSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["rsi14"], 56.0)
         self.assertAlmostEqual(snapshot["ema_spread_pct"], 1.0)
         self.assertAlmostEqual(snapshot["price_vwap_distance_pct"], 1.0)
+        self.assertAlmostEqual(snapshot["atr_pct_of_price"], 100.0 * 2.0 / 101.0)
         self.assertEqual(snapshot["bars_since_armed"], 2)
         self.assertEqual(snapshot["state_cycle_id"], 17)
         self.assertEqual(snapshot["config_version"], "v3")

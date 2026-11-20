@@ -259,7 +259,7 @@ The trainer refuses to generate a proposal below `TRAINING_MIN_SAMPLES=100` reso
 
 Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. Run a proposal in isolated shadow mode with `/shadow <id> [days]` (1–30 days), inspect it with `/shadow_status`, and stop it early with `/shadow_stop`. Shadow mode evaluates the same completed 5m/15m candles with a separate durable state-machine key, stores would-be signals in `shadow_signal_history`, and never inserts them into the Telegram outbox. Live thresholds remain unchanged. When the shadow period expires or is stopped, the proposal returns to `PROPOSED` so it can be explicitly approved or rejected. Then approve with `/approve <id>`, reject with `/reject <id>`, and restore the previous approved configuration with `/rollback`. The protected API equivalents are `POST /journal/api/proposals/{id}/approve`, `POST /journal/api/proposals/{id}/reject`, and `POST /journal/api/rollback`. Every activation and rollback is written to `config_history` and `config_history_events` with actor, time, reason, and previous version. The approved config is hot-reloaded in the running scanner and loaded again on restart; the Telegram chat ID must match the configured owner chat before these commands are accepted.
 
-EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual. Proposal reports also estimate baseline and candidate resolved signals per day on the chronological out-of-sample window; this is explicitly an estimate from resolved delivered signals, not a forecast of every future alert.
+EMA-spread, VWAP-distance, relative-volume, cooldown-bar, directional RSI-band, and UTC-hour buckets are reported as observational diagnostics. Cooldown and spread buckets are not proposed for live changes without replayable counterfactual evidence. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual. Proposal reports also estimate baseline and candidate resolved signals per day on the chronological out-of-sample window; this is explicitly an estimate from resolved delivered signals, not a forecast of every future alert.
 
 ## Weekly digest and database retention
 
@@ -283,7 +283,7 @@ Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By de
 
 ## Signal feature snapshot
 
-Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
+Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR and ATR% of price, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
 
 These fields are research telemetry only. They do not add entry gates or alter the live signal decision.
 
@@ -305,3 +305,17 @@ All endpoints require the configured `JOURNAL_API_TOKEN`. Only one shadow propos
 4. The first startup creates/migrates the local database. Keep the DB file private and back it up before deleting or replacing it.
 
 SQLite integration tests cover schema creation, durable state/idempotency, signal-to-outbox delivery, outcome creation, feedback, analytics, and config history. SQLite is a local convenience backend; do not copy its file into Render or share it across workers.
+
+
+## Known limitations and verification status
+
+- CI runs compile checks and synthetic/unit/integration tests. Live CoinDCX REST/WebSocket connectivity, Render deployment, production PostgreSQL migrations, and real Telegram delivery/webhook callbacks have not been verified from this development session.
+- The historical replay assumes entry at the signal candle close. It models an estimated round-trip percentage cost but does not model exchange-specific bid/ask spread, funding, market impact, partial fills, or latency. It is not an execution simulator.
+- Shadow mode records would-be signals using an isolated persisted state machine. It does not simulate exchange fills or send shadow alerts.
+- This CoinDCX crypto strategy has no separate index feed; `index_trend` is stored as `null`, while the completed 15m EMA trend is captured.
+- Trainer buckets are descriptive and require the configured minimum samples. Only bounded ADX/RSI threshold candidates are searched automatically; cooldown, EMA spread, VWAP distance, relative volume, and time-of-day remain diagnostics until a replayable counterfactual is available.
+- SQLite is a single-process local-development backend. Render must use PostgreSQL and one Uvicorn worker. Do not use the SQLite file for multiple workers or production replicas.
+- Weekly digests require valid Telegram credentials and chat configuration. Failed sends remain pending and are retried; without credentials they are retained but not delivered.
+- Retention defaults to 365 days for non-critical telemetry. Core signal history, outcomes, feedback, proposals, config history, and config audit events are not automatically deleted.
+
+See [CHANGELOG.md](CHANGELOG.md) for the implementation history.

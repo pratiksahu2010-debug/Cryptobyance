@@ -26,6 +26,7 @@ def build_indicator_snapshot(
     ema21 = float(current.ema21)
     vwap = float(current.vwap)
     close = float(current.close)
+    atr_value = float(current.atr) if pd.notna(current.atr) else None
     if ema21 == 0 or vwap == 0:
         raise ValueError("EMA21 and VWAP must be non-zero for percentage features")
 
@@ -58,7 +59,8 @@ def build_indicator_snapshot(
         "minus_di": float(current.minus_di) if pd.notna(current.minus_di) else None,
         "vwap": vwap,
         "price_vwap_distance_pct": 100.0 * (close - vwap) / vwap,
-        "atr14": float(current.atr) if pd.notna(current.atr) else None,
+        "atr14": atr_value,
+        "atr_pct_of_price": 100.0 * atr_value / close if atr_value is not None and close > 0 else None,
         "relative_volume_20": relative_volume,
         "macd_line": float(macd_line.iloc[-1]),
         "macd_signal": float(macd_signal.iloc[-1]),

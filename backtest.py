@@ -88,6 +88,11 @@ def build_replay_training_preview(trades: list[dict]) -> dict[str, Any]:
             "ema9": ema9, "ema21": ema21, "vwap": vwap,
             "close": entry,
             "hour_utc": (int(trade["signal_candle_open_ms"]) // 3_600_000) % 24,
+            "cooldown_candles": trade.get("cooldown_candles"),
+            "atr_pct_of_price": (
+                100.0 * float(trade["atr"]) / float(entry)
+                if trade.get("atr") is not None and entry not in (None, 0) else None
+            ),
         })
         if ema9 is not None and ema21 not in (None, 0):
             features["ema_spread_pct"] = 100.0 * (float(ema9) - float(ema21)) / float(ema21)
@@ -259,6 +264,7 @@ def run_backtest(
             "ema21": signal.get("ema21"),
             "vwap": signal.get("vwap"),
             "atr": signal.get("atr"),
+            "cooldown_candles": cooldown,
             "context": signal.get("context"),
             "diagnostics": signal.get("diagnostics"),
             "status": "OPEN",

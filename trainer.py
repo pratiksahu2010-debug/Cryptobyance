@@ -95,8 +95,15 @@ def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
     definitions = {
         "adx14": ([20, 25, 30], lambda x: x["adx"]),
         "rsi14": ([40, 50, 60, 70], lambda x: x["rsi"]),
+        "rsi_long_band": ([40, 50, 52, 60, 70], lambda x: (
+            x["rsi"] if x["direction"] == "LONG" else None
+        )),
+        "rsi_short_band": ([25, 30, 35, 42, 50], lambda x: (
+            x["rsi"] if x["direction"] == "SHORT" else None
+        )),
         "ema_spread_pct": ([0.05, 0.15, 0.30], lambda x: (
-            _finite(x["features"].get("ema_spread_pct")) if x["features"].get("ema_spread_pct") is not None
+            abs(_finite(x["features"].get("ema_spread_pct")))
+            if _finite(x["features"].get("ema_spread_pct")) is not None
             else (abs(_finite(x["features"].get("ema9")) - _finite(x["features"].get("ema21"))) /
                   abs(_finite(x["features"].get("ema21"))) * 100
                   if _finite(x["features"].get("ema9")) is not None
@@ -111,6 +118,7 @@ def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
                   and _finite(x["features"].get("vwap")) not in (None, 0) else None)
         )),
         "relative_volume_20": ([1, 1.5, 2], lambda x: _finite(x["features"].get("relative_volume_20"))),
+        "cooldown_candles": ([2, 3, 4, 5, 6, 8], lambda x: _finite(x["features"].get("cooldown_candles"))),
         "hour_utc": ([6, 12, 18], lambda x: float(x["hour_utc"]) if x["hour_utc"] is not None else None),
     }
     output = {}

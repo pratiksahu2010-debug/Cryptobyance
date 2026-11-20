@@ -20,6 +20,7 @@ def sample(index, *, adx=25.0, realized_r=1.0, manual_label=None):
         "ema_spread_pct": 0.2,
         "price_vwap_distance_pct": 0.1,
         "relative_volume_20": 1.6,
+        "cooldown_candles": 4,
     }
     return {
         "signal_id": index + 1,
@@ -86,9 +87,26 @@ class OfflineTrainerTests(unittest.TestCase):
             row["features"].pop("price_vwap_distance_pct", None)
         result = build_training_proposal(rows, CURRENT, min_bucket_samples=30)
         self.assertIn("vwap_distance_pct", result["summary"]["bucket_analysis"])
+        self.assertIn("cooldown_candles", result["summary"]["bucket_analysis"])
+        self.assertIn("rsi_long_band", result["summary"]["bucket_analysis"])
+        self.assertIn("rsi_short_band", result["summary"]["bucket_analysis"])
         self.assertEqual(
             result["summary"]["bucket_analysis"]["vwap_distance_pct"]["available_samples"], 0
         )
+
+    def test_analysis_covers_all_configurable_and_observational_parameters(self):
+        rows = [sample(i) for i in range(120)]
+        result = build_training_proposal(
+            rows, CURRENT, min_samples=100, min_bucket_samples=30
+        )
+        buckets = result["summary"]["bucket_analysis"]
+        for parameter in (
+            "adx14", "rsi14", "rsi_long_band", "rsi_short_band",
+            "cooldown_candles", "ema_spread_pct", "vwap_distance_pct",
+            "relative_volume_20", "hour_utc",
+        ):
+            self.assertIn(parameter, buckets)
+        self.assertGreater(buckets["cooldown_candles"]["available_samples"], 0)
 
     def test_bucket_statistics_are_suppressed_below_minimum(self):
         rows = [sample(i) for i in range(100)]
