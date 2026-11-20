@@ -1378,7 +1378,7 @@ async def telegram_webhook(request: Request):
             replied = message.get("reply_to_message") or {}
             replied_sender = replied.get("from") or {}
             replied_text = str(replied.get("text") or "")
-            signal_match = re.search(r"Signal ID:\\s*(\\d+)", replied_text)
+            signal_match = re.search(r"Signal ID:\s*(\d+)", replied_text)
             if command_text and replied_sender.get("is_bot") is True and signal_match:
                 signal_id = int(signal_match.group(1))
                 feedback_id = await get_journal().add_feedback(
