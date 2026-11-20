@@ -134,42 +134,51 @@ These fields are **observability data only**. They do not add entry filters, cha
 
 ## Delivered-signal outcome tracking
 
-Only Telegram-confirmed delivered alerts belong in PostgreSQL `signal_outcomes`; queued, retrying, or permanently failed alerts are excluded. On startup, the store repairs legacy rows by deleting outcomes for non-`SENT` alerts and backfilling missing outcome rows for delivered alerts. Outcome-row creation is committed atomically with the signal-history transition to `SENT`. For each delivered signal, subsequent completed 5m candles update maximum favourable excursion (MFE) and maximum adverse excursion (MAE), both in units of initial risk (R). The first stop/target resolution is recorded; a candle touching both levels is labelled `AMBIGUOUS` because OHLC data cannot establish which level traded first. A missing 5m interval sets `data_gap=true` and ends that outcome as `AMBIGUOUS`, because the bot cannot prove whether the stop or target was reached during the missing interval.
+Only Telegram-confirmed delivered alerts belong in PostgreSQL `signal_outcomes`; queued, retrying, or permanently failed alerts are excluded. Outcome-row creation is committed atomically with the signal-history transition to `SENT`. Existing delivered rows are backfilled on startup, with legacy target fields retained.
 
-Only alerts with `signal_history.status='SENT'` are included. The signal candle is excluded from outcome measurement because the assumed entry is its close. Open outcomes remain open until a stop or target is reached; there is no invented time-based exit. This is research telemetry, not simulated exchange fills, and it does not change signals or execute orders.
+Each delivered signal is measured over the next **12 completed 5m bars by default** (one hour). Configure `OUTCOME_HORIZON_BARS` to change the horizon. `OUTCOME_COST_PCT` is the estimated round-trip cost as a percentage of entry notional; the default `0.10` means 0.10%. Both values are snapshotted on each outcome row. Net realized R subtracts this estimated cost from the gross result.
+
+The tracker records MFE and MAE in R, percentage-of-entry terms, and ATR multiples (when entry ATR is available). It records the first barrier as `TP1`, `TP2`, or `SL`, the number of bars to resolution, and the result `WIN`, `LOSS`, or `TIMEOUT`. If a single OHLC candle touches the stop and either target, the outcome is conservatively recorded as an `SL / LOSS`. If neither target nor stop is reached within the configured horizon, the final close is used for a cost-adjusted mark-to-market R and the result is `TIMEOUT`. A missing 5m interval is marked `AMBIGUOUS` with `data_gap=true`; the bot does not invent a path through missing candles.
+
+Only alerts with `signal_history.status='SENT'` are included. The signal candle is excluded because entry is assumed at its close. These are candle-based research estimates, not simulated exchange fills; they do not execute orders or change live strategy thresholds.
 
 Read-only summary query for Render PostgreSQL:
 
 ```sql
 SELECT
-  status,
+  status, first_hit, result,
   COUNT(*) AS signals,
-  ROUND(AVG(realized_r)::numeric, 3) AS avg_realized_r,
+  ROUND(AVG(realized_r)::numeric, 3) AS avg_net_realized_r,
   ROUND(AVG(best_favorable_r)::numeric, 3) AS avg_mfe_r,
   ROUND(AVG(worst_adverse_r)::numeric, 3) AS avg_mae_r,
+  ROUND(AVG(best_favorable_pct)::numeric, 3) AS avg_mfe_pct,
+  ROUND(AVG(worst_adverse_pct)::numeric, 3) AS avg_mae_pct,
+  ROUND(AVG(best_favorable_atr)::numeric, 3) AS avg_mfe_atr,
+  ROUND(AVG(worst_adverse_atr)::numeric, 3) AS avg_mae_atr,
+  ROUND(AVG(bars_to_resolution)::numeric, 1) AS avg_bars_to_resolution,
   COUNT(*) FILTER (WHERE data_gap) AS signals_with_data_gaps
 FROM signal_outcomes
-GROUP BY status
-ORDER BY status;
+GROUP BY status, first_hit, result
+ORDER BY status, first_hit, result;
 ```
 
 Breakdown by symbol and direction:
 
 ```sql
 SELECT
-  symbol, direction, status, COUNT(*) AS signals,
-  ROUND(AVG(realized_r)::numeric, 3) AS avg_realized_r,
+  symbol, direction, status, first_hit, result, COUNT(*) AS signals,
+  ROUND(AVG(realized_r)::numeric, 3) AS avg_net_realized_r,
   ROUND(AVG(best_favorable_r)::numeric, 3) AS avg_mfe_r,
   ROUND(AVG(worst_adverse_r)::numeric, 3) AS avg_mae_r
 FROM signal_outcomes
-GROUP BY symbol, direction, status
-ORDER BY symbol, direction, status;
+GROUP BY symbol, direction, status, first_hit, result
+ORDER BY symbol, direction, status, first_hit, result;
 ```
 
 
 ### Performance report interpretation
 
-`/performance` reads aggregate metrics from the configured PostgreSQL connection used by the scanner and refreshes after each completed scan. `avg_realized_r` includes only TARGET and STOP_LOSS outcomes; OPEN and AMBIGUOUS rows are excluded. MFE/MAE are descriptive excursions, not realized returns. A candle gap or a bar touching both stop and target is AMBIGUOUS and is excluded from the realized-R average. These are candle-based research estimates assuming entry at the signal candle close; they are not actual exchange fills and do not include fees, slippage, funding or liquidation effects. Treat small samples as descriptive only, not proof of an edge.
+`/performance` reads aggregate metrics from the configured PostgreSQL connection used by the scanner and refreshes after each completed scan. `avg_realized_r` includes TARGET, STOP_LOSS and TIMEOUT outcomes; OPEN and AMBIGUOUS rows are excluded. Realized R is net of the configured estimated round-trip cost. MFE/MAE are descriptive excursions, not realized returns. A candle gap is AMBIGUOUS and excluded from the realized-R average. A bar touching both stop and target is conservatively counted as a LOSS. These are candle-based research estimates assuming entry at the signal candle close; they are not actual exchange fills; the configurable cost is an estimate and may not capture actual fees, slippage, funding or liquidation effects. Treat small samples as descriptive only, not proof of an edge.
 
 
 ## Self-learning signal journal
