@@ -119,7 +119,8 @@ class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["previous_version"], "v3")
         self.assertEqual(result["config"]["adx_min"], 20.0)
         self.assertEqual(conn.execute.await_count, 4)
-        self.assertIn("status='ACTIVE'", conn.execute.await_args_list[1].args[0])
+        self.assertIn("INSERT INTO config_history", conn.execute.await_args_list[1].args[0])
+        self.assertIn("'ACTIVE'", conn.execute.await_args_list[1].args[0])
 
 
 if __name__ == "__main__":
