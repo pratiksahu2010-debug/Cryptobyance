@@ -52,7 +52,9 @@ Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Pe
 
 ## Code architecture
 
-`DATABASE_URL` is required for durable signal history, duplicate protection, cooldowns and the Telegram outbox. It must be a PostgreSQL connection string for your chosen provider (for Neon, use the pooled connection string and require TLS, e.g. `sslmode=require`). Do not paste database credentials into source control. The new state machine does not use legacy pending-candidate rows; they are not promoted into delayed alerts. The candidate store does not place trades.
+For Render/production, set `DATABASE_URL` to a PostgreSQL connection string (for Neon, use the pooled connection string and require TLS, e.g. `sslmode=require`). Render deliberately fails startup if this value is missing; it must not silently fall back to an ephemeral local database.
+
+For local development, leaving `DATABASE_URL` empty selects the standard-library SQLite backend at `./cryptobyance-local.db`. Override the path with `LOCAL_SQLITE_PATH`, or set an explicit URL such as `DATABASE_URL=sqlite:///./dev.db` (absolute paths use four slashes, e.g. `sqlite:////tmp/cryptobyance.db`). SQLite runs with one serialized connection, WAL mode, and foreign-key checks. It supports local scanner state, signal/outbox delivery, outcomes, feedback, training and shadow records, but is intended for one local process only—not Render, multiple workers, or concurrent production replicas. Use PostgreSQL for production. Do not paste database credentials into source control. The new state machine does not use legacy pending-candidate rows; they are not promoted into delayed alerts. The candidate store does not place trades.
 
 The runtime is split by responsibility:
 - `config.py`: immutable, validated environment settings; secrets are excluded from its representation.
@@ -61,11 +63,12 @@ The runtime is split by responsibility:
 - `strategy.py`: pure OHLCV validation, indicators, per-direction setup/invalidation/RSI trigger evaluation, and risk levels.
 - `state_machine.py`: pure lifecycle transitions and PostgreSQL persistence for per-symbol/per-direction state.
 - `telegram.py`: alert formatting and bounded Telegram delivery retries with secret-safe logging.
-- `candidate_store.py`: PostgreSQL schema, state transitions, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
+- `candidate_store.py`: database schema, state transitions, signal history, durable cooldown, transactional Telegram outbox and scanner checkpoints.
+- `sqlite_store.py`: serialized, standard-library SQLite adapter used only for local development; PostgreSQL remains the production backend.
 
-### PostgreSQL persistence design
+### Persistence design
 
-PostgreSQL is the durable source of truth for bot workflow state:
+In production, PostgreSQL is the durable source of truth for bot workflow state. The local SQLite backend uses the same logical tables and workflow operations, but serializes access through one connection and omits PostgreSQL-only row/advisory lock syntax because its transaction begins with `BEGIN IMMEDIATE`.
 - `strategy_signal_states`: one durable IDLE/ARMED/COOLDOWN state per strategy, symbol and direction, with cycle ID, invalidation history and processed-candle checkpoint.
 - `strategy_state_events`: append-only transition audit log.
 - `signal_candidates`: legacy pending-candidate table retained for compatibility; the current state machine does not promote its rows.
@@ -286,3 +289,13 @@ These fields are research telemetry only. They do not add entry gates or alter t
 - `POST /journal/api/shadow/stop` ends the run and returns the proposal to `PROPOSED`.
 
 All endpoints require the configured `JOURNAL_API_TOKEN`. Only one shadow proposal can run at a time. Shadow state is isolated by proposal config version; it does not share live cooldown or state-cycle records.
+
+
+### Local SQLite quick start
+
+1. Copy `.env.example` to `.env`.
+2. Leave `DATABASE_URL` empty for the default `./cryptobyance-local.db`, or set `LOCAL_SQLITE_PATH` to another file.
+3. Install dependencies and run `uvicorn main:app --reload`.
+4. The first startup creates/migrates the local database. Keep the DB file private and back it up before deleting or replacing it.
+
+SQLite integration tests cover schema creation, durable state/idempotency, signal-to-outbox delivery, outcome creation, feedback, analytics, and config history. SQLite is a local convenience backend; do not copy its file into Render or share it across workers.
