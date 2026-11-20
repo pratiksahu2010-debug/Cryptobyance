@@ -98,15 +98,8 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_status_check;
-ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_status_check
- CHECK(status IN ('OPEN','TARGET','STOP_LOSS','TIMEOUT','AMBIGUOUS'));
-ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_first_hit_check;
-ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_first_hit_check
- CHECK(first_hit IS NULL OR first_hit IN ('TP1','TP2','SL','TIMEOUT','AMBIGUOUS'));
-ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_result_check;
-ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_result_check
- CHECK(result IS NULL OR result IN ('WIN','LOSS','TIMEOUT'));
+-- Add compatibility columns before constraints that reference them. This is
+-- required when upgrading an existing database created before first_hit/result.
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS target1 DOUBLE PRECISION;
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS target2 DOUBLE PRECISION;
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS atr_at_entry DOUBLE PRECISION;
@@ -121,6 +114,16 @@ ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_atr DOUBLE PR
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS bars_to_resolution INTEGER;
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS best_favorable_candle_open_ms BIGINT;
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_candle_open_ms BIGINT;
+
+ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_status_check;
+ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_status_check
+ CHECK(status IN ('OPEN','TARGET','STOP_LOSS','TIMEOUT','AMBIGUOUS'));
+ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_first_hit_check;
+ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_first_hit_check
+ CHECK(first_hit IS NULL OR first_hit IN ('TP1','TP2','SL','TIMEOUT','AMBIGUOUS'));
+ALTER TABLE signal_outcomes DROP CONSTRAINT IF EXISTS signal_outcomes_result_check;
+ALTER TABLE signal_outcomes ADD CONSTRAINT signal_outcomes_result_check
+ CHECK(result IS NULL OR result IN ('WIN','LOSS','TIMEOUT'));
 UPDATE signal_outcomes SET target1=target WHERE target1 IS NULL;
 UPDATE signal_outcomes SET target2=target WHERE target2 IS NULL;
 CREATE INDEX IF NOT EXISTS ix_signal_outcomes_symbol_status
