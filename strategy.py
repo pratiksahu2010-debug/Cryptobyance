@@ -299,6 +299,9 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     return {
         "side": side, "entry": entry, "stop": stop,
         "target": target2, "target1": target1, "target2": target2,
+        "risk_model": "swing_structure", "risk_distance": risk,
+        "risk_pct": 100.0 * risk / entry,
+        "target1_r": settings.tp1_r, "target2_r": settings.tp2_r,
         "rr": settings.tp2_r, "rsi": float(c.rsi), "adx": float(c.adx),
         "ema9": float(c.ema9), "ema21": float(c.ema21), "vwap": float(c.vwap),
         "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
@@ -328,6 +331,16 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict
     side = signal["side"]
     signal["stop"] = entry - risk if side == "LONG" else entry + risk
     signal["target"] = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
+    # Keep the legacy single-target contract, but make all supplemental
+    # target fields use the same ATR risk model rather than leaking the
+    # swing-based levels produced by evaluate_setup().
+    signal["target1"] = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
+    signal["target2"] = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
+    signal["risk_model"] = "legacy_atr"
+    signal["risk_distance"] = risk
+    signal["risk_pct"] = 100.0 * risk / entry
+    signal["target1_r"] = settings.tp1_r
+    signal["target2_r"] = settings.tp2_r
     signal["rr"] = MIN_RR
     return signal
 
