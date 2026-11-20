@@ -5,6 +5,7 @@ This module has no exchange, network, Telegram, or application lifecycle code.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,35 @@ MIN_RR = settings.min_risk_reward
 # Global entry-quality guards: avoid chasing an established/extended move.
 MAX_EMA_ALIGNMENT_AGE_BARS = 3
 MAX_ENTRY_EXTENSION_ATR = 1.0
+
+
+@contextmanager
+def using_runtime_settings(runtime_settings):
+    """Temporarily evaluate strategy functions with another immutable config.
+
+    The context must contain no await points: strategy evaluation is synchronous,
+    so the event loop cannot interleave another symbol scan while globals are
+    overridden. All module-level strategy constants are restored in finally.
+    """
+    global settings, ADX_MIN, EMA_FAST, EMA_SLOW, RSI_PERIOD, ADX_PERIOD
+    global ATR_STOP_MULT, MIN_RR
+    previous = (
+        settings, ADX_MIN, EMA_FAST, EMA_SLOW, RSI_PERIOD, ADX_PERIOD,
+        ATR_STOP_MULT, MIN_RR,
+    )
+    try:
+        settings = runtime_settings
+        ADX_MIN = runtime_settings.adx_min
+        EMA_FAST = runtime_settings.ema_fast
+        EMA_SLOW = runtime_settings.ema_slow
+        RSI_PERIOD = runtime_settings.rsi_period
+        ADX_PERIOD = runtime_settings.adx_period
+        ATR_STOP_MULT = runtime_settings.atr_stop_multiplier
+        MIN_RR = runtime_settings.min_risk_reward
+        yield
+    finally:
+        (settings, ADX_MIN, EMA_FAST, EMA_SLOW, RSI_PERIOD, ADX_PERIOD,
+         ATR_STOP_MULT, MIN_RR) = previous
 
 
 def candles_to_frame(raw: list) -> pd.DataFrame:
