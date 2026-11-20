@@ -170,22 +170,30 @@ class CandidateStore:
                     await conn.execute(
                         """INSERT INTO signal_outcomes(
                                signal_id,symbol,direction,signal_candle_open_ms,
-                               entry,stop,target,risk_per_unit,last_observed_candle_open_ms
+                               entry,stop,target,target1,target2,atr_at_entry,
+                               risk_per_unit,outcome_horizon_bars,cost_pct,
+                               last_observed_candle_open_ms
                            )
                            SELECT s.id,s.symbol,s.direction,s.candle_open_ms,
                                   (s.payload->>'entry')::double precision,
                                   (s.payload->>'stop')::double precision,
                                   (s.payload->>'target')::double precision,
+                                  COALESCE(NULLIF(s.payload->>'target1','')::double precision,
+                                           (s.payload->>'target')::double precision),
+                                  COALESCE(NULLIF(s.payload->>'target2','')::double precision,
+                                           (s.payload->>'target')::double precision),
+                                  NULLIF(s.payload->>'atr','')::double precision,
                                   ABS((s.payload->>'entry')::double precision -
                                       (s.payload->>'stop')::double precision),
-                                  s.candle_open_ms
+                                  $1,$2,s.candle_open_ms
                            FROM signal_history s
                            WHERE s.status='SENT'
                              AND NULLIF(s.payload->>'entry','') IS NOT NULL
                              AND NULLIF(s.payload->>'stop','') IS NOT NULL
                              AND NULLIF(s.payload->>'target','') IS NOT NULL
                              AND ABS((s.payload->>'entry')::double precision - (s.payload->>'stop')::double precision) > 0
-                           ON CONFLICT(signal_id) DO NOTHING"""
+                           ON CONFLICT(signal_id) DO NOTHING""",
+                        settings.outcome_horizon_bars, settings.outcome_cost_pct
                     )
             return cls(pool)
         except BaseException:
