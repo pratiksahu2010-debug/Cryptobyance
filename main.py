@@ -1138,6 +1138,29 @@ async def telegram_webhook(request: Request):
                         for x in proposals
                     )
                 await _telegram_send_message(chat_id, message_text[:4000])
+            elif command == "/approve":
+                if len(tokens) != 2:
+                    raise ValueError("Usage: /approve <proposal_id>")
+                approved = await journal.approve_proposal(int(tokens[1]), chat_id)
+                apply_runtime_config(approved["config"], approved["version"])
+                await _telegram_send_message(
+                    chat_id,
+                    f"Approved proposal #{tokens[1]}. Active config is now {approved['version']}; "
+                    f"previous version {approved['previous_version']}.",
+                )
+            elif command == "/reject":
+                if len(tokens) != 2:
+                    raise ValueError("Usage: /reject <proposal_id>")
+                rejected = await journal.reject_proposal(int(tokens[1]), chat_id)
+                await _telegram_send_message(chat_id, f"Proposal #{tokens[1]} rejected.")
+            elif command == "/rollback":
+                rolled = await journal.rollback_config(chat_id)
+                apply_runtime_config(rolled["config"], rolled["version"])
+                await _telegram_send_message(
+                    chat_id,
+                    f"Runtime configuration rolled back to {rolled['version']} "
+                    f"(replaced {rolled['previous_version']}).",
+                )
             elif command == "/stats":
                 days = int(tokens[1]) if len(tokens) > 1 else 30
                 if not 1 <= days <= 365:
@@ -1178,7 +1201,7 @@ async def telegram_webhook(request: Request):
             elif command == "/export":
                 await _telegram_send_csv(chat_id, await journal.entries(5000))
             else:
-                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
+                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /approve <id>, /reject <id>, /rollback, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
             return {"ok": True, "command": command}
         except (ValueError, LookupError) as exc:
             await _telegram_send_message(chat_id, f"Command error: {exc}")
