@@ -918,6 +918,11 @@ class SignalJournal:
                     raise LookupError("training proposal not found")
                 if proposal["status"] != "PROPOSED":
                     raise ValueError("only a PROPOSED item can be approved")
+                shadow = await conn.fetchrow(
+                    """SELECT config_version FROM config_history
+                       WHERE status='SHADOW' AND shadow_until > NOW() FOR UPDATE""")
+                if shadow:
+                    raise ValueError("stop the active shadow test before approving another proposal")
                 active = await conn.fetchrow(
                     """SELECT config_version,config::text AS config
                        FROM config_history WHERE status='ACTIVE' FOR UPDATE""")
@@ -992,6 +997,11 @@ class SignalJournal:
                 active = await conn.fetchrow(
                     """SELECT config_version,config::text AS config,previous_version
                        FROM config_history WHERE status='ACTIVE' FOR UPDATE""")
+                shadow = await conn.fetchrow(
+                    """SELECT config_version FROM config_history
+                       WHERE status='SHADOW' AND shadow_until > NOW() FOR UPDATE""")
+                if shadow:
+                    raise ValueError("stop the active shadow test before rolling back live settings")
                 if active is None or not active["previous_version"]:
                     raise LookupError("no previous approved configuration is available")
                 previous = await conn.fetchrow(
