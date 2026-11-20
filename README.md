@@ -320,3 +320,8 @@ SQLite integration tests cover schema creation, durable state/idempotency, signa
 - Retention defaults to 365 days for non-critical telemetry. Core signal history, outcomes, feedback, proposals, config history, and config audit events are not automatically deleted.
 
 See [CHANGELOG.md](CHANGELOG.md) for the implementation history.
+
+
+## Source archive
+
+Every push to `main` produces a GitHub Actions artifact named `Cryptobyance-source` containing the complete source tree, tests, `.env.example`, `render.yaml`, schema/migration definitions, README, and changelog. Real `.env` files and Python cache files are excluded. The artifact is retained by GitHub Actions for 30 days.
