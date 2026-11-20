@@ -88,11 +88,11 @@ class TelegramReplyNoteTests(unittest.IsolatedAsyncioTestCase):
             client_cm = AsyncMock()
             client = client_cm.__aenter__.return_value
             client.post = AsyncMock()
-            with patch.dict("os.environ", {"TELEGRAM_WEBHOOK_SECRET": "test-secret"}), \\
+            with patch.dict("os.environ", {"TELEGRAM_WEBHOOK_SECRET": "test-secret"}), \
                  patch.object(main, "settings", replace(
                      old_settings, telegram_bot_token="token", telegram_chat_id="123"
-                 )), \\
-                 patch.object(main, "get_journal", return_value=journal), \\
+                 )), \
+                 patch.object(main, "get_journal", return_value=journal), \
                  patch("main.httpx.AsyncClient", return_value=client_cm):
                 result = await main.telegram_webhook(FakeRequest(update))
             self.assertEqual(result["feedback_id"], 501)
@@ -114,10 +114,10 @@ class TelegramReplyNoteTests(unittest.IsolatedAsyncioTestCase):
         }
         old_settings = main.settings
         try:
-            with patch.dict("os.environ", {"TELEGRAM_WEBHOOK_SECRET": "test-secret"}), \\
+            with patch.dict("os.environ", {"TELEGRAM_WEBHOOK_SECRET": "test-secret"}), \
                  patch.object(main, "settings", replace(
                      old_settings, telegram_bot_token="token", telegram_chat_id="123"
-                 )), \\
+                 )), \
                  patch.object(main, "get_journal", return_value=journal):
                 result = await main.telegram_webhook(FakeRequest(update))
             self.assertTrue(result["ignored"])
