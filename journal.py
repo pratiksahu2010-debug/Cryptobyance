@@ -465,7 +465,9 @@ class SignalJournal:
             rows = await conn.fetch(
                 """SELECT s.id,s.symbol,s.direction,s.created_at,s.delivered_at,
                           s.payload::text AS payload,o.status AS outcome_status,
-                          o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                          o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
+                          o.best_favorable_pct,o.worst_adverse_pct,
+                          o.best_favorable_atr,o.worst_adverse_atr,
                           (SELECT json_agg(json_build_object(
                               'id',f.id,'category',f.category,'comment',f.comment,
                               'source',f.source,'created_at',f.created_at)
