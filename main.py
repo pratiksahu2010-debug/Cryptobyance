@@ -131,7 +131,7 @@ state: dict[str, Any] = {
     "websocket_events_received": 0, "last_websocket_pair": None,
     "websocket_connect_errors": 0, "last_websocket_error": None, "websocket_disconnects": 0,
     "websocket_candle_fresh": False, "scanner_restarts": 0,
-    "telegram_configured": False, "database_connected": False,
+    "telegram_configured": False, "telegram_webhook_registered": False, "database_connected": False,
     "outcome_tracking_errors": 0, "outcome_rows_updated": 0,
     "performance_report_errors": 0, "performance_summary": None,
 }
@@ -908,15 +908,65 @@ async def scanner() -> None:
             await asyncio.sleep(delay)
 
 
+async def register_telegram_webhook() -> bool:
+    """Register Telegram message and inline-button updates on Render startup."""
+    token = str(settings.telegram_bot_token or "").strip()
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    service_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if not token or not secret or not service_url:
+        state["telegram_webhook_registered"] = False
+        log.warning(
+            "Telegram webhook auto-registration skipped token_configured=%s secret_configured=%s render_url_configured=%s",
+            bool(token), bool(secret), bool(service_url),
+        )
+        return False
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"https://api.telegram.org/bot{token}/setWebhook",
+                json={
+                    "url": f"{service_url}/telegram/webhook",
+                    "secret_token": secret,
+                    "allowed_updates": ["message", "callback_query"],
+                    "drop_pending_updates": False,
+                },
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        registered = (
+            200 <= response.status_code < 300
+            and isinstance(payload, dict)
+            and payload.get("ok") is True
+        )
+        state["telegram_webhook_registered"] = registered
+        if registered:
+            log.info("Telegram webhook registered with message and callback_query updates")
+        else:
+            error_code = payload.get("error_code") if isinstance(payload, dict) else None
+            log.error("Telegram webhook registration rejected status=%s error_code=%s",
+                      response.status_code, error_code)
+        return registered
+    except Exception as exc:
+        state["telegram_webhook_registered"] = False
+        log.error("Telegram webhook registration failed error_type=%s", type(exc).__name__)
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(scanner(), name="market-scanner")
-    yield
-    task.cancel()
+    await register_telegram_webhook()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(title="CoinDCX Crypto Signal Bot", version="2.0.0", lifespan=lifespan)
 
@@ -959,6 +1009,7 @@ def build_health_payload() -> dict[str, Any]:
         "stale_candle_sample": state["stale_candle_sample"],
         "signals_sent": state["signals_sent"],
         "telegram_delivery_failures": state["telegram_delivery_failures"],
+        "telegram_webhook_registered": state["telegram_webhook_registered"],
         "last_telegram_success": state["last_telegram_success"],
         "telegram_configured": state["telegram_configured"], "database_connected": state["database_connected"],
         "signals_queued": state.get("signals_queued", 0),
@@ -1545,14 +1596,25 @@ async def telegram_webhook(request: Request):
     callback = update.get("callback_query")
     if not isinstance(callback, dict):
         return {"ok": True, "ignored": True}
+    callback_message = callback.get("message") or {}
+    callback_chat = callback_message.get("chat") or {}
+    callback_chat_id = str(callback_chat.get("id", ""))
+    if not callback_chat_id or callback_chat_id != str(settings.telegram_chat_id):
+        return {"ok": True, "ignored": True}
+
     parts = str(callback.get("data", "")).split("|")
     if len(parts) != 3 or parts[0] != "jfb":
         return {"ok": True, "ignored": True}
+    feedback_id = None
     try:
         signal_id = int(parts[1])
         feedback_id = await get_journal().add_telegram_feedback(signal_id, parts[2])
     except (ValueError, LookupError):
         feedback_id = None
+    except Exception as exc:
+        log.exception("Telegram feedback persistence failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Feedback could not be saved; Telegram may retry")
+
     token = settings.telegram_bot_token
     callback_id = callback.get("id")
     if token and callback_id:
@@ -1560,10 +1622,18 @@ async def telegram_webhook(request: Request):
             async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.post(
                     f"https://api.telegram.org/bot{token}/answerCallbackQuery",
-                    json={"callback_query_id": callback_id, "text": "Feedback saved" if feedback_id else "Feedback not saved"},
+                    json={
+                        "callback_query_id": callback_id,
+                        "text": "Feedback saved" if feedback_id else "Feedback not saved",
+                    },
                 )
         except Exception:
             log.warning("Telegram callback acknowledgement failed")
+    if feedback_id:
+        log.info("Telegram feedback saved signal_id=%s feedback_id=%s category=%s",
+                 signal_id, feedback_id, parts[2])
+    else:
+        log.warning("Telegram feedback was not saved signal_id=%s category=%s", parts[1], parts[2])
     return {"ok": True, "feedback_id": feedback_id}
 
 
