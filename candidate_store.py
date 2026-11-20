@@ -536,18 +536,26 @@ class CandidateStore:
                     await conn.execute(
                         """INSERT INTO signal_outcomes(
                                signal_id,symbol,direction,signal_candle_open_ms,
-                               entry,stop,target,risk_per_unit,last_observed_candle_open_ms
+                               entry,stop,target,target1,target2,atr_at_entry,
+                               risk_per_unit,outcome_horizon_bars,cost_pct,
+                               last_observed_candle_open_ms
                            )
                            SELECT id,symbol,direction,candle_open_ms,
                                   (payload->>'entry')::double precision,
                                   (payload->>'stop')::double precision,
                                   (payload->>'target')::double precision,
+                                  COALESCE(NULLIF(payload->>'target1','')::double precision,
+                                           (payload->>'target')::double precision),
+                                  COALESCE(NULLIF(payload->>'target2','')::double precision,
+                                           (payload->>'target')::double precision),
+                                  NULLIF(payload->>'atr','')::double precision,
                                   ABS((payload->>'entry')::double precision -
                                       (payload->>'stop')::double precision),
-                                  candle_open_ms
+                                  $2,$3,candle_open_ms
                            FROM signal_history WHERE id=$1
                            ON CONFLICT(signal_id) DO NOTHING""",
-                        row["signal_id"])
+                        row["signal_id"], settings.outcome_horizon_bars,
+                        settings.outcome_cost_pct)
 
     async def retry_outbox(self, outbox_id: int, attempts: int, error_type: str):
         async with self.pool.acquire() as conn:
