@@ -91,7 +91,8 @@ class TelegramNotifier:
             + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
-            + f"<b>15m trend filter: {escape(str(signal.get('context', 'unavailable')))} (mandatory direction confirmation)</b>"
+            + f"<b>15m trend filter: {escape(str(signal.get('context', 'unavailable')))} (mandatory direction confirmation)</b>\n"
+            + (f"<b>15m RSI(14): <code>{float(signal['context_rsi14']):.1f}</code> · {'supportive' if signal.get('context_rsi_aligned') else 'not supportive'}</b> (confidence only; does not block signal)\n" if signal.get('context_rsi14') is not None else "15m RSI: unavailable (confidence only)\n")
             + signal_ref
             + "\n\n<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
