@@ -271,3 +271,9 @@ python backtest.py --candles-5m data/BTCUSDT_5m.csv --candles-15m data/BTCUSDT_1
 ```
 
 Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By default the replay uses the current runtime ADX/RSI settings, cooldown, 12-bar outcome horizon, and estimated round-trip cost. A 15m candle is visible only after its close is at or before the current 5m candle close; no future 15m data is used. Entries are assumed at the signal candle close, outcomes are measured only on later 5m candles, and the summary reports net expectancy, win/loss/timeout counts, profit factor, max drawdown, and MFE/MAE. Results are historical estimates, not exchange fills.
+
+## Signal feature snapshot
+
+Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
+
+These fields are research telemetry only. They do not add entry gates or alter the live signal decision.
