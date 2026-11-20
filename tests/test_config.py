@@ -18,6 +18,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.outcome_cost_pct, 0.10)
         self.assertEqual(settings.training_min_samples, 100)
         self.assertEqual(settings.training_min_bucket_samples, 30)
+        self.assertEqual(settings.db_retention_days, 365)
 
     def test_rejects_unsupported_timeframes(self):
         with patch.dict("os.environ", {"TIMEFRAME": "1m"}, clear=True):
@@ -43,6 +44,11 @@ class SettingsTests(unittest.TestCase):
                 Settings.from_env()
         with patch.dict("os.environ", {"TRAINING_MIN_SAMPLES": "10"}, clear=True):
             with self.assertRaisesRegex(ValueError, "TRAINING_MIN_SAMPLES"):
+                Settings.from_env()
+
+    def test_rejects_unsafe_database_retention_period(self):
+        with patch.dict("os.environ", {"DB_RETENTION_DAYS": "1"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "DB_RETENTION_DAYS"):
                 Settings.from_env()
 
     def test_secrets_are_not_in_settings_repr(self):
