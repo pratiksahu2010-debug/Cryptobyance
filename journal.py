@@ -443,8 +443,13 @@ class SignalJournal:
                    GROUP BY f.category ORDER BY count DESC,f.category""", days)
             totals = await conn.fetchrow(
                 """WITH latest_feedback AS (
-                     SELECT DISTINCT ON (signal_id) signal_id,category
-                     FROM journal_feedback ORDER BY signal_id,created_at DESC,id DESC
+                     SELECT signal_id,category FROM (
+                       SELECT signal_id,category,
+                              ROW_NUMBER() OVER (
+                                PARTITION BY signal_id ORDER BY created_at DESC,id DESC
+                              ) AS feedback_rank
+                       FROM journal_feedback
+                     ) ranked_feedback WHERE feedback_rank=1
                    ), labeled AS (
                      SELECT s.id,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
                             f.category,
