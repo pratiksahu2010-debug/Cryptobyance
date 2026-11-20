@@ -710,6 +710,24 @@ class SignalJournal:
                     raise RuntimeError("active runtime config is not initialized")
                 if active["config_version"] != proposal["base_config_version"]:
                     raise ValueError("proposal is stale; run /train again against the current config")
+                expired_shadow = await conn.fetchrow(
+                    """SELECT config_version,previous_version FROM config_history
+                       WHERE status='SHADOW' AND shadow_until <= NOW() FOR UPDATE""")
+                if expired_shadow:
+                    await conn.execute(
+                        """UPDATE config_history SET status='INACTIVE',deactivated_at=NOW()
+                           WHERE config_version=$1""", expired_shadow["config_version"])
+                    await conn.execute(
+                        """UPDATE training_proposals SET status='PROPOSED',
+                               reviewer_note='Shadow period expired; awaiting human approval',
+                               reviewed_at=NULL
+                           WHERE proposed_config_version=$1 AND status='SHADOW'""",
+                        expired_shadow["config_version"])
+                    await conn.execute(
+                        """INSERT INTO config_history_events(
+                             action,config_version,previous_version,actor,reason)
+                           VALUES('SHADOW_EXPIRE',$1,$2,'system','Configured shadow duration elapsed')""",
+                        expired_shadow["config_version"], expired_shadow["previous_version"])
                 existing_shadow = await conn.fetchrow(
                     """SELECT config_version FROM config_history
                        WHERE status='SHADOW' AND shadow_until > NOW() FOR UPDATE""")
@@ -750,13 +768,17 @@ class SignalJournal:
     async def active_shadow_config(self) -> dict | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT config_version,config::text AS config,shadow_until
-                   FROM config_history WHERE status='SHADOW' AND shadow_until > NOW()
-                   ORDER BY created_at DESC LIMIT 1""")
+                """SELECT c.config_version,c.config::text AS config,c.shadow_until,
+                          p.id AS proposal_id
+                   FROM config_history c
+                   JOIN training_proposals p ON p.proposed_config_version=c.config_version
+                   WHERE c.status='SHADOW' AND c.shadow_until > NOW() AND p.status='SHADOW'
+                   ORDER BY c.created_at DESC LIMIT 1""")
         if row is None:
             return None
         config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
         return {"version": row["config_version"], "config": config,
+                "proposal_id": int(row["proposal_id"]),
                 "shadow_until": row["shadow_until"].isoformat()}
 
     async def stop_shadow(self, actor: str, reason: str = "Shadow test stopped") -> dict:
