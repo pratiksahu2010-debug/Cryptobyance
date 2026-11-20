@@ -87,6 +87,21 @@ CREATE TABLE IF NOT EXISTS training_daily_reviews (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(window_start,window_end)
 );
+CREATE TABLE IF NOT EXISTS training_proposals (
+    id BIGSERIAL PRIMARY KEY,
+    base_config_version TEXT NOT NULL,
+    proposed_config_version TEXT NOT NULL,
+    proposed_config JSONB NOT NULL,
+    changes JSONB NOT NULL,
+    metrics JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PROPOSED'
+      CHECK(status IN ('PROPOSED','APPROVED','REJECTED','ROLLED_BACK')),
+    reviewer_note TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_training_proposals_status_created
+ ON training_proposals(status,created_at DESC);
 """
 
 FEEDBACK_CATEGORIES = {
@@ -551,6 +566,106 @@ class SignalJournal:
         return {"id": int(row["id"]), "status": row["status"],
                 "reviewed_at": row["reviewed_at"].isoformat(),
                 "live_strategy_changed": False}
+
+    async def train(self) -> dict:
+        """Run the bounded offline trainer and persist only valid proposals."""
+        from config import settings, CONFIG_VERSION
+        from trainer import build_training_proposal
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.id AS signal_id,s.direction,s.candle_open_ms,
+                          s.payload::text AS payload,o.result AS auto_result,
+                          o.realized_r,
+                          (SELECT f.category FROM journal_feedback f
+                           WHERE f.signal_id=s.id
+                           ORDER BY f.created_at DESC,f.id DESC LIMIT 1) AS manual_label
+                   FROM signal_history s
+                   JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT'
+                     AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
+                     AND o.result IN ('WIN','LOSS','TIMEOUT')
+                     AND o.realized_r IS NOT NULL
+                   ORDER BY s.candle_open_ms DESC,s.id DESC
+                   LIMIT 10000"""
+            )
+        dataset = []
+        for row in reversed(rows):
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            features = dict(payload.get("indicator_snapshot") or payload.get("diagnostics") or {})
+            ema9 = features.get("ema9")
+            ema21 = features.get("ema21")
+            close = features.get("close")
+            vwap = features.get("vwap")
+            try:
+                if ema9 is not None and ema21 not in (None, 0):
+                    features["ema_spread_pct"] = abs(float(ema9)-float(ema21)) / abs(float(ema21)) * 100
+                if close is not None and vwap not in (None, 0):
+                    features["price_vwap_distance_pct"] = (float(close)-float(vwap)) / abs(float(vwap)) * 100
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+            features["hour_utc"] = (int(row["candle_open_ms"]) // 3_600_000) % 24
+            dataset.append({
+                "signal_id": int(row["signal_id"]),
+                "direction": row["direction"],
+                "candle_open_ms": int(row["candle_open_ms"]),
+                "features": features,
+                "auto_result": row["auto_result"],
+                "realized_r": float(row["realized_r"]),
+                "manual_label": row["manual_label"],
+            })
+
+        current = {
+            "adx_min": settings.adx_min,
+            "rsi_long_min": settings.rsi_long_min,
+            "rsi_long_max": settings.rsi_long_max,
+            "rsi_short_min": settings.rsi_short_min,
+            "rsi_short_max": settings.rsi_short_max,
+        }
+        proposal = build_training_proposal(
+            dataset, current, base_config_version=CONFIG_VERSION,
+            min_samples=settings.training_min_samples,
+            min_bucket_samples=settings.training_min_bucket_samples,
+        )
+        if proposal.get("status") != "PROPOSED":
+            return proposal
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO training_proposals(
+                     base_config_version,proposed_config_version,proposed_config,changes,metrics
+                   ) VALUES($1,$2,$3::jsonb,$4::jsonb,$5::jsonb) RETURNING id""",
+                proposal["base_config_version"], proposal["proposed_config_version"],
+                json.dumps(proposal["proposed_config"], separators=(",", ":"), allow_nan=False),
+                json.dumps(proposal["changes"], separators=(",", ":"), allow_nan=False),
+                json.dumps({
+                    "summary": proposal["summary"],
+                    "expected_effect": proposal["expected_effect"],
+                    "confidence_note": proposal["confidence_note"],
+                }, separators=(",", ":"), allow_nan=False),
+            )
+        proposal["proposal_id"] = int(row["id"])
+        return proposal
+
+    async def training_proposals(self, limit: int = 20) -> list[dict]:
+        limit = max(1, min(int(limit), 100))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id,base_config_version,proposed_config_version,
+                          proposed_config::text AS proposed_config,
+                          changes::text AS changes,metrics::text AS metrics,
+                          status,reviewer_note,created_at,reviewed_at
+                   FROM training_proposals
+                   ORDER BY created_at DESC,id DESC LIMIT $1""", limit)
+        result = []
+        for row in rows:
+            item = dict(row)
+            for field in ("proposed_config", "changes", "metrics"):
+                item[field] = json.loads(item[field]) if item[field] else {}
+            item["created_at"] = item["created_at"].isoformat() if item["created_at"] else None
+            item["reviewed_at"] = item["reviewed_at"].isoformat() if item["reviewed_at"] else None
+            result.append(item)
+        return result
 
     async def daily_training_review(self) -> dict:
         async with self.pool.acquire() as conn:
