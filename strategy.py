@@ -353,15 +353,23 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
         return None
     context_ema_fast = df15["close"].ewm(span=EMA_FAST, adjust=False).mean().iloc[-1]
     context_ema_slow = df15["close"].ewm(span=EMA_SLOW, adjust=False).mean().iloc[-1]
+    if not all(pd.notna(v) and np.isfinite(float(v)) for v in (context_ema_fast, context_ema_slow)):
+        # Missing higher-timeframe data must defer the scan, not invalidate a setup.
+        return None
     context_long = float(context_ema_fast) > float(context_ema_slow)
     context_short = float(context_ema_fast) < float(context_ema_slow)
     common = float(c.adx) >= ADX_MIN
     long_setup = common and float(c.plus_di) > float(c.minus_di) and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap) and context_long
     short_setup = common and float(c.minus_di) > float(c.plus_di) and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap) and context_short
+    # In addition to 5m invalidation, a completed 15m EMA reversal (or loss
+    # of directional alignment) invalidates an already-ARMED setup. Equality
+    # invalidates both sides so a flat 15m context cannot keep stale setups alive.
     long_invalid = (float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
-                    or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di))
+                    or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di)
+                    or not context_long)
     short_invalid = (float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
-                     or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di))
+                     or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di)
+                     or not context_short)
     long_trigger = (long_setup and "LONG" in armed_sides and pd.notna(p.rsi) and pd.notna(c.rsi)
                     and float(p.rsi) < settings.rsi_long_min
                     and settings.rsi_long_min <= float(c.rsi) <= settings.rsi_long_max)

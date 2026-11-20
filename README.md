@@ -16,7 +16,7 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 **ARMED trigger (a later closed 5m bar):**
 - LONG: RSI crosses upward through `RSI_LONG_MIN` (default 52) and closes inside `RSI_LONG_MIN..RSI_LONG_MAX` (default 52..70).
 - SHORT: RSI crosses downward through `RSI_SHORT_MAX` (default 42) and closes inside `RSI_SHORT_MIN..RSI_SHORT_MAX` (default 30..42).
-- A trigger is accepted only while the setup remains valid. Any EMA9/EMA21 cross against the direction, close crossing VWAP against the direction, ADX below minimum, or DI cross against the direction invalidates an ARMED setup.
+- A trigger is accepted only while the setup remains valid. Any 5m EMA9/EMA21 cross against the direction, close crossing VWAP against the direction, ADX below minimum, DI cross against the direction, or completed 15m EMA9/EMA21 reversal/loss of directional alignment invalidates an ARMED setup. If 15m EMA values are unavailable or invalid, state processing is deferred rather than falsely invalidating the setup.
 
 **Cooldown and re-arming:** `SIGNAL_COOLDOWN_CANDLES` defaults to 4 (20 minutes on 5m). After the bar count expires, the direction remains in COOLDOWN-WAIT until its setup has invalidated at least once during or after cooldown. It then returns to IDLE; a later qualifying candle must arm it again before another alert is possible. State and the processed-candle checkpoint persist across restarts. Reprocessing the same/older candle is a no-op. Signal history, state transition, cooldown and Telegram outbox are committed transactionally.
 
