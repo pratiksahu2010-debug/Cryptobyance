@@ -254,7 +254,7 @@ Run `/train` in the configured Telegram chat or call the protected `POST /journa
 
 The trainer refuses to generate a proposal below `TRAINING_MIN_SAMPLES=100` resolved labeled signals. Bucket metrics are suppressed below `TRAINING_MIN_BUCKET_SAMPLES=30`. It searches only bounded, stricter variants of the currently active ADX and RSI-band filters, selects candidates on the older 70% of the chronological dataset, and requires positive expectancy improvement in both sequential out-of-sample folds. It reports train/test metrics, expectancy gap, retained sample size, manual-label conflicts, and feature-bucket analysis. It will return an explicit insufficient-data or no-OOS-improvement result rather than guessing.
 
-Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. Approve explicitly with `/approve <id>`, reject with `/reject <id>`, and restore the previous approved configuration with `/rollback`. The protected API equivalents are `POST /journal/api/proposals/{id}/approve`, `POST /journal/api/proposals/{id}/reject`, and `POST /journal/api/rollback`. Every activation and rollback is written to `config_history` and `config_history_events` with actor, time, reason, and previous version. The approved config is hot-reloaded in the running scanner and loaded again on restart; the Telegram chat ID must match the configured owner chat before these commands are accepted.
+Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. Run a proposal in isolated shadow mode with `/shadow <id> [days]` (1–30 days), inspect it with `/shadow_status`, and stop it early with `/shadow_stop`. Shadow mode evaluates the same completed 5m/15m candles with a separate durable state-machine key, stores would-be signals in `shadow_signal_history`, and never inserts them into the Telegram outbox. Live thresholds remain unchanged. When the shadow period expires or is stopped, the proposal returns to `PROPOSED` so it can be explicitly approved or rejected. Then approve with `/approve <id>`, reject with `/reject <id>`, and restore the previous approved configuration with `/rollback`. The protected API equivalents are `POST /journal/api/proposals/{id}/approve`, `POST /journal/api/proposals/{id}/reject`, and `POST /journal/api/rollback`. Every activation and rollback is written to `config_history` and `config_history_events` with actor, time, reason, and previous version. The approved config is hot-reloaded in the running scanner and loaded again on restart; the Telegram chat ID must match the configured owner chat before these commands are accepted.
 
 EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual.
 
@@ -277,3 +277,12 @@ Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By de
 Each delivered signal stores a versioned point-in-time `indicator_snapshot` alongside the production setup diagnostics. The snapshot includes current and previous RSI, EMA9/EMA21 and signed EMA spread percentage, price-to-VWAP percentage distance, ADX, DI values, ATR, relative volume, MACD, 15m market trend/context RSI, UTC time and weekday, bars since arming, armed-candle timestamp, durable state-cycle ID, cooldown setting, and config version. For this crypto strategy, `index_trend` is explicitly `null`; the available market-direction context is the completed 15m EMA trend.
 
 These fields are research telemetry only. They do not add entry gates or alter the live signal decision.
+
+
+### Shadow mode API
+
+- `POST /journal/api/proposals/{id}/shadow?days=3` starts a shadow run.
+- `GET /journal/api/shadow` returns the active proposal, expiry, and would-be signal counts.
+- `POST /journal/api/shadow/stop` ends the run and returns the proposal to `PROPOSED`.
+
+All endpoints require the configured `JOURNAL_API_TOKEN`. Only one shadow proposal can run at a time. Shadow state is isolated by proposal config version; it does not share live cooldown or state-cycle records.

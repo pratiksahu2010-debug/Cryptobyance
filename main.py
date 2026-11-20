@@ -23,6 +23,7 @@ from pydantic import BaseModel
 load_dotenv()
 
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
+import strategy as strategy_module
 from strategy import evaluate_setup, evaluate_state_inputs, indicators, timeframe_milliseconds, validate_ohlcv
 from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
 from candidate_store import CandidateStore
@@ -137,6 +138,92 @@ state: dict[str, Any] = {
 last_alert: dict[str, tuple[str, int]] = {}
 last_seen_candle: dict[str, int] = {}
 journal_service: SignalJournal | None = None
+shadow_runtime_config: dict | None = None
+
+async def process_shadow_symbol(candidate_store, journal, symbol: str,
+                                df5, df15, candle_open_ms: int) -> None:
+    """Advance an isolated proposal state machine and persist would-be alerts only."""
+    global shadow_runtime_config
+    shadow = shadow_runtime_config
+    if not shadow:
+        return
+    try:
+        expiry = datetime.fromisoformat(shadow["shadow_until"])
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            shadow_runtime_config = None
+            await journal.expire_shadow_if_needed()
+            log.info("shadow config expired version=%s", shadow["version"])
+            return
+        config_values = {
+            key: value for key, value in shadow["config"].items()
+            if key in RUNTIME_CONFIG_KEYS
+        }
+        shadow_settings = replace(settings, **config_values)
+        shadow_numeric = (
+            shadow_settings.adx_min, shadow_settings.rsi_long_min,
+            shadow_settings.rsi_long_max, shadow_settings.rsi_short_min,
+            shadow_settings.rsi_short_max, shadow_settings.tp1_r,
+            shadow_settings.tp2_r, shadow_settings.atr_stop_multiplier,
+            shadow_settings.min_risk_reward, shadow_settings.outcome_cost_pct,
+        )
+        if (not all(math.isfinite(float(value)) for value in shadow_numeric)
+                or shadow_settings.timeframe != "5m"
+                or shadow_settings.context_timeframe != "15m"
+                or not 0.01 <= shadow_settings.adx_min <= 100
+                or shadow_settings.ema_fast >= shadow_settings.ema_slow
+                or not 0 <= shadow_settings.rsi_long_min < shadow_settings.rsi_long_max <= 100
+                or not 0 <= shadow_settings.rsi_short_min < shadow_settings.rsi_short_max <= 100
+                or shadow_settings.tp1_r <= 0 or shadow_settings.tp2_r <= shadow_settings.tp1_r
+                or shadow_settings.signal_cooldown_candles < 1
+                or not 0 <= shadow_settings.outcome_cost_pct <= 5
+                or not 1 <= shadow_settings.outcome_horizon_bars <= 288):
+            raise ValueError("shadow proposal contains invalid strategy or risk settings")
+        strategy_key = f"shadow:{shadow['version']}"
+        persisted = await candidate_store.load_symbol_states(strategy_key, symbol)
+        armed_sides = {side for side, value in persisted.items() if value == "ARMED"}
+        with strategy_module.using_runtime_settings(shadow_settings):
+            inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+        if inputs is None:
+            return
+        triggered_side = None
+        for side in ("LONG", "SHORT"):
+            item = inputs[side]
+            action = await candidate_store.advance_symbol_state(
+                strategy_key=strategy_key, symbol=symbol, direction=side,
+                candle_open_ms=candle_open_ms,
+                setup_valid=item["setup_valid"], invalidation=item["invalidation"],
+                trigger=item["trigger"],
+                cooldown_candles=shadow_settings.signal_cooldown_candles,
+            )
+            if action == "TRIGGER":
+                triggered_side = side
+        if triggered_side is None:
+            return
+        with strategy_module.using_runtime_settings(shadow_settings):
+            setup = evaluate_setup(df5, df15)
+        if not setup or setup.get("side") != triggered_side:
+            log.warning("shadow trigger lacked matching setup symbol=%s version=%s",
+                        symbol, shadow["version"])
+            return
+        signal = {key: value for key, value in setup.items() if key != "adx_satisfied"}
+        signal.update({
+            "symbol": symbol, "candle": int(candle_open_ms),
+            "config_version": shadow["version"],
+            "proposal_id": int(shadow["proposal_id"]),
+            "shadow": True,
+        })
+        recorded = await candidate_store.record_shadow_signal(
+            int(shadow["proposal_id"]), shadow["version"], signal
+        )
+        if recorded:
+            log.info("SHADOW SIGNAL symbol=%s side=%s version=%s candle=%s (not sent)",
+                     symbol, triggered_side, shadow["version"], candle_open_ms)
+    except Exception as exc:
+        log.warning("shadow evaluation failed symbol=%s error_type=%s",
+                    symbol, type(exc).__name__)
+
 
 
 class FeedbackRequest(BaseModel):
@@ -272,6 +359,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         df15 = candidate15
             except ValueError as context_error:
                 log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
+            # Shadow proposals run a separate durable state machine and never
+            # touch the live state, signal outbox, or Telegram notifier.
+            if candidate_store is not None and shadow_runtime_config:
+                await process_shadow_symbol(
+                    candidate_store, journal, display_symbol, df5, df15, closed_ts
+                )
             state_metadata = {}
             # Backward-compatible path for isolated scanner adapters/tests that
             # do not implement the v2 durable state API. The deployed
@@ -476,7 +569,7 @@ async def daily_training_review_loop(journal: SignalJournal) -> None:
 
 
 async def scanner_session() -> None:
-    global journal_service
+    global journal_service, shadow_runtime_config
     session_started_ms = int(time.time() * 1000)
     state['session_started_at'] = datetime.fromtimestamp(session_started_ms / 1000, timezone.utc).isoformat()
     pairs = {symbol: symbol_to_pair(symbol) for symbol in SYMBOLS}
@@ -494,6 +587,12 @@ async def scanner_session() -> None:
         active_config = await journal_service.active_config()
         if active_config:
             apply_runtime_config(active_config["config"], active_config["version"])
+        await journal_service.expire_shadow_if_needed()
+        shadow_runtime_config = await journal_service.active_shadow_config()
+        if shadow_runtime_config:
+            log.info("Loaded shadow config version=%s proposal_id=%s expires=%s",
+                     shadow_runtime_config["version"], shadow_runtime_config["proposal_id"],
+                     shadow_runtime_config["shadow_until"])
     except BaseException:
         await candidate_store.close()
         raise
@@ -908,6 +1007,47 @@ async def approve_training_proposal(proposal_id: int, request: Request):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.post("/journal/api/proposals/{proposal_id}/shadow")
+async def shadow_training_proposal(proposal_id: int, request: Request, days: int = 3):
+    global shadow_runtime_config
+    require_journal_token(request)
+    try:
+        result = await get_journal().start_shadow_proposal(
+            proposal_id, "journal_api", days=days
+        )
+        shadow_runtime_config = {
+            "proposal_id": result["id"], "version": result["version"],
+            "config": result["config"], "shadow_until": result["shadow_until"],
+        }
+        return {"shadow_started": True, **result}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/journal/api/shadow")
+async def get_shadow_status(request: Request):
+    require_journal_token(request)
+    active = await get_journal().active_shadow_config()
+    if not active:
+        return {"running": False, "signals": {"total": 0, "longs": 0, "shorts": 0, "symbols": 0}}
+    counts = await get_journal().shadow_signal_counts(active["version"])
+    return {"running": True, **active, "signals": counts}
+
+
+@app.post("/journal/api/shadow/stop")
+async def stop_shadow_training(request: Request):
+    global shadow_runtime_config
+    require_journal_token(request)
+    try:
+        result = await get_journal().stop_shadow("journal_api")
+        shadow_runtime_config = None
+        return {"shadow_stopped": True, **result}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/journal/api/proposals/{proposal_id}/reject")
 async def reject_training_proposal(proposal_id: int, request: Request):
     require_journal_token(request)
@@ -1108,6 +1248,7 @@ async def _telegram_send_csv(chat_id: str, entries: list[dict]) -> None:
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
+    global shadow_runtime_config
     expected = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
     supplied = request.headers.get("x-telegram-bot-api-secret-token", "")
     if not expected:
@@ -1157,6 +1298,42 @@ async def telegram_webhook(request: Request):
                         for x in proposals
                     )
                 await _telegram_send_message(chat_id, message_text[:4000])
+            elif command == "/shadow":
+                if len(tokens) not in (2, 3):
+                    raise ValueError("Usage: /shadow <proposal_id> [days]")
+                days = int(tokens[2]) if len(tokens) == 3 else 3
+                shadowed = await journal.start_shadow_proposal(
+                    int(tokens[1]), chat_id, days=days
+                )
+                shadow_runtime_config = {
+                    "proposal_id": shadowed["id"], "version": shadowed["version"],
+                    "config": shadowed["config"], "shadow_until": shadowed["shadow_until"],
+                }
+                await _telegram_send_message(
+                    chat_id,
+                    f"Shadow mode started for proposal #{tokens[1]} using {shadowed['version']} "
+                    f"until {shadowed['shadow_until']}. Live settings are unchanged; no shadow alerts are sent."
+                )
+            elif command == "/shadow_status":
+                active_shadow = await journal.active_shadow_config()
+                if not active_shadow:
+                    message_text = "No shadow proposal is running."
+                else:
+                    counts = await get_journal().shadow_signal_counts(active_shadow["version"])
+                    message_text = (
+                        f"Shadow {active_shadow['version']} (proposal #{active_shadow['proposal_id']})\\n"
+                        f"Expires: {active_shadow['shadow_until']}\\n"
+                        f"Would-be signals: {counts['total']} | LONG {counts['longs']} | "
+                        f"SHORT {counts['shorts']} | Symbols {counts['symbols']}\\n"
+                        "No shadow alerts were sent."
+                    )
+                await _telegram_send_message(chat_id, message_text)
+            elif command == "/shadow_stop":
+                stopped = await journal.stop_shadow(chat_id)
+                shadow_runtime_config = None
+                await _telegram_send_message(
+                    chat_id, f"Shadow {stopped['version']} stopped. Proposal is available for /approve or another shadow run."
+                )
             elif command == "/approve":
                 if len(tokens) != 2:
                     raise ValueError("Usage: /approve <proposal_id>")
@@ -1220,7 +1397,7 @@ async def telegram_webhook(request: Request):
             elif command == "/export":
                 await _telegram_send_csv(chat_id, await journal.entries(5000))
             else:
-                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /approve <id>, /reject <id>, /rollback, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
+                await _telegram_send_message(chat_id, "Commands: /train, /proposals, /shadow <id> [days], /shadow_status, /shadow_stop, /approve <id>, /reject <id>, /rollback, /stats [days], /pending, /relabel <signal_id> <GOOD|BAD|LATE|FAKE|SKIP>, /export")
             return {"ok": True, "command": command}
         except (ValueError, LookupError) as exc:
             await _telegram_send_message(chat_id, f"Command error: {exc}")
