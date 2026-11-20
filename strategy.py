@@ -246,7 +246,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         return None
     context_row = context_frame.iloc[-1]
     if not all(pd.notna(v) and np.isfinite(float(v))
-               for v in (context_row.ema9, context_row.ema21, context_row.rsi)):
+               for v in (context_row.ema9, context_row.ema21)):
         return None
     if float(context_row.ema9) > float(context_row.ema21):
         context = "15m bullish"
@@ -272,8 +272,12 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
     prev15 = context_frame.iloc[-4]
-    context_rsi = float(context_row.rsi)
-    context_rsi_aligned = context_rsi_is_aligned(side, context_rsi, settings.context_rsi_midline)
+    context_rsi_available = pd.notna(context_row.rsi) and np.isfinite(float(context_row.rsi))
+    context_rsi = float(context_row.rsi) if context_rsi_available else None
+    context_rsi_aligned = (
+        context_rsi_is_aligned(side, context_rsi, settings.context_rsi_midline)
+        if context_rsi_available else None
+    )
     diagnostics = {
         "version": 3,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
@@ -284,9 +288,9 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "adx14": float(c.adx),
         "atr_pct_of_price": 100.0 * atr_value / entry,
         "context_ema_spread_pct": 100.0 * (float(context_row.ema9) - float(context_row.ema21)) / float(context_row.ema21),
-        "context_rsi14": context_rsi,
         "context_rsi_midline": float(settings.context_rsi_midline),
-        "context_rsi_aligned": context_rsi_aligned,
+        **({"context_rsi14": context_rsi, "context_rsi_aligned": context_rsi_aligned}
+           if context_rsi_available else {}),
         "context_ema9_slope_pct_3bars": 100.0 * (float(context_row.ema9) - float(prev15.ema9)) / float(prev15.ema9),
     }
     if not all(np.isfinite(float(value)) for value in diagnostics.values()):
@@ -304,7 +308,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "context": context,
         "context_rsi14": context_rsi,
         "context_rsi_aligned": context_rsi_aligned,
-        "context_rsi_score": 1 if context_rsi_aligned else 0,
+        "context_rsi_score": (1 if context_rsi_aligned else 0) if context_rsi_available else None,
         "diagnostics": diagnostics,
     }
 
