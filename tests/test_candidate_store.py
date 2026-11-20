@@ -242,14 +242,22 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cleanup_expires_candidates_but_never_deletes_rows(self):
         conn = FakeConnection()
-        conn.execute.return_value = "UPDATE 2"
+        conn.execute.side_effect = ["UPDATE 2"] + ["DELETE 0"] * 6
         store = CandidateStore(FakePool(conn))
         result = await store.cleanup(now_ms=9_000_000)
-        self.assertEqual(result, {"expired": 2, "deleted": 0})
-        self.assertEqual(conn.execute.await_count, 1)
-        sql = conn.execute.await_args.args[0]
-        self.assertIn("SET status='EXPIRED'", sql)
-        self.assertNotIn("DELETE", sql.upper())
+        self.assertEqual(result["expired"], 2)
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual(result["retention_days"], 365)
+        self.assertEqual(conn.execute.await_count, 7)
+        self.assertIn("SET status='EXPIRED'", conn.execute.await_args_list[0].args[0])
+        deleted_tables = [call.args[0].split("FROM ", 1)[1].split()[0]
+                          for call in conn.execute.await_args_list[1:]]
+        self.assertEqual(deleted_tables, [
+            "strategy_state_events", "shadow_signal_history", "training_daily_reviews",
+            "training_weekly_digests", "telegram_outbox", "scanner_runtime",
+        ])
+        self.assertNotIn("signal_history", deleted_tables)
+        self.assertNotIn("signal_outcomes", deleted_tables)
 
     async def test_queued_signal_does_not_create_outcome_before_delivery(self):
         conn = FakeConnection(fetchrows=[None, None, None, {"id": 101}])
