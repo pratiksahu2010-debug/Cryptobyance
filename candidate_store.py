@@ -1,4 +1,4 @@
-"""Transactional PostgreSQL persistence for candidates, signals, cooldowns and Telegram outbox."""
+"""Transactional persistence for candidates, signals, cooldowns and Telegram outbox."""
 from __future__ import annotations
 
 import json
