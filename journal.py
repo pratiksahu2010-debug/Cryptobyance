@@ -709,6 +709,32 @@ class SignalJournal:
         config = json.loads(row["config"]) if isinstance(row["config"], str) else dict(row["config"])
         return {"version": row["config_version"], "config": config}
 
+    async def config_history(self, limit: int = 30) -> list[dict]:
+        limit = max(1, min(int(limit), 100))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT config_version,status,previous_version,approved_by,reason,
+                          created_at,activated_at,deactivated_at
+                   FROM config_history ORDER BY created_at DESC,config_version DESC LIMIT $1""",
+                limit)
+            events = await conn.fetch(
+                """SELECT action,config_version,previous_version,actor,reason,created_at
+                   FROM config_history_events ORDER BY created_at DESC,id DESC LIMIT $1""",
+                limit)
+        return {
+            "versions": [
+                {**dict(row),
+                 "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                 "activated_at": row["activated_at"].isoformat() if row["activated_at"] else None,
+                 "deactivated_at": row["deactivated_at"].isoformat() if row["deactivated_at"] else None}
+                for row in rows
+            ],
+            "events": [
+                {**dict(row), "created_at": row["created_at"].isoformat() if row["created_at"] else None}
+                for row in events
+            ],
+        }
+
     async def approve_proposal(self, proposal_id: int, actor: str,
                                reason: str = "Approved via Telegram") -> dict:
         actor = str(actor or "unknown")[:120]
