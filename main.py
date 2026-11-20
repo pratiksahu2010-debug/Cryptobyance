@@ -6,6 +6,7 @@ import csv
 import hmac
 import io
 import json
+import math
 import logging
 import os
 import time
@@ -70,10 +71,24 @@ def apply_runtime_config(config_payload: dict, version: str) -> None:
 
     values = {key: config_payload[key] for key in RUNTIME_CONFIG_KEYS if key in config_payload}
     updated = replace(settings, **values)
-    if (updated.rsi_long_min >= updated.rsi_long_max
-            or updated.rsi_short_min >= updated.rsi_short_max
-            or updated.tp2_r <= updated.tp1_r):
-        raise ValueError("approved runtime configuration has invalid RSI or target bands")
+    numeric_values = (
+        updated.adx_min, updated.rsi_long_min, updated.rsi_long_max,
+        updated.rsi_short_min, updated.rsi_short_max, updated.tp1_r,
+        updated.tp2_r, updated.atr_stop_multiplier, updated.min_risk_reward,
+        updated.outcome_cost_pct,
+    )
+    if not all(math.isfinite(float(value)) for value in numeric_values):
+        raise ValueError("approved runtime configuration contains non-finite values")
+    if (updated.timeframe != "5m" or updated.context_timeframe != "15m"
+            or not 0.01 <= updated.adx_min <= 100
+            or updated.ema_fast >= updated.ema_slow
+            or not 0 <= updated.rsi_long_min < updated.rsi_long_max <= 100
+            or not 0 <= updated.rsi_short_min < updated.rsi_short_max <= 100
+            or updated.tp1_r <= 0 or updated.tp2_r <= updated.tp1_r
+            or updated.signal_cooldown_candles < 1
+            or not 0 <= updated.outcome_cost_pct <= 5
+            or not 1 <= updated.outcome_horizon_bars <= 288):
+        raise ValueError("approved runtime configuration has invalid strategy or risk settings")
 
     settings = updated
     CONFIG_VERSION = str(version)
