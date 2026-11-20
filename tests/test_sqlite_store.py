@@ -58,9 +58,9 @@ class SQLitePersistenceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.store.finish_outbox(claimed["id"])
 
         summary = await self.store.performance_summary()
-        self.assertEqual(summary["delivered_signals"], 1)
-        self.assertEqual(summary["tracked_outcomes"], 1)
-        self.assertEqual(summary["open"], 1)
+        self.assertEqual(summary["totals"]["delivered_signals"], 1)
+        self.assertEqual(summary["totals"]["tracked_outcomes"], 1)
+        self.assertEqual(summary["totals"]["open"], 1)
 
         feedback_id = await self.journal.add_feedback(
             1, "GOOD_ENTRY", "SQLite integration feedback"
