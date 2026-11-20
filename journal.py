@@ -1128,9 +1128,9 @@ class SignalJournal:
                           ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
                    FROM journal_candidates GROUP BY status ORDER BY status""")
             reasons = await conn.fetch(
-                """SELECT reason,COUNT(*) AS count FROM journal_candidates c
+                """SELECT r.reason,COUNT(*) AS count FROM journal_candidates c
                    CROSS JOIN LATERAL jsonb_array_elements_text(c.rejection_reasons) AS r(reason)
-                   GROUP BY reason ORDER BY count DESC LIMIT 20""")
+                   GROUP BY r.reason ORDER BY count DESC LIMIT 20""")
         sample = (int(totals["targets"] or 0) + int(totals["stop_losses"] or 0)
                   + int(totals["timeouts"] or 0))
         recommendations = []
