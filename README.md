@@ -261,6 +261,12 @@ Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to revie
 
 EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual.
 
+## Weekly digest and database retention
+
+A weekly digest is generated for the last completed UTC week and sent to the configured Telegram chat on Monday shortly after 00:00 UTC. It reports resolved sample count, win rate, expectancy after configured costs, false-signal rate, best/worst symbols (minimum three resolved samples), and the weakest sufficiently sampled feature bucket. Digests are persisted before delivery and retried after failures/restarts; they never change live settings.
+
+`DB_RETENTION_DAYS` (default 365, allowed 30–3650) prunes only non-critical telemetry: state transition events, shadow signal rows, daily/weekly research summaries after successful send, sent Telegram outbox rows, and stale scanner checkpoints. Signal history, outcomes, feedback, proposals, configuration history, and configuration audit events are retained indefinitely.
+
 ## Historical replay / backtest
 
 The repository includes a deterministic replay CLI that uses the same production `evaluate_state_inputs`, `advance_state`, `evaluate_setup`, and forward outcome labeler. It does not connect to CoinDCX, Telegram, or a broker and never places orders.
