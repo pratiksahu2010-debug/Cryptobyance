@@ -1,0 +1,34 @@
+name: Package source archive
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build source ZIP
+        run: |
+          zip -r /tmp/Cryptobyance-main.zip . \
+            -x ".git/*" \
+               ".env" \
+               "*/.env" \
+               "*/__pycache__/*" \
+               "*.pyc" \
+               ".pytest_cache/*"
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cryptobyance-source
+          path: /tmp/Cryptobyance-main.zip
+          if-no-files-found: error
+          retention-days: 30
