@@ -103,7 +103,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 The existing Render web service remains attached to this repository's `main` branch. Keep one Uvicorn worker because the scanner and websocket cache are in-process. Configure `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID` in Render. To use the protected journal dashboard and APIs, also set `JOURNAL_API_TOKEN`; to receive Telegram inline-button feedback, set `TELEGRAM_WEBHOOK_SECRET` and register the webhook as described below. Auto-deploy will pick up commits to `main`.
 
 Check:
-- `/health`: market metadata ready, active/unavailable symbols, websocket status, last websocket event, scan counters and errors.
+- `/ready`: Render readiness probe. Returns HTTP 503 until PostgreSQL, Telegram configuration, CoinDCX market metadata, and one fresh complete scan are all healthy; returns HTTP 200 once the service is ready.
+- `/health`: diagnostic JSON with market metadata, active/unavailable symbols, websocket status, last websocket event, scan counters and errors. It remains HTTP 200 so operators can inspect an unhealthy service while `/ready` reports the failure.
 - `/performance`: aggregate delivered-signal outcomes, OPEN/TARGET/STOP_LOSS/AMBIGUOUS counts, average realized R, MFE/MAE, data gaps, sent-without-outcome integrity count, per-symbol/direction breakdown and Telegram outbox status. It never returns individual entry/stop/target payloads.
 - `/ping`: lightweight keepalive.
 - Render logs: look for CoinDCX instrument validation, per-symbol history bootstrap, websocket subscription, and completed scan-cycle messages.
