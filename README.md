@@ -257,3 +257,17 @@ The trainer refuses to generate a proposal below `TRAINING_MIN_SAMPLES=100` reso
 Use `/proposals` or the protected `GET /journal/api/proposals` endpoint to review stored proposals. Approve explicitly with `/approve <id>`, reject with `/reject <id>`, and restore the previous approved configuration with `/rollback`. The protected API equivalents are `POST /journal/api/proposals/{id}/approve`, `POST /journal/api/proposals/{id}/reject`, and `POST /journal/api/rollback`. Every activation and rollback is written to `config_history` and `config_history_events` with actor, time, reason, and previous version. The approved config is hot-reloaded in the running scanner and loaded again on restart; the Telegram chat ID must match the configured owner chat before these commands are accepted.
 
 EMA-spread, VWAP-distance, relative-volume, and UTC-hour buckets are observational diagnostics because those are not currently active configurable entry gates. The trainer does not propose changing cooldown from outcome-only data without a replayable counterfactual.
+
+## Historical replay / backtest
+
+The repository includes a deterministic replay CLI that uses the same production `evaluate_state_inputs`, `advance_state`, `evaluate_setup`, and forward outcome labeler. It does not connect to CoinDCX, Telegram, or a broker and never places orders.
+
+Prepare two CSVs with these columns: `timestamp,open,high,low,close,volume`. Timestamps must be UTC Unix milliseconds representing candle-open time. The 5m and 15m files must be sorted/unique, UTC-aligned, valid OHLCV, and fully contiguous; missing candles are rejected instead of silently skipped.
+
+Run:
+
+```bash
+python backtest.py --candles-5m data/BTCUSDT_5m.csv --candles-15m data/BTCUSDT_15m.csv --trades-out results/trades.csv --summary-out results/summary.json
+```
+
+Optional overrides: `--cooldown-bars`, `--horizon-bars`, and `--cost-pct`. By default the replay uses the current runtime ADX/RSI settings, cooldown, 12-bar outcome horizon, and estimated round-trip cost. A 15m candle is visible only after its close is at or before the current 5m candle close; no future 15m data is used. Entries are assumed at the signal candle close, outcomes are measured only on later 5m candles, and the summary reports net expectancy, win/loss/timeout counts, profit factor, max drawdown, and MFE/MAE. Results are historical estimates, not exchange fills.
