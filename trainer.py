@@ -102,7 +102,8 @@ def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
             x["rsi"] if x["direction"] == "SHORT" else None
         )),
         "ema_spread_pct": ([0.05, 0.15, 0.30], lambda x: (
-            abs(_finite(x["features"].get("ema_spread_pct"))) if x["features"].get("ema_spread_pct") is not None
+            abs(_finite(x["features"].get("ema_spread_pct")))
+            if _finite(x["features"].get("ema_spread_pct")) is not None
             else (abs(_finite(x["features"].get("ema9")) - _finite(x["features"].get("ema21"))) /
                   abs(_finite(x["features"].get("ema21"))) * 100
                   if _finite(x["features"].get("ema9")) is not None
