@@ -4,7 +4,7 @@ from unittest.mock import patch
 import main
 
 
-class HealthOutcomeDiagnosticsTests(unittest.TestCase):
+class HealthOutcomeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_performance_endpoint_returns_aggregate_snapshot_only(self):
         summary = {
             "totals": {"delivered_signals": 5, "tracked_outcomes": 4},
