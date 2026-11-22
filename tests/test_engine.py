@@ -9,7 +9,7 @@ from main import (
     SYMBOLS, scan_symbol, last_seen_candle, state, build_health_payload, ping,
     scanner_sleep_seconds, seconds_until_next_candle_scan,
 )
-from strategy import candles_to_frame, indicators, evaluate_signal, evaluate_setup, validate_ohlcv
+from strategy import candles_to_frame, indicators, evaluate_signal, evaluate_setup, evaluate_state_inputs, validate_ohlcv
 from telegram import TelegramNotifier
 
 
@@ -800,6 +800,34 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(signal["side"], "LONG")
         self.assertEqual(signal["context"], "15m bullish")
         self.assertGreaterEqual(signal["adx"], 20)
+
+    def test_two_bar_ema_alignment_age_is_accepted(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("LONG")
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(1, 300000), None)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["diagnostics"]["ema_alignment_age_bars"], 2)
+
+    def test_three_bar_ema_alignment_age_is_rejected(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("LONG")
+        five.loc[five.index[-4], "ema9"] = 100.0
+        five.loc[five.index[-4], "ema21"] = 99.5
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(1, 300000), None)
+        self.assertIsNone(signal)
+
+    def test_armed_setup_is_invalidated_when_ema_alignment_exceeds_two_bars(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("LONG")
+        five.loc[five.index[-4], "ema9"] = 100.0
+        five.loc[five.index[-4], "ema21"] = 99.5
+        with patch("strategy.indicators", return_value=five):
+            result = evaluate_state_inputs(self._trend_frame(1, 300000), None, {"LONG"})
+        self.assertFalse(result["LONG"]["setup_valid"])
+        self.assertTrue(result["LONG"]["invalidation"])
+        self.assertFalse(result["LONG"]["trigger"])
 
     def test_existing_ema_alignment_is_valid_without_a_new_crossover(self):
         from unittest.mock import patch
