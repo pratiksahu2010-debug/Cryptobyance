@@ -818,6 +818,7 @@ async def scanner_session() -> None:
         # avoids repeatedly scanning the previous candle immediately on boot.
         first_scan_cutoff_ms = int(time.time() * 1000)
         await wait_for_first_completed_candle()
+        same_candle_retry_attempt = 0
         while True:
             started = time.monotonic()
             state.update(
@@ -905,10 +906,12 @@ async def scanner_session() -> None:
             # Retry the same just-closed candle while it remains inside the
             # strict 90s freshness window. Already-processed symbols are skipped
             # by last_seen_candle; only deferred symbols are evaluated again.
-            if 0 < retryable <= 3 and not stale_data:
+            if retryable > 0 and same_candle_retry_attempt < 3 and not stale_data:
+                same_candle_retry_attempt += 1
                 delay = 10.0
                 reason = "same-candle-retry"
             else:
+                same_candle_retry_attempt = 0
                 delay = scanner_sleep_seconds(stale_data=stale_data)
                 reason = "stale-data-retry" if stale_data else "next-5m-close"
             log.info('Next scan scheduled delay=%.1fs reason=%s retryable=%d',
