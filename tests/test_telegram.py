@@ -28,6 +28,7 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
             "side": "LONG", "symbol": "BTC/USDT", "entry": 100.0,
             "stop": 98.0, "target": 103.0, "rr": 1.5,
             "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
+            "ema9": 101.0, "ema21": 100.0, "vwap": 100.0,
             "candle": 1_800_000_000_000,
         }
 
