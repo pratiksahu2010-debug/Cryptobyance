@@ -301,7 +301,7 @@ def _effective_candle_clock(reference_ms: int) -> int:
 
 
 async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> None:
-    """Scan completed 5m candles; 15m EMA trend is a mandatory direction veto."""
+    """Scan the single Normal 5m indicator model; 15m is descriptive context only."""
     async with semaphore:
         rows = []
         try:
@@ -358,9 +358,9 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 state['symbols_ok'] += 1
                 return
 
-            # Build mandatory 15m trend context from aligned groups of three completed
-            # 5m candles. Missing, stale, gapped, or insufficient 15m data is
-            # passed as None and the strategy safely vetoes every signal.
+            # Build optional 15m diagnostic context from aligned groups of three
+            # completed 5m candles. Missing, stale, gapped, or insufficient 15m
+            # data must never veto the primary 5m indicator strategy.
             df15 = None
             try:
                 validation_now_ms = _effective_candle_clock(now_ms)
@@ -375,7 +375,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     if len(candidate15) >= 35:
                         df15 = candidate15
             except ValueError as context_error:
-                log.debug('15m mandatory trend unavailable; signals vetoed symbol=%s reason=%s', display_symbol, context_error)
+                log.debug('15m descriptive context unavailable; continuing with 5m evaluation symbol=%s reason=%s', display_symbol, context_error)
             # Shadow proposals run a separate durable state machine and never
             # touch the live state, signal outbox, or Telegram notifier.
             if candidate_store is not None and shadow_runtime_config:
@@ -399,7 +399,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
                 state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
                 if state_inputs is None:
-                    log.warning("state scan deferred because indicator context is incomplete symbol=%s", display_symbol)
+                    log.warning("state scan deferred because 5m indicator inputs are incomplete symbol=%s", display_symbol)
                     last_seen_candle[display_symbol] = closed_ts
                     state['symbols_ok'] += 1
                     return
