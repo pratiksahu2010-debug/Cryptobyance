@@ -554,7 +554,9 @@ class SignalJournal:
                               s.payload::text AS payload,o.status AS outcome_status,
                               o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
                               o.best_favorable_pct,o.worst_adverse_pct,
-                              o.best_favorable_atr,o.worst_adverse_atr
+                              o.best_favorable_atr,o.worst_adverse_atr,
+                              o.tp1_hit_candle_open_ms,o.tp2_hit_candle_open_ms,
+                              o.tp2_tracking_status,o.tp2_realized_r,o.tp2_bars_observed
                        FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                        WHERE s.status='SENT'
                        ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
@@ -582,6 +584,8 @@ class SignalJournal:
                           o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
                           o.best_favorable_pct,o.worst_adverse_pct,
                           o.best_favorable_atr,o.worst_adverse_atr,
+                          o.tp1_hit_candle_open_ms,o.tp2_hit_candle_open_ms,
+                          o.tp2_tracking_status,o.tp2_realized_r,o.tp2_bars_observed,
                           (SELECT json_agg(json_build_object(
                               'id',f.id,'category',f.category,'comment',f.comment,
                               'source',f.source,'created_at',f.created_at)
