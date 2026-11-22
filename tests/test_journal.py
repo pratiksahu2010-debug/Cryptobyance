@@ -29,7 +29,10 @@ class JournalSchemaTests(unittest.TestCase):
             "ema9": [99.0] * 35, "ema21": [100.0] * 35,
         })
         with patch("journal.indicators", side_effect=[five, fifteen]):
-            observation = rejected_observation(\n                five, fifteen, side='LONG',\n                state_input={'setup_valid': True, 'trigger': False},\n            )
+            observation = rejected_observation(
+                five, fifteen, side='LONG',
+                state_input={'setup_valid': True, 'trigger': False},
+            )
         self.assertEqual(observation["snapshot"]["context_15m"], "BEARISH")
         self.assertNotIn("15m_trend_veto", observation["rejection_reasons"])
         self.assertNotIn("15m_context_unavailable", observation["rejection_reasons"])
