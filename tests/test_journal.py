@@ -37,10 +37,42 @@ class JournalSchemaTests(unittest.TestCase):
         self.assertNotIn("15m_trend_veto", observation["rejection_reasons"])
         self.assertNotIn("15m_context_unavailable", observation["rejection_reasons"])
         self.assertEqual(observation["rejection_reasons"], ["rsi_cross_not_confirmed"])
-        self.assertEqual(observation["snapshot"]["version"], 2)
+        self.assertEqual(observation["snapshot"]["version"], 3)
+        self.assertEqual(observation["risk_model"], "swing_structure")
+        self.assertAlmostEqual(observation["risk_per_unit"], 1.0)
+        self.assertAlmostEqual(observation["target"], 102.0)
+        self.assertAlmostEqual(observation["target2"], 103.0)
         self.assertGreater(observation["snapshot"]["price_vwap_distance_atr"], 0)
         self.assertNotIn("entry_extended_from_vwap", observation["rejection_reasons"])
         self.assertNotIn("ema_alignment_too_old", observation["rejection_reasons"])
+
+    def test_rejected_observation_uses_production_swing_risk_and_targets(self):
+        import numpy as np
+        import pandas as pd
+        from unittest.mock import patch
+
+        lows = [100.0] * 60
+        highs = [102.0] * 60
+        lows[-11:-1] = [99.0] * 10
+        five = pd.DataFrame({
+            "timestamp": np.arange(60) * 300_000,
+            "open": [101.0] * 60, "high": highs, "low": lows,
+            "close": [101.0] * 60, "volume": [100.0] * 60,
+            "ema9": [101.0] * 60, "ema21": [100.0] * 60,
+            "rsi": [55.0] * 60, "adx": [25.0] * 60,
+            "plus_di": [30.0] * 60, "minus_di": [10.0] * 60,
+            "atr": [2.0] * 60, "vwap": [100.0] * 60,
+        })
+        with patch("journal.indicators", return_value=five):
+            observation = rejected_observation(
+                five, None, side="LONG",
+                state_input={"setup_valid": True, "trigger": False},
+            )
+        self.assertEqual(observation["risk_model"], "swing_structure")
+        self.assertAlmostEqual(observation["stop"], 99.0)
+        self.assertAlmostEqual(observation["risk_per_unit"], 2.0)
+        self.assertAlmostEqual(observation["target"], 103.0)
+        self.assertAlmostEqual(observation["target2"], 105.0)
 
     def test_rejected_observation_uses_armed_side_and_exact_live_setup_gates(self):
         import numpy as np
@@ -71,6 +103,9 @@ class JournalSchemaTests(unittest.TestCase):
     def test_journal_tables_are_additive_and_auditable(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_feedback", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_candidates", JOURNAL_DDL)
+        self.assertIn("target2 DOUBLE PRECISION", JOURNAL_DDL)
+        self.assertIn("risk_model TEXT", JOURNAL_DDL)
+        self.assertIn("tp2_tracking_status", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS training_proposals", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS config_history", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS config_history_events", JOURNAL_DDL)
