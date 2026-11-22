@@ -1405,6 +1405,10 @@ class SignalJournal:
                           COUNT(*) FILTER (WHERE o.status='TIMEOUT') AS timeouts,
                           COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
                           COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                          COUNT(*) FILTER (WHERE o.first_hit='TP1') AS tp1_hits,
+                          COUNT(*) FILTER (WHERE o.tp2_tracking_status='HIT') AS tp2_hits,
+                          COUNT(*) FILTER (WHERE o.tp2_tracking_status='OPEN') AS tp2_tracking_open,
+                          ROUND(AVG(o.tp2_realized_r) FILTER (WHERE o.tp2_tracking_status='HIT')::numeric,3) AS avg_tp2_net_r,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                    WHERE s.status='SENT'""")
@@ -1413,9 +1417,13 @@ class SignalJournal:
             candidate_feedback = await conn.fetch(
                 "SELECT category,COUNT(*) AS count FROM journal_candidate_feedback GROUP BY category ORDER BY count DESC,category")
             rejected = await conn.fetch(
-                """SELECT status,COUNT(*) AS count,ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
-                          ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
-                   FROM journal_candidates GROUP BY status ORDER BY status""")
+                """SELECT risk_model,status,COUNT(*) AS count,
+                          ROUND(AVG(realized_r)::numeric,3) AS avg_realized_r,
+                          ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
+                          ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r,
+                          COUNT(*) FILTER (WHERE tp2_tracking_status='HIT') AS tp2_hits,
+                          ROUND(AVG(tp2_realized_r) FILTER (WHERE tp2_tracking_status='HIT')::numeric,3) AS avg_tp2_net_r
+                   FROM journal_candidates GROUP BY risk_model,status ORDER BY risk_model,status""")
             reasons = await conn.fetch(
                 """SELECT r.reason,COUNT(*) AS count FROM journal_candidates c
                    CROSS JOIN LATERAL jsonb_array_elements_text(c.rejection_reasons) AS r(reason)
