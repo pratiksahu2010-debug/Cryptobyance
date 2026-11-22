@@ -200,6 +200,10 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["by_direction"][0]["direction"], "LONG")
         self.assertEqual(report["outbox"][1]["status"], "DEAD")
         self.assertIn("AVG(o.realized_r)", conn.fetchrow.await_args.args[0])
+        totals_sql = conn.fetchrow.await_args.args[0]
+        self.assertIn("legacy_unclassified_outcomes", totals_sql)
+        self.assertIn("o.first_hit IS NOT NULL", totals_sql)
+        self.assertIn("o.first_hit IS NOT NULL OR o.status='OPEN'", totals_sql)
 
     async def test_outbox_claim_uses_skip_locked_and_lease(self):
         conn = FakeConnection(fetchrows=[{
