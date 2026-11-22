@@ -443,6 +443,7 @@ class CandidateStore:
                        COUNT(o.signal_id) FILTER (WHERE o.result='LOSS') AS losses,
                        COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
                        COUNT(o.signal_id) FILTER (WHERE o.data_gap) AS data_gaps,
+                        COUNT(o.signal_id) FILTER (WHERE o.status<>'OPEN' AND o.first_hit IS NULL) AS legacy_unclassified_outcomes,
                        COUNT(*) FILTER (WHERE s.status='SENT' AND o.signal_id IS NULL) AS sent_without_outcome,
                        ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT') AND o.first_hit IS NOT NULL))::numeric, 3) AS avg_realized_r,
                        ROUND((AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mfe_r,
