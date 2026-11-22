@@ -1049,8 +1049,21 @@ async def health():
 
 
 @app.get("/ready")
-async def readiness():
-    """Render readiness probe: non-2xx until the scanner completes a fresh healthy cycle."""
+async def readiness_compatibility():
+    """Compatibility liveness probe for the currently configured Render service.
+
+    The live Render service still points its health check at /ready. Keep this
+    endpoint HTTP 200 during scanner warm-up and transient market-data issues
+    so a healthy process is not removed from service. The full operational
+    readiness result remains available at /readiness and /health.
+    """
+    payload = build_health_payload()
+    return JSONResponse(status_code=200, content=payload)
+
+
+@app.get("/readiness")
+async def strict_readiness():
+    """Return non-2xx until the scanner completes a fresh healthy cycle."""
     payload = build_health_payload()
     return JSONResponse(
         status_code=200 if payload["ok"] else 503,
