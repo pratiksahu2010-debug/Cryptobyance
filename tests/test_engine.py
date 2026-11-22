@@ -674,6 +674,56 @@ class EngineTests(unittest.TestCase):
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
+    def test_incomplete_state_inputs_leave_closed_candle_retryable(self):
+        import asyncio
+        from unittest.mock import patch
+
+        interval = 300_000
+        base = (1_800_000_000_000 // interval) * interval
+        rows = [[base + i * interval, 100 + i * 0.1, 101 + i * 0.1,
+                 99 + i * 0.1, 100.5 + i * 0.1, 100] for i in range(200)]
+        now_ms = base + 200 * interval + 2_000
+
+        class FakeFeed:
+            def rows(self, pair):
+                return rows
+
+        class FakeNotifier:
+            async def send(self, signal):
+                raise AssertionError("scanner must not send directly")
+
+        class FakeStore:
+            def __init__(self):
+                self.state_loads = 0
+
+            async def update_open_outcomes(self, symbol, candles):
+                return 0
+
+            async def load_symbol_states(self, strategy_key, symbol):
+                self.state_loads += 1
+                return {}
+
+        symbol = "BTC/USDT"
+        last_seen_candle.pop(symbol, None)
+        store = FakeStore()
+        before = state.get("state_input_deferred", 0)
+        try:
+            with patch("main.evaluate_state_inputs", return_value=None):
+                async def run_twice():
+                    for _ in range(2):
+                        await scan_symbol(
+                            FakeFeed(), FakeNotifier(), asyncio.Semaphore(1),
+                            symbol, "B-BTC_USDT", now_ms,
+                            candidate_store=store,
+                        )
+                asyncio.run(run_twice())
+
+            self.assertEqual(store.state_loads, 2)
+            self.assertNotIn(symbol, last_seen_candle)
+            self.assertEqual(state.get("state_input_deferred", 0), before + 2)
+        finally:
+            last_seen_candle.pop(symbol, None)
+
     def test_health_is_false_until_every_active_symbol_is_accounted_for(self):
         import time
         previous = state.copy()
