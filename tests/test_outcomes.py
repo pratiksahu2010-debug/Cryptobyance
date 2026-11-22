@@ -111,6 +111,15 @@ class OutcomeLabelerTests(unittest.TestCase):
         self.assertEqual(progress["tp2_tracking_status"], "STOPPED")
         self.assertIsNone(progress["tp2_hit_candle_open_ms"])
 
+    def test_tp1_on_final_horizon_bar_does_not_extend_tp2_window(self):
+        row = base_outcome(outcome_horizon_bars=1)
+        progress = advance_outcome(row, [{
+            "timestamp": 2_100_000, "high": 103.0, "low": 99.0, "close": 102.5,
+        }])
+        self.assertEqual(progress["first_hit"], "TP1")
+        self.assertEqual(progress["tp2_tracking_status"], "TIMEOUT")
+        self.assertIsNone(progress["tp2_hit_candle_open_ms"])
+
     def test_tp1_and_tp2_in_same_candle_record_both_milestones(self):
         progress = advance_outcome(base_outcome(), [{
             "timestamp": 2_100_000, "high": 105.0, "low": 99.0, "close": 104.0,
