@@ -258,6 +258,9 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     if len(a) < 35:
         return None
     c = a.iloc[-1]
+    # EMA direction is a persistent trend-alignment condition. The age of the
+    # last crossover is diagnostic only; an established aligned trend remains
+    # eligible while the current 5m filters continue to agree.
     long_alignment_age = ema_alignment_age_bars(a, "LONG")
     short_alignment_age = ema_alignment_age_bars(a, "SHORT")
     needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, c.plus_di, c.minus_di]
@@ -271,16 +274,12 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         and float(c.close) > float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.plus_di) > float(c.minus_di)
-        and long_alignment_age is not None
-        and long_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
     )
     short_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.minus_di) > float(c.plus_di)
-        and short_alignment_age is not None
-        and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
     )
     if not (long_ok or short_ok):
         return None
@@ -342,7 +341,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         } if context_row is not None else {}),
     }
     if not all(
-        isinstance(value, (bool, np.bool_)) or np.isfinite(float(value))
+        value is None or isinstance(value, (bool, np.bool_)) or np.isfinite(float(value))
         for value in diagnostics.values()
     ):
         return None
@@ -411,43 +410,23 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
         return None
 
-    long_alignment_age = ema_alignment_age_bars(a, "LONG")
-    short_alignment_age = ema_alignment_age_bars(a, "SHORT")
-    long_alignment_fresh = (
-        long_alignment_age is not None
-        and long_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
-    )
-    short_alignment_fresh = (
-        short_alignment_age is not None
-        and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
-    )
-    # IDLE must arm before the final eligible trigger candle. Already-ARMED
-    # setups may trigger through age 2, but are invalidated beyond that age.
-    long_arm_fresh = (
-        long_alignment_age is not None
-        and long_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS - (0 if "LONG" in armed_sides else 1)
-    )
-    short_arm_fresh = (
-        short_alignment_age is not None
-        and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS - (0 if "SHORT" in armed_sides else 1)
-    )
+    # Keep crossover age for diagnostics only. Persistent EMA alignment is
+    # evaluated from the current closed 5m candle and is not age-limited.
     common = float(c.adx) >= ADX_MIN
     long_setup = (
-        common and long_arm_fresh and float(c.plus_di) > float(c.minus_di)
+        common and float(c.plus_di) > float(c.minus_di)
         and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap)
     )
     short_setup = (
-        common and short_arm_fresh and float(c.minus_di) > float(c.plus_di)
+        common and float(c.minus_di) > float(c.plus_di)
         and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap)
     )
     long_invalid = (
-        not long_alignment_fresh
-        or float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
+        float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
         or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di)
     )
     short_invalid = (
-        not short_alignment_fresh
-        or float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
+        float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
         or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di)
     )
     long_trigger = (
