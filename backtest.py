@@ -134,15 +134,19 @@ def build_replay_training_preview(trades: list[dict]) -> dict[str, Any]:
 
 def run_backtest(
     candles_5m: pd.DataFrame,
-    candles_15m: pd.DataFrame,
+    candles_15m: pd.DataFrame | None = None,
     *,
     cooldown_candles: int | None = None,
     horizon_bars: int | None = None,
     cost_pct: float | None = None,
 ) -> dict[str, Any]:
-    """Replay the live state machine and label each emitted signal on later bars."""
+    """Replay the live 5m state machine; 15m candles are optional diagnostics."""
     five = validate_history_frame(candles_5m, CANDLE_INTERVAL_MS, "5m")
-    fifteen = validate_history_frame(candles_15m, CONTEXT_INTERVAL_MS, "15m")
+    fifteen = (
+        validate_history_frame(candles_15m, CONTEXT_INTERVAL_MS, "15m")
+        if candles_15m is not None and not candles_15m.empty
+        else pd.DataFrame(columns=OHLCV_COLUMNS)
+    )
     cooldown = int(cooldown_candles if cooldown_candles is not None else settings.signal_cooldown_candles)
     horizon = int(horizon_bars if horizon_bars is not None else settings.outcome_horizon_bars)
     cost = float(cost_pct if cost_pct is not None else settings.outcome_cost_pct)
@@ -152,8 +156,8 @@ def run_backtest(
         raise ValueError("horizon_bars must be between 1 and 288")
     if not 0 <= cost <= 5 or not math.isfinite(cost):
         raise ValueError("cost_pct must be between 0 and 5")
-    if len(five) < 60 or len(fifteen) < 35:
-        raise ValueError("replay requires at least 60 completed 5m and 35 completed 15m candles")
+    if len(five) < 60:
+        raise ValueError("replay requires at least 60 completed 5m candles")
 
     states = {"LONG": "IDLE", "SHORT": "IDLE"}
     invalidated_in_cooldown = {"LONG": False, "SHORT": False}
@@ -165,9 +169,10 @@ def run_backtest(
         current_5m = five.iloc[: index + 1].copy()
         candle_open_ms = int(current_5m.iloc[-1]["timestamp"])
         candle_close_ms = candle_open_ms + CANDLE_INTERVAL_MS
-        current_15m = completed_context_15m(fifteen, candle_close_ms)
-        if len(current_15m) < 35:
-            continue
+        current_15m = (
+            completed_context_15m(fifteen, candle_close_ms)
+            if not fifteen.empty else None
+        )
 
         armed_sides = {side for side, state in states.items() if state == "ARMED"}
         inputs = evaluate_state_inputs(current_5m, current_15m, armed_sides)
@@ -339,7 +344,7 @@ def run_backtest(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay/backtest the production CryptoByance 5m state machine.")
     parser.add_argument("--candles-5m", required=True, help="CSV with timestamp,open,high,low,close,volume (UTC ms)")
-    parser.add_argument("--candles-15m", required=True, help="CSV with timestamp,open,high,low,close,volume (UTC ms)")
+    parser.add_argument("--candles-15m", help="Optional diagnostic CSV with timestamp,open,high,low,close,volume (UTC ms)")
     parser.add_argument("--trades-out", help="Optional CSV path for signal and outcome rows")
     parser.add_argument("--summary-out", help="Optional JSON path for summary metrics")
     parser.add_argument("--cooldown-bars", type=int, default=settings.signal_cooldown_candles)
@@ -349,7 +354,7 @@ def main() -> None:
 
     result = run_backtest(
         pd.read_csv(args.candles_5m),
-        pd.read_csv(args.candles_15m),
+        pd.read_csv(args.candles_15m) if args.candles_15m else None,
         cooldown_candles=args.cooldown_bars,
         horizon_bars=args.horizon_bars,
         cost_pct=args.cost_pct,

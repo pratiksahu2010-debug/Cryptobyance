@@ -68,12 +68,12 @@ class TelegramNotifier:
         ema21 = signal.get("ema21", snapshot.get("ema21"))
         vwap = signal.get("vwap", snapshot.get("vwap"))
         ema_line = (
-            f"<b>EMA 9/21: <code>{fmt_price(float(ema9))}</code> / <code>{fmt_price(float(ema21))}</code></b>\\n"
+            f"<b>EMA 9/21: <code>{fmt_price(float(ema9))}</code> / <code>{fmt_price(float(ema21))}</code></b>\n"
             if ema9 is not None and ema21 is not None
             else "EMA 9/21: aligned with signal direction\n"
         )
         vwap_line = (
-            f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\\n"
+            f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\n"
             if vwap is not None else "VWAP: correct side\n"
         )
         target1 = signal.get("target1", signal.get("target"))
@@ -91,8 +91,7 @@ class TelegramNotifier:
             + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
-            + f"<b>15m trend filter: {escape(str(signal.get('context', 'unavailable')))} (mandatory direction confirmation)</b>\n"
-            + (f"<b>15m RSI(14): <code>{float(signal['context_rsi14']):.1f}</code> · {'supportive' if signal.get('context_rsi_aligned') else 'not supportive'}</b> (confidence only; does not block signal)\n" if signal.get('context_rsi14') is not None else "15m RSI: unavailable (confidence only)\n")
+            + f"<b>15m context: {escape(str(signal.get('context', 'unavailable')))}</b> (informational only; not used to approve or block 5m signals)\n"
             + signal_ref
             + "\n\n<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )

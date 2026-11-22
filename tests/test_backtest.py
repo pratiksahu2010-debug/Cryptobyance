@@ -1,6 +1,7 @@
 import unittest
 
 import pandas as pd
+from unittest.mock import patch
 
 from backtest import (
     build_replay_training_preview, completed_context_15m,
@@ -52,6 +53,48 @@ class BacktestTests(unittest.TestCase):
         self.assertTrue(preview["synthetic_replay_data"])
         self.assertFalse(preview["persisted_to_database"])
         self.assertFalse(preview["live_settings_changed"])
+
+    def test_replay_runs_the_normal_5m_model_without_15m_data(self):
+        five = frame(300_000, 80)
+        inputs = {
+            "LONG": {"setup_valid": True, "invalidation": False, "trigger": True},
+            "SHORT": {"setup_valid": False, "invalidation": False, "trigger": False},
+        }
+        setup = {
+            "side": "LONG", "entry": 100.0, "stop": 98.0,
+            "target": 102.0, "target1": 102.0, "target2": 104.0,
+            "risk_distance": 2.0, "atr": 2.0, "risk_model": "swing_structure",
+            "adx": 25.0, "rsi": 55.0, "ema9": 101.0, "ema21": 100.0,
+            "vwap": 99.5, "diagnostics": {},
+        }
+        with patch("backtest.evaluate_state_inputs", return_value=inputs) as state_inputs:
+            with patch("backtest.evaluate_setup", return_value=setup):
+                result = run_backtest(
+                    five, None, cooldown_candles=4, horizon_bars=12, cost_pct=0.10
+                )
+        self.assertEqual(result["summary"]["signals"], 1)
+        self.assertEqual(result["trades"][0]["side"], "LONG")
+        self.assertTrue(all(call.args[1] is None for call in state_inputs.call_args_list))
+
+    def test_short_15m_history_does_not_delay_5m_replay(self):
+        five = frame(300_000, 80)
+        short_context = frame(900_000, 10)
+        inputs = {
+            "LONG": {"setup_valid": True, "invalidation": False, "trigger": True},
+            "SHORT": {"setup_valid": False, "invalidation": False, "trigger": False},
+        }
+        setup = {
+            "side": "LONG", "entry": 100.0, "stop": 98.0,
+            "target": 102.0, "target1": 102.0, "target2": 104.0,
+            "risk_distance": 2.0, "atr": 2.0, "risk_model": "swing_structure",
+            "adx": 25.0, "rsi": 55.0, "ema9": 101.0, "ema21": 100.0,
+            "vwap": 99.5, "diagnostics": {},
+        }
+        with patch("backtest.evaluate_state_inputs", return_value=inputs) as state_inputs:
+            with patch("backtest.evaluate_setup", return_value=setup):
+                result = run_backtest(five, short_context)
+        self.assertEqual(result["summary"]["signals"], 1)
+        self.assertTrue(all(len(call.args[1]) < 35 for call in state_inputs.call_args_list))
 
     def test_flat_market_replay_produces_no_false_signals(self):
         five = frame(300_000, 200)

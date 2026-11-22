@@ -28,6 +28,7 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
             "side": "LONG", "symbol": "BTC/USDT", "entry": 100.0,
             "stop": 98.0, "target": 103.0, "rr": 1.5,
             "rsi": 60.0, "adx": 25.0, "context": "15m bullish",
+            "ema9": 101.0, "ema21": 100.0, "vwap": 100.0,
             "candle": 1_800_000_000_000,
         }
 
@@ -55,10 +56,15 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("OPEN TRADINGVIEW MARKET LIST · SELECT EXCHANGE", message)
         self.assertIn("CoinDCX USDT Perpetual", message)
-        self.assertIn("EMA 9/21: aligned with signal direction", message)
-        self.assertIn("15m trend filter:", message)
-        self.assertIn("mandatory direction confirmation", message)
+        self.assertIn("EMA 9/21:", message)
+        self.assertIn("15m context:", message)
+        self.assertIn("informational only; not used to approve or block 5m signals", message)
         self.assertIn("15m bullish", message)
+        self.assertNotIn("mandatory direction confirmation", message)
+        self.assertNotIn("15m RSI", message)
+        self.assertNotIn("\\n", message)
+        self.assertIn("</code></b>\n<b>VWAP:", message)
+        self.assertIn("</code></b>\n<b>Stop loss (swing):", message)
         self.assertIn("5m candle close:", message)
         self.assertNotIn("Signal generated:", message)
         self.assertEqual(message.count("UTC"), 1)
