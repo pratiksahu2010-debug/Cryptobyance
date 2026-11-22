@@ -315,11 +315,11 @@ class CandidateStore:
                        COUNT(o.signal_id) FILTER (WHERE o.result='LOSS') AS losses,
                        COUNT(o.signal_id) FILTER (WHERE o.status='OPEN') AS open,
                        COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
-                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT')),3) AS avg_realized_r,
-                       ROUND(AVG(o.best_favorable_r),3) AS avg_mfe_r,
-                       ROUND(AVG(o.worst_adverse_r),3) AS avg_mae_r,
-                       ROUND(AVG(o.best_favorable_pct),3) AS avg_mfe_pct,
-                       ROUND(AVG(o.worst_adverse_pct),3) AS avg_mae_pct
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT') AND o.first_hit IS NOT NULL),3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'),3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'),3) AS avg_mae_r,
+                       ROUND(AVG(o.best_favorable_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'),3) AS avg_mfe_pct,
+                       ROUND(AVG(o.worst_adverse_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'),3) AS avg_mae_pct
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                    GROUP BY 1 ORDER BY strategy_key"""
             )
@@ -484,11 +484,11 @@ class CandidateStore:
                        COUNT(*) FILTER (WHERE o.result='LOSS') AS losses,
                        COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
                        COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
-                       ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT')))::numeric, 3) AS avg_realized_r,
-                       ROUND((AVG(o.best_favorable_r))::numeric, 3) AS avg_mfe_r,
-                       ROUND((AVG(o.worst_adverse_r))::numeric, 3) AS avg_mae_r,
-                       ROUND((AVG(o.best_favorable_pct))::numeric, 3) AS avg_mfe_pct,
-                       ROUND((AVG(o.worst_adverse_pct))::numeric, 3) AS avg_mae_pct
+                       ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT') AND o.first_hit IS NOT NULL))::numeric, 3) AS avg_realized_r,
+                       ROUND((AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mfe_r,
+                       ROUND((AVG(o.worst_adverse_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mae_r,
+                       ROUND((AVG(o.best_favorable_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mfe_pct,
+                       ROUND((AVG(o.worst_adverse_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mae_pct
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
                    WHERE s.status='SENT'
