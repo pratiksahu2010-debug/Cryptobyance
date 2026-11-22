@@ -121,6 +121,11 @@ ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_atr DOUBLE PR
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS bars_to_resolution INTEGER;
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS best_favorable_candle_open_ms BIGINT;
 ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS worst_adverse_candle_open_ms BIGINT;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS tp1_hit_candle_open_ms BIGINT;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS tp2_hit_candle_open_ms BIGINT;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS tp2_tracking_status TEXT NOT NULL DEFAULT 'NOT_STARTED';
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS tp2_realized_r DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS tp2_bars_observed INTEGER NOT NULL DEFAULT 0;
 UPDATE signal_outcomes SET target1=target WHERE target1 IS NULL;
 UPDATE signal_outcomes SET target2=target WHERE target2 IS NULL;
 CREATE INDEX IF NOT EXISTS ix_signal_outcomes_symbol_status
@@ -764,7 +769,7 @@ class CandidateStore:
                 return "QUEUED"
 
     async def update_open_outcomes(self, symbol: str, candles: list[dict]) -> int:
-        """Advance delivered-signal outcomes over later completed 5m candles."""
+        """Advance open outcomes and post-TP1 TP2 continuation observations."""
         ordered = sorted(candles, key=lambda candle: int(candle["timestamp"]))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -775,10 +780,14 @@ class CandidateStore:
                           o.best_favorable_pct,o.worst_adverse_pct,
                           o.best_favorable_atr,o.worst_adverse_atr,
                           o.bars_observed,o.last_observed_candle_open_ms,o.data_gap,
-                          o.best_favorable_candle_open_ms,o.worst_adverse_candle_open_ms
+                          o.best_favorable_candle_open_ms,o.worst_adverse_candle_open_ms,
+                          o.status,o.first_hit,o.result,o.exit_candle_open_ms,o.exit_price,
+                          o.realized_r,o.tp1_hit_candle_open_ms,o.tp2_hit_candle_open_ms,
+                          o.tp2_tracking_status,o.tp2_realized_r,o.tp2_bars_observed
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
-                   WHERE o.symbol=$1 AND o.status='OPEN' AND s.status='SENT'
+                   WHERE o.symbol=$1 AND s.status='SENT'
+                     AND (o.status='OPEN' OR o.tp2_tracking_status='OPEN')
                    ORDER BY o.signal_candle_open_ms""",
                 symbol)
             updated = 0
@@ -800,8 +809,12 @@ class CandidateStore:
                            last_observed_candle_open_ms=$13,
                            exit_candle_open_ms=$14,exit_price=$15,realized_r=$16,
                            data_gap=$17,best_favorable_candle_open_ms=$18,
-                           worst_adverse_candle_open_ms=$19,updated_at=NOW()
-                       WHERE signal_id=$1 AND status='OPEN'""",
+                           worst_adverse_candle_open_ms=$19,
+                           tp1_hit_candle_open_ms=$20,tp2_hit_candle_open_ms=$21,
+                           tp2_tracking_status=$22,tp2_realized_r=$23,
+                           tp2_bars_observed=$24,updated_at=NOW()
+                       WHERE signal_id=$1
+                         AND (status='OPEN' OR tp2_tracking_status='OPEN')""",
                     int(outcome["signal_id"]), progress["status"],
                     progress["first_hit"], progress["result"],
                     progress["best_favorable_r"], progress["worst_adverse_r"],
@@ -813,6 +826,9 @@ class CandidateStore:
                     progress["realized_r"], progress["data_gap"],
                     progress["best_favorable_candle_open_ms"],
                     progress["worst_adverse_candle_open_ms"],
+                    progress["tp1_hit_candle_open_ms"], progress["tp2_hit_candle_open_ms"],
+                    progress["tp2_tracking_status"], progress["tp2_realized_r"],
+                    progress["tp2_bars_observed"],
                 )
                 updated += 1
             return updated
@@ -870,7 +886,25 @@ class CandidateStore:
                         row["signal_id"], settings.outcome_horizon_bars,
                         settings.outcome_cost_pct)
 
-    async def retry_outbox(self, outbox_id: int, attempts: int, error_type: str):
+    async def fail_outbox(self, outbox_id: int, error_type: str) -> None:
+        """Dead-letter a permanently rejected Telegram message immediately."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT signal_id FROM telegram_outbox WHERE id=$1 FOR UPDATE", outbox_id)
+                if row is None:
+                    return
+                await conn.execute(
+                    """UPDATE telegram_outbox
+                       SET status='DEAD',lease_until=NULL,last_error_type=$2
+                       WHERE id=$1 AND status='DELIVERING'""",
+                    outbox_id, str(error_type or "PERMANENT_REJECTION")[:80])
+                await conn.execute(
+                    "UPDATE signal_history SET status='DELIVERY_FAILED' WHERE id=$1",
+                    row["signal_id"])
+
+    async def retry_outbox(self, outbox_id: int, attempts: int, error_type: str,
+                           retry_after: float | None = None):
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -884,7 +918,12 @@ class CandidateStore:
                     await conn.execute(
                         "UPDATE signal_history SET status='DELIVERY_FAILED' WHERE id=$1", row["signal_id"])
                 else:
-                    delay = min(900, 2 ** min(attempts, 9))
+                    exponential_delay = min(900, 2 ** min(attempts, 9))
+                    try:
+                        provider_delay = max(0, min(900, int(float(retry_after)))) if retry_after is not None else 0
+                    except (TypeError, ValueError, OverflowError):
+                        provider_delay = 0
+                    delay = max(exponential_delay, provider_delay)
                     await conn.execute(
                         """UPDATE telegram_outbox SET status='PENDING',lease_until=NULL,
                            next_attempt_at=NOW()+($2 * INTERVAL '1 second'),last_error_type=$3
