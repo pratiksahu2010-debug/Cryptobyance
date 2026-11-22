@@ -494,7 +494,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 strategy_key=STRATEGY_KEY,
             )
             last_seen_candle[display_symbol] = closed_ts
-            if queued:
+            if queued == "QUEUED" or queued is True:
                 state['signals_queued'] = state.get('signals_queued', 0) + 1
                 log.info(
                     'SIGNAL QUEUED symbol=%s side=%s candle_close=%s entry=%s ADX=%.1f RSI=%.1f',
@@ -502,6 +502,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     datetime.fromtimestamp(five_minute_close / 1000, timezone.utc).isoformat(),
                     signal['entry'], signal['adx'], signal['rsi'],
                 )
+            else:
+                reason = str(queued) if isinstance(queued, str) else "LEGACY_NOT_QUEUED"
+                by_reason = state.setdefault("signals_not_queued_by_reason", {})
+                by_reason[reason] = int(by_reason.get(reason, 0)) + 1
+                log.info("SIGNAL NOT QUEUED symbol=%s side=%s reason=%s candle=%s",
+                         display_symbol, signal['side'], reason, closed_ts)
             state['symbols_ok'] += 1
         except Exception as exc:
             state['symbols_failed'] += 1
