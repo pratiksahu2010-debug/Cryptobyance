@@ -399,8 +399,13 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
                 state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
                 if state_inputs is None:
-                    log.warning("state scan deferred because 5m indicator inputs are incomplete symbol=%s", display_symbol)
-                    last_seen_candle[display_symbol] = closed_ts
+                    # Do not consume this candle: a transient/incomplete indicator
+                    # snapshot may be recoverable on the next scan cycle. The
+                    # persisted state machine has not advanced, so retrying the
+                    # same closed candle is safe and idempotent.
+                    state["state_input_deferred"] = state.get("state_input_deferred", 0) + 1
+                    log.warning("state scan deferred; candle remains retryable symbol=%s candle=%s",
+                                display_symbol, closed_ts)
                     state['symbols_ok'] += 1
                     return
                 triggered_side = None
@@ -435,8 +440,13 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     return
                 setup = evaluate_setup(df5, df15)
                 if not setup or setup.get("side") != triggered_side:
-                    log.warning("state trigger lacked matching executable signal symbol=%s side=%s", display_symbol, triggered_side)
-                    last_seen_candle[display_symbol] = closed_ts
+                    # TRIGGER is intentionally not committed by advance_symbol_state
+                    # until enqueue_signal atomically persists the alert and cooldown.
+                    # Keep the candle retryable instead of losing a trigger on a
+                    # transient indicator/stop-construction mismatch.
+                    state["trigger_setup_mismatch"] = state.get("trigger_setup_mismatch", 0) + 1
+                    log.error("state trigger lacked matching executable signal; candle remains retryable symbol=%s side=%s candle=%s",
+                              display_symbol, triggered_side, closed_ts)
                     state['symbols_ok'] += 1
                     return
             if candidate_store is not None and hasattr(candidate_store, "load_symbol_state_metadata"):
