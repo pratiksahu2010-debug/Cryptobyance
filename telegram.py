@@ -163,19 +163,19 @@ class TelegramNotifier:
                 if not retryable:
                     log.error("Telegram rejected alert status=%s", status)
                     return DeliveryResult(False, False, error_type, status)
-                if attempt == self.attempts:
-                    log.error("Telegram delivery exhausted retries status=%s", status)
+                if status == 429:
+                    # Honor Telegram's Retry-After via the durable outbox scheduler.
+                    # Do not sleep while holding a short delivery lease.
                     try:
                         retry_after_value = float(retry_after) if retry_after is not None else None
                     except (TypeError, ValueError):
                         retry_after_value = None
                     return DeliveryResult(False, True, error_type, status, retry_after_value)
+                if attempt == self.attempts:
+                    log.error("Telegram delivery exhausted retries status=%s", status)
+                    return DeliveryResult(False, True, error_type, status)
 
-                try:
-                    delay = min(5.0, max(1.0, float(retry_after))) if retry_after is not None else float(attempt)
-                except (TypeError, ValueError):
-                    delay = float(attempt)
-                await asyncio.sleep(delay)
+                await asyncio.sleep(float(attempt))
 
             except httpx.RequestError as exc:
                 # Exception strings may contain the bot-token URL; log only its type.
