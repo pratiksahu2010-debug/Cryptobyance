@@ -361,12 +361,69 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(args[17])
         self.assertEqual(args[13], 2_400_000)
         self.assertIsNone(args[15])
+    async def test_tp1_outcome_remains_tracked_for_tp2_continuation(self):
+        conn = FakeConnection()
+        conn.fetch.return_value = [{
+            "signal_id": 17, "direction": "LONG", "signal_candle_open_ms": 1_800_000,
+            "entry": 100.0, "stop": 98.0, "target": 104.0,
+            "target1": 102.0, "target2": 104.0, "atr_at_entry": 4.0,
+            "risk_per_unit": 2.0, "outcome_horizon_bars": 12, "cost_pct": 0.10,
+            "best_favorable_r": 1.5, "worst_adverse_r": 0.5,
+            "best_favorable_pct": 3.0, "worst_adverse_pct": 1.0,
+            "best_favorable_atr": 0.75, "worst_adverse_atr": 0.25,
+            "bars_observed": 1, "last_observed_candle_open_ms": 2_100_000,
+            "data_gap": False, "best_favorable_candle_open_ms": 2_100_000,
+            "worst_adverse_candle_open_ms": 2_100_000,
+            "status": "TARGET", "first_hit": "TP1", "result": "WIN",
+            "exit_candle_open_ms": 2_100_000, "exit_price": 102.0,
+            "realized_r": 0.95, "tp1_hit_candle_open_ms": 2_100_000,
+            "tp2_hit_candle_open_ms": None, "tp2_tracking_status": "OPEN",
+            "tp2_realized_r": None, "tp2_bars_observed": 0,
+        }]
+        store = CandidateStore(FakePool(conn))
+        updated = await store.update_open_outcomes("BTC/USDT", [
+            {"timestamp": 2_400_000, "high": 105.0, "low": 99.0, "close": 104.5},
+        ])
+        self.assertEqual(updated, 1)
+        self.assertIn("o.tp2_tracking_status='OPEN'", conn.fetch.await_args.args[0])
+        args = conn.execute.await_args.args
+        self.assertEqual(args[2], "TARGET")
+        self.assertEqual(args[3], "TP1")
+        self.assertAlmostEqual(args[16], 0.95)
+        self.assertEqual(args[21], 2_400_000)
+        self.assertEqual(args[22], "HIT")
+        self.assertAlmostEqual(args[23], 1.95)
+
+    async def test_permanent_delivery_failure_is_dead_lettered_immediately(self):
+        conn = FakeConnection(fetchrows=[{"signal_id": 81}])
+        store = CandidateStore(FakePool(conn))
+        await store.fail_outbox(12, "HTTP_400")
+        self.assertEqual(conn.execute.await_count, 2)
+        first = conn.execute.await_args_list[0]
+        second = conn.execute.await_args_list[1]
+        self.assertIn("status='DEAD'", first.args[0])
+        self.assertEqual(first.args[1:], (12, "HTTP_400"))
+        self.assertIn("DELIVERY_FAILED", second.args[0])
+        self.assertEqual(second.args[1:], (81,))
+
+    async def test_retry_after_is_respected_by_durable_outbox(self):
+        conn = FakeConnection(fetchrows=[{"signal_id": 82}])
+        store = CandidateStore(FakePool(conn))
+        await store.retry_outbox(13, 2, "HTTP_429", retry_after=15)
+        update = conn.execute.await_args_list[-1]
+        self.assertIn("next_attempt_at", update.args[0])
+        self.assertEqual(update.args[1:], (13, 15, "HTTP_429"))
+
     async def test_schema_has_durable_signal_outbox_cooldown_and_runtime(self):
         for table in ("signal_history", "signal_outcomes", "telegram_outbox", "signal_cooldowns", "scanner_runtime", "schema_migrations"):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", DDL)
         self.assertIn("UNIQUE(symbol,direction,candle_open_ms)", DDL)
         self.assertIn("best_favorable_candle_open_ms", DDL)
         self.assertIn("worst_adverse_candle_open_ms", DDL)
+        self.assertIn("tp1_hit_candle_open_ms", DDL)
+        self.assertIn("tp2_hit_candle_open_ms", DDL)
+        self.assertIn("tp2_tracking_status", DDL)
+        self.assertIn("tp2_realized_r", DDL)
         self.assertIn("target1 DOUBLE PRECISION", DDL)
         self.assertIn("target2 DOUBLE PRECISION", DDL)
         self.assertIn("outcome_horizon_bars", DDL)
