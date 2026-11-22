@@ -177,7 +177,9 @@ def advance_outcome(
                 tp2_ts = ts
                 tp2_realized_r = abs(target2 - entry) / risk - cost_r
             elif tp1_hit:
-                tp2_tracking_status = "OPEN"
+                # Do not observe beyond the original signal horizon when TP1
+                # itself is first reached on the final eligible candle.
+                tp2_tracking_status = "OPEN" if bars_seen < effective_horizon else "TIMEOUT"
             else:
                 tp2_tracking_status = "HIT"
                 tp2_ts = ts
