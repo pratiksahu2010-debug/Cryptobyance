@@ -421,13 +421,23 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
         short_alignment_age is not None
         and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
     )
+    # IDLE must arm before the final eligible trigger candle. Already-ARMED
+    # setups may trigger through age 2, but are invalidated beyond that age.
+    long_arm_fresh = (
+        long_alignment_age is not None
+        and long_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS - (0 if "LONG" in armed_sides else 1)
+    )
+    short_arm_fresh = (
+        short_alignment_age is not None
+        and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS - (0 if "SHORT" in armed_sides else 1)
+    )
     common = float(c.adx) >= ADX_MIN
     long_setup = (
-        common and long_alignment_fresh and float(c.plus_di) > float(c.minus_di)
+        common and long_arm_fresh and float(c.plus_di) > float(c.minus_di)
         and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap)
     )
     short_setup = (
-        common and short_alignment_fresh and float(c.minus_di) > float(c.plus_di)
+        common and short_arm_fresh and float(c.minus_di) > float(c.plus_di)
         and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap)
     )
     long_invalid = (
