@@ -24,10 +24,20 @@ class ScannerRetryTests(unittest.TestCase):
         self.assertFalse(main._is_retryable_scan_error(ValueError("invalid OHLCV")))
         self.assertFalse(main._is_retryable_scan_error(TypeError("bad type")))
 
-    def test_retry_targets_include_only_explicit_retryable_symbols(self):
-        targets = [("BTC/USDT", "B-BTC_USDT"), ("ETH/USDT", "B-ETH_USDT"), ("SOL/USDT", "B-SOL_USDT")]
-        results = [None, "RETRYABLE", "PERMANENT_FAILURE"]
-        self.assertEqual(main.retryable_scan_targets(targets, results), [targets[1]])
+    def test_successful_symbol_fast_exits_during_same_candle_retry(self):
+        class CachedFeed:
+            def rows(self, pair):
+                return [[1_900_000_000_000, 1, 2, 1, 2, 10]]
+
+            async def refresh_latest_closed_candle(self, pair, now_ms):
+                raise AssertionError("successful symbol must not repeat REST confirmation")
+
+        with unittest.mock.patch.dict(main.last_seen_candle, {"CACHED_TEST/USDT": 1_900_000_000_000}):
+            result = asyncio.run(main.scan_symbol(
+                CachedFeed(), object(), asyncio.Semaphore(1),
+                "CACHED_TEST/USDT", "B-CACHED_TEST_USDT", 1_900_000_000_000,
+            ))
+        self.assertIsNone(result)
 
     def test_scan_symbol_returns_retryable_for_transient_feed_failure(self):
         class BrokenFeed:
