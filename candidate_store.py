@@ -465,11 +465,11 @@ class CandidateStore:
                        COUNT(o.signal_id) FILTER (WHERE o.result='LOSS') AS losses,
                        COUNT(o.signal_id) FILTER (WHERE o.status='OPEN') AS open,
                        COUNT(o.signal_id) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
-                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT'))::numeric,3) AS avg_realized_r,
-                       ROUND(AVG(o.best_favorable_r)::numeric,3) AS avg_mfe_r,
-                       ROUND(AVG(o.worst_adverse_r)::numeric,3) AS avg_mae_r,
-                       ROUND(AVG(o.best_favorable_pct)::numeric,3) AS avg_mfe_pct,
-                       ROUND(AVG(o.worst_adverse_pct)::numeric,3) AS avg_mae_pct
+                       ROUND(AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT') AND o.first_hit IS NOT NULL)::numeric,3) AS avg_realized_r,
+                       ROUND(AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN')::numeric,3) AS avg_mfe_r,
+                       ROUND(AVG(o.worst_adverse_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN')::numeric,3) AS avg_mae_r,
+                       ROUND(AVG(o.best_favorable_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN')::numeric,3) AS avg_mfe_pct,
+                       ROUND(AVG(o.worst_adverse_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN')::numeric,3) AS avg_mae_pct
                    FROM signal_history s
                    LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                    GROUP BY 1 ORDER BY strategy_key"""
@@ -491,8 +491,8 @@ class CandidateStore:
                        ROUND((AVG(o.worst_adverse_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mae_pct
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
-                   WHERE s.status='SENT'
-                   GROUP BY o.symbol,o.direction
+                   WHERE s.status='SENT' AND (o.first_hit IS NOT NULL OR o.status='OPEN')
+                    GROUP BY o.symbol,o.direction
                    ORDER BY o.symbol,o.direction"""
             )
             # Global stop/target profile. Timestamp comparisons deliberately
@@ -500,11 +500,11 @@ class CandidateStore:
             # its high and low. This makes "before exit" excursion counts safe.
             risk_by_outcome = await conn.fetch(
                 """SELECT o.status,COUNT(*) AS count,
-                       ROUND(AVG(o.best_favorable_r)::numeric,3) AS avg_mfe_r,
+                       ROUND(AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN')::numeric,3) AS avg_mfe_r,
                        ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS median_mfe_r,
                        ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS p75_mfe_r,
                        ROUND(percentile_cont(0.90) WITHIN GROUP (ORDER BY o.best_favorable_r)::numeric,3) AS p90_mfe_r,
-                       ROUND(AVG(o.worst_adverse_r)::numeric,3) AS avg_mae_r,
+                       ROUND(AVG(o.worst_adverse_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN')::numeric,3) AS avg_mae_r,
                        ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS median_mae_r,
                        ROUND(percentile_cont(0.75) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS p75_mae_r,
                        ROUND(percentile_cont(0.90) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS p90_mae_r,
@@ -526,7 +526,8 @@ class CandidateStore:
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
                    WHERE s.status='SENT' AND o.status IN ('TARGET','STOP_LOSS','TIMEOUT')
-                   GROUP BY o.status ORDER BY o.status"""
+                      AND o.first_hit IS NOT NULL
+                    GROUP BY o.status ORDER BY o.status"""
             )
             by_direction = await conn.fetch(
                 """SELECT o.direction,o.status,COUNT(*) AS count,
@@ -537,8 +538,8 @@ class CandidateStore:
                        ROUND(percentile_cont(0.50) WITHIN GROUP (ORDER BY o.worst_adverse_r)::numeric,3) AS median_mae_r
                    FROM signal_outcomes o
                    JOIN signal_history s ON s.id=o.signal_id
-                   WHERE s.status='SENT'
-                   GROUP BY o.direction,o.status ORDER BY o.direction,o.status"""
+                   WHERE s.status='SENT' AND (o.first_hit IS NOT NULL OR o.status='OPEN')
+                    GROUP BY o.direction,o.status ORDER BY o.direction,o.status"""
             )
             outbox = await conn.fetch(
                 """SELECT status,COUNT(*) AS count
