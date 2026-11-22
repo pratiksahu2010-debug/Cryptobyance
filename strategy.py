@@ -21,7 +21,7 @@ ATR_STOP_MULT = settings.atr_stop_multiplier
 MIN_RR = settings.min_risk_reward
 
 # Global entry-quality guards: avoid chasing an established/extended move.
-MAX_EMA_ALIGNMENT_AGE_BARS = 3
+MAX_EMA_ALIGNMENT_AGE_BARS = 2
 MAX_ENTRY_EXTENSION_ATR = 1.0
 
 
