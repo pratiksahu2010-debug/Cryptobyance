@@ -496,8 +496,8 @@ class SignalJournal:
                           COUNT(*) FILTER (WHERE effective_result='LOSS') AS losses,
                           COUNT(*) FILTER (WHERE effective_result='TIMEOUT') AS timeouts,
                           COUNT(*) FILTER (WHERE effective_result IS NULL) AS unresolved,
-                          COUNT(*) FILTER (WHERE category IN ('FAKE_SIGNAL','BAD_SIGNAL','LATE_ENTRY')) AS false_labels,
-                          COUNT(*) FILTER (WHERE category IN ('GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL')) AS manual_labels,
+                          COUNT(*) FILTER (WHERE category IN ('FAKE_SIGNAL','BAD_SIGNAL','LATE_ENTRY','WRONG_DIRECTION')) AS false_labels,
+                          COUNT(*) FILTER (WHERE category IN ('GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL','WRONG_DIRECTION')) AS manual_labels,
                           ROUND(AVG(realized_r)::numeric,3) AS avg_net_realized_r,
                           ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
                           ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
