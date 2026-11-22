@@ -223,6 +223,26 @@ def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
     return pd.concat([base, derived], axis=1)
 
 
+def ema_alignment_age_bars(frame: pd.DataFrame, side: str) -> int | None:
+    """Return closed 5m bars since the latest directional EMA9/EMA21 crossover.
+
+    The crossover candle has age 0. A missing crossover in the supplied
+    history returns None rather than treating a long-established trend as new.
+    """
+    if side not in {"LONG", "SHORT"} or not {"ema9", "ema21"}.issubset(frame.columns):
+        return None
+    spread = pd.to_numeric(frame["ema9"], errors="coerce") - pd.to_numeric(frame["ema21"], errors="coerce")
+    previous = spread.shift(1)
+    if side == "LONG":
+        crosses = (previous <= 0) & (spread > 0)
+    else:
+        crosses = (previous >= 0) & (spread < 0)
+    locations = np.flatnonzero(crosses.fillna(False).to_numpy())
+    if len(locations) == 0:
+        return None
+    return int(len(frame) - 1 - locations[-1])
+
+
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
     """Build the executable signal payload for the single Normal 5m model.
 
@@ -238,6 +258,8 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     if len(a) < 35:
         return None
     c = a.iloc[-1]
+    long_alignment_age = ema_alignment_age_bars(a, "LONG")
+    short_alignment_age = ema_alignment_age_bars(a, "SHORT")
     needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
@@ -249,12 +271,16 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         and float(c.close) > float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.plus_di) > float(c.minus_di)
+        and long_alignment_age is not None
+        and long_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
     )
     short_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.minus_di) > float(c.plus_di)
+        and short_alignment_age is not None
+        and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
     )
     if not (long_ok or short_ok):
         return None
@@ -298,6 +324,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     diagnostics = {
         "version": 5,
         "ema_spread_atr": (float(c.ema9) - float(c.ema21)) / atr_value,
+        "ema_alignment_age_bars": long_alignment_age if side == "LONG" else short_alignment_age,
         "ema9_slope_atr_3bars": (float(c.ema9) - float(prev5.ema9)) / atr_value,
         "ema21_slope_atr_3bars": (float(c.ema21) - float(prev5.ema21)) / atr_value,
         "price_vwap_distance_atr": (entry - float(c.vwap)) / atr_value,
@@ -384,21 +411,33 @@ def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, a
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in required):
         return None
 
+    long_alignment_age = ema_alignment_age_bars(a, "LONG")
+    short_alignment_age = ema_alignment_age_bars(a, "SHORT")
+    long_alignment_fresh = (
+        long_alignment_age is not None
+        and long_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
+    )
+    short_alignment_fresh = (
+        short_alignment_age is not None
+        and short_alignment_age <= MAX_EMA_ALIGNMENT_AGE_BARS
+    )
     common = float(c.adx) >= ADX_MIN
     long_setup = (
-        common and float(c.plus_di) > float(c.minus_di)
+        common and long_alignment_fresh and float(c.plus_di) > float(c.minus_di)
         and float(c.ema9) > float(c.ema21) and float(c.close) > float(c.vwap)
     )
     short_setup = (
-        common and float(c.minus_di) > float(c.plus_di)
+        common and short_alignment_fresh and float(c.minus_di) > float(c.plus_di)
         and float(c.ema9) < float(c.ema21) and float(c.close) < float(c.vwap)
     )
     long_invalid = (
-        float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
+        not long_alignment_fresh
+        or float(c.ema9) <= float(c.ema21) or float(c.close) <= float(c.vwap)
         or float(c.adx) < ADX_MIN or float(c.plus_di) <= float(c.minus_di)
     )
     short_invalid = (
-        float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
+        not short_alignment_fresh
+        or float(c.ema9) >= float(c.ema21) or float(c.close) >= float(c.vwap)
         or float(c.adx) < ADX_MIN or float(c.minus_di) <= float(c.plus_di)
     )
     long_trigger = (
