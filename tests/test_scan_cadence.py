@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import main
 
@@ -32,7 +32,7 @@ class ScannerCadenceTests(unittest.TestCase):
 
     def test_first_scan_delay_uses_next_completed_candle_close(self):
         with patch("main.seconds_until_next_candle_scan", return_value=123.0):
-            with patch("main.asyncio.sleep", new_callable=__import__("unittest").mock.AsyncMock) as sleep:
+            with patch("main.asyncio.sleep", new_callable=AsyncMock) as sleep:
                 delay = asyncio.run(main.wait_for_first_completed_candle())
 
         self.assertEqual(delay, 123.0)
