@@ -174,6 +174,54 @@ class FakeStore:
         self.pool = FakePool(conn)
 
 
+class RejectedOutcomeTrackingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejected_candidate_tracks_tp2_after_tp1(self):
+        conn = FakeConnection(fetchrows_result=[{
+            "id": 41, "direction": "LONG", "candle_open_ms": 1_800_000,
+            "entry": 101.0, "stop": 99.0, "target": 103.0, "target2": 105.0,
+            "risk_per_unit": 2.0, "cost_pct": 0.10,
+            "best_favorable_r": 1.0, "worst_adverse_r": 0.25,
+            "bars_observed": 1, "last_observed_candle_open_ms": 2_100_000,
+            "data_gap": False, "status": "TARGET",
+            "exit_candle_open_ms": 2_100_000, "realized_r": 0.9495,
+            "tp1_hit_candle_open_ms": 2_100_000, "tp2_hit_candle_open_ms": None,
+            "tp2_tracking_status": "OPEN", "tp2_realized_r": None,
+            "tp2_bars_observed": 0,
+        }])
+        journal = SignalJournal(FakeStore(conn))
+        updated = await journal.update_rejected_outcomes("BTC/USDT", [{
+            "timestamp": 2_400_000, "high": 106.0, "low": 100.5, "close": 105.0,
+        }])
+        self.assertEqual(updated, 1)
+        args = conn.execute.await_args.args
+        self.assertEqual(args[1], "TARGET")
+        self.assertAlmostEqual(args[8], 0.9495)
+        self.assertEqual(args[10], 2_400_000)
+        self.assertEqual(args[11], "HIT")
+        self.assertAlmostEqual(args[12], 1.9495)
+
+    async def test_rejected_candidate_stop_after_tp1_only_closes_continuation(self):
+        conn = FakeConnection(fetchrows_result=[{
+            "id": 42, "direction": "LONG", "candle_open_ms": 1_800_000,
+            "entry": 101.0, "stop": 99.0, "target": 103.0, "target2": 105.0,
+            "risk_per_unit": 2.0, "cost_pct": 0.10,
+            "best_favorable_r": 1.0, "worst_adverse_r": 0.25,
+            "bars_observed": 1, "last_observed_candle_open_ms": 2_100_000,
+            "data_gap": False, "status": "TARGET",
+            "exit_candle_open_ms": 2_100_000, "realized_r": 0.9495,
+            "tp1_hit_candle_open_ms": 2_100_000, "tp2_hit_candle_open_ms": None,
+            "tp2_tracking_status": "OPEN", "tp2_realized_r": None,
+            "tp2_bars_observed": 0,
+        }])
+        journal = SignalJournal(FakeStore(conn))
+        await journal.update_rejected_outcomes("BTC/USDT", [{
+            "timestamp": 2_400_000, "high": 102.0, "low": 98.0, "close": 100.0,
+        }])
+        args = conn.execute.await_args.args
+        self.assertEqual(args[1], "TARGET")
+        self.assertAlmostEqual(args[8], 0.9495)
+        self.assertEqual(args[11], "STOPPED")
+
 class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
     async def test_approve_proposal_merges_delta_and_records_version(self):
         current = {
