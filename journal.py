@@ -160,81 +160,91 @@ FEEDBACK_CATEGORIES = {
 }
 
 
-def rejected_observation(df5, df15) -> dict[str, Any] | None:
-    """Create a conservative, point-in-time rejected-setup snapshot, if meaningful."""
-    if df5 is None or len(df5) < 60:
+def rejected_observation(df5, df15, *, side: str, state_input: dict[str, Any]) -> dict[str, Any] | None:
+    """Snapshot why an already-armed live 5m setup did not trigger.
+
+    Rejection labels mirror production state-machine gates only. EMA age, EMA
+    slope and VWAP extension remain diagnostic features, never invented live
+    filters. The caller supplies the persisted armed direction explicitly.
+    """
+    side = str(side).upper()
+    if side not in {"LONG", "SHORT"} or df5 is None or len(df5) < 60:
         return None
     frame = indicators(df5.copy())
     if len(frame) < 35:
         return None
-    c = frame.iloc[-1]
+    c, p = frame.iloc[-1], frame.iloc[-2]
     fields = ("ema9", "ema21", "rsi", "adx", "plus_di", "minus_di", "atr", "vwap", "close")
     values = {name: float(c[name]) for name in fields}
     if not all(math.isfinite(v) for v in values.values()) or values["atr"] <= 0:
         return None
-    long_hint = values["ema9"] > values["ema21"] and values["close"] > values["vwap"] and values["rsi"] > 50
-    short_hint = values["ema9"] < values["ema21"] and values["close"] < values["vwap"] and values["rsi"] < 50
-    if not (long_hint or short_hint):
-        return None
-    side = "LONG" if long_hint else "SHORT"
+
     reasons = []
-    if values["adx"] < ADX_MIN:
-        reasons.append("adx_below_minimum")
-    if (side == "LONG" and values["plus_di"] <= values["minus_di"]) or (side == "SHORT" and values["minus_di"] <= values["plus_di"]):
-        reasons.append("directional_index_mismatch")
+    if not bool(state_input.get("setup_valid")):
+        if values["adx"] < ADX_MIN:
+            reasons.append("adx_below_minimum")
+        if side == "LONG":
+            if values["plus_di"] <= values["minus_di"]:
+                reasons.append("directional_index_mismatch")
+            if values["ema9"] <= values["ema21"]:
+                reasons.append("ema_direction_mismatch")
+            if values["close"] <= values["vwap"]:
+                reasons.append("vwap_side_mismatch")
+        else:
+            if values["minus_di"] <= values["plus_di"]:
+                reasons.append("directional_index_mismatch")
+            if values["ema9"] >= values["ema21"]:
+                reasons.append("ema_direction_mismatch")
+            if values["close"] >= values["vwap"]:
+                reasons.append("vwap_side_mismatch")
+        if not reasons:
+            reasons.append("setup_not_valid")
+    elif not bool(state_input.get("trigger")):
+        reasons.append("rsi_cross_not_confirmed")
+
+    prior = frame.iloc[-4]
+    fast_slope = (values["ema9"] - float(prior.ema9)) / values["atr"]
+    slow_slope = (values["ema21"] - float(prior.ema21)) / values["atr"]
+    extension = (values["close"] - values["vwap"]) / values["atr"]
     alignment_age = 0
     for row in frame.tail(6).iloc[::-1].itertuples(index=False):
         aligned = row.ema9 > row.ema21 if side == "LONG" else row.ema9 < row.ema21
         if not bool(aligned):
             break
         alignment_age += 1
-    if alignment_age > 3:
-        reasons.append("ema_alignment_too_old")
-    prior = frame.iloc[-4]
-    fast_slope = (values["ema9"] - float(prior.ema9)) / values["atr"]
-    slow_slope = (values["ema21"] - float(prior.ema21)) / values["atr"]
-    extension = (values["close"] - values["vwap"]) / values["atr"]
-    if side == "LONG" and (fast_slope <= 0 or slow_slope <= 0):
-        reasons.append("ema_slope_not_rising")
-    if side == "SHORT" and (fast_slope >= 0 or slow_slope >= 0):
-        reasons.append("ema_slope_not_falling")
-    if abs(extension) > 1.0:
-        reasons.append("entry_extended_from_vwap")
-    # 15m is recorded only as optional context. It is not a live strategy
-    # condition and must never be counted as a reason for rejecting a setup.
+
     context = None
     if df15 is not None and len(df15) >= 35:
         ctx = indicators(df15.copy()).iloc[-1]
-        if (math.isfinite(float(ctx.ema9)) and math.isfinite(float(ctx.ema21))):
-            context = "BULLISH" if ctx.ema9 > ctx.ema21 else "BEARISH" if ctx.ema9 < ctx.ema21 else "NEUTRAL"
-    if not reasons:
-        reasons.append("strategy_rejected_unclassified")
+        if math.isfinite(float(ctx.ema9)) and math.isfinite(float(ctx.ema21)):
+            context = ("BULLISH" if ctx.ema9 > ctx.ema21 else
+                       "BEARISH" if ctx.ema9 < ctx.ema21 else "NEUTRAL")
+
     entry = values["close"]
     risk = values["atr"] * ATR_STOP_MULT
     if not math.isfinite(risk) or risk <= 0:
         return None
     stop = entry - risk if side == "LONG" else entry + risk
     target = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
-    timestamp = int(c.timestamp)
-    close_series = df5["close"].astype(float)
-    macd_line = close_series.ewm(span=12, adjust=False).mean() - close_series.ewm(span=26, adjust=False).mean()
-    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-    volume_average = df5["volume"].rolling(20, min_periods=20).mean().iloc[-1]
-    relative_volume = float(df5["volume"].iloc[-1] / volume_average) if math.isfinite(float(volume_average)) and volume_average > 0 else None
     snapshot = {
-        "version": 1, **values, "relative_volume_20": relative_volume,
-        "macd_line": float(macd_line.iloc[-1]), "macd_signal": float(macd_signal.iloc[-1]),
-        "macd_histogram": float(macd_line.iloc[-1] - macd_signal.iloc[-1]),
+        "version": 2, **values,
+        "rsi_previous": float(p.rsi),
         "ema_alignment_age_bars": alignment_age,
-        "ema9_slope_atr_3bars": fast_slope, "ema21_slope_atr_3bars": slow_slope,
-        "price_vwap_distance_atr": extension, "context_15m": context,
+        "ema9_slope_atr_3bars": fast_slope,
+        "ema21_slope_atr_3bars": slow_slope,
+        "price_vwap_distance_atr": extension,
+        "setup_valid": bool(state_input.get("setup_valid")),
+        "rsi_trigger": bool(state_input.get("trigger")),
+        "context_15m": context,
     }
+    if not all(math.isfinite(float(v)) for v in snapshot.values() if isinstance(v, (int, float))):
+        return None
     return {
-        "symbol": "", "direction": side, "candle_open_ms": timestamp,
-        "entry": entry, "stop": stop, "target": target, "risk_per_unit": risk,
-        "snapshot": snapshot, "rejection_reasons": sorted(set(reasons)),
+        "symbol": "", "direction": side, "candle_open_ms": int(c.timestamp),
+        "entry": entry, "stop": stop, "target": target,
+        "risk_per_unit": risk, "snapshot": snapshot,
+        "rejection_reasons": sorted(set(reasons)),
     }
-
 
 class SignalJournal:
     def __init__(self, candidate_store):

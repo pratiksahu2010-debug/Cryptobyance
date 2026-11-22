@@ -420,10 +420,14 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 if triggered_side is None:
                     if journal is not None and armed_sides:
                         try:
-                            observation = rejected_observation(df5, df15)
-                            if observation:
-                                observation["symbol"] = display_symbol
-                                await journal.record_rejected(observation)
+                            for armed_side in sorted(armed_sides):
+                                observation = rejected_observation(
+                                    df5, df15, side=armed_side,
+                                    state_input=state_inputs[armed_side],
+                                )
+                                if observation:
+                                    observation["symbol"] = display_symbol
+                                    await journal.record_rejected(observation)
                         except Exception as journal_error:
                             log.warning('rejected-candidate journal failed symbol=%s error_type=%s', display_symbol, type(journal_error).__name__)
                     last_seen_candle[display_symbol] = closed_ts
