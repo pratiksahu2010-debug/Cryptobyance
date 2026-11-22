@@ -820,7 +820,12 @@ async def scanner_session() -> None:
         await wait_for_first_completed_candle()
         while True:
             started = time.monotonic()
-            state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0, stale_candle_failures=0, stale_candle_sample=None)
+            state.update(
+                running=True, symbols_ok=0, symbols_failed=0,
+                data_validation_failures=0, stale_candle_failures=0,
+                stale_candle_sample=None, state_input_deferred=0,
+                trigger_setup_mismatch=0,
+            )
             cycle_now_ms = int(time.time() * 1000)
             results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store, journal_service) for symbol, pair in valid), return_exceptions=True)
             unexpected = [str(r) for r in results if isinstance(r, BaseException)]
@@ -893,8 +898,21 @@ async def scanner_session() -> None:
                 log.error("Scanner runtime checkpoint failed error_type=%s", type(exc).__name__)
             log.info('CoinDCX scan complete cycle=%d ok=%d failed=%d signals_queued_total=%d signals_sent_total=%d ws_connected=%s duration=%.1fs', state['scans'], state['symbols_ok'], state['symbols_failed'], state.get('signals_queued', 0), state['signals_sent'], feed.websocket_connected, state['last_scan_seconds'])
             stale_data = state['stale_candle_failures'] > 0
-            delay = scanner_sleep_seconds(stale_data=stale_data)
-            log.info('Next scan scheduled delay=%.1fs reason=%s', delay, 'stale-data-retry' if stale_data else 'next-5m-close')
+            retryable = (
+                int(state.get("state_input_deferred", 0))
+                + int(state.get("trigger_setup_mismatch", 0))
+            )
+            # Retry the same just-closed candle while it remains inside the
+            # strict 90s freshness window. Already-processed symbols are skipped
+            # by last_seen_candle; only deferred symbols are evaluated again.
+            if 0 < retryable <= 3 and not stale_data:
+                delay = 10.0
+                reason = "same-candle-retry"
+            else:
+                delay = scanner_sleep_seconds(stale_data=stale_data)
+                reason = "stale-data-retry" if stale_data else "next-5m-close"
+            log.info('Next scan scheduled delay=%.1fs reason=%s retryable=%d',
+                     delay, reason, retryable)
             await asyncio.sleep(delay)
     except asyncio.CancelledError:
         raise
