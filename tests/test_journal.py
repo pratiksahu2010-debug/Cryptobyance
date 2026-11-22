@@ -194,11 +194,11 @@ class RejectedOutcomeTrackingTests(unittest.IsolatedAsyncioTestCase):
         }])
         self.assertEqual(updated, 1)
         args = conn.execute.await_args.args
-        self.assertEqual(args[1], "TARGET")
-        self.assertAlmostEqual(args[8], 0.9495)
-        self.assertEqual(args[10], 2_400_000)
-        self.assertEqual(args[11], "HIT")
-        self.assertAlmostEqual(args[12], 1.9495)
+        self.assertEqual(args[2], "TARGET")
+        self.assertAlmostEqual(args[9], 0.9495)
+        self.assertEqual(args[11], 2_400_000)
+        self.assertEqual(args[12], "HIT")
+        self.assertAlmostEqual(args[13], 1.9495)
 
     async def test_rejected_candidate_stop_after_tp1_only_closes_continuation(self):
         conn = FakeConnection(fetchrows_result=[{
@@ -218,9 +218,9 @@ class RejectedOutcomeTrackingTests(unittest.IsolatedAsyncioTestCase):
             "timestamp": 2_400_000, "high": 102.0, "low": 98.0, "close": 100.0,
         }])
         args = conn.execute.await_args.args
-        self.assertEqual(args[1], "TARGET")
-        self.assertAlmostEqual(args[8], 0.9495)
-        self.assertEqual(args[11], "STOPPED")
+        self.assertEqual(args[2], "TARGET")
+        self.assertAlmostEqual(args[9], 0.9495)
+        self.assertEqual(args[12], "STOPPED")
 
 class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
     async def test_approve_proposal_merges_delta_and_records_version(self):
