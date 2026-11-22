@@ -809,25 +809,40 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["diagnostics"]["ema_alignment_age_bars"], 2)
 
-    def test_three_bar_ema_alignment_age_is_rejected(self):
+    def test_established_ema_alignment_without_recent_crossover_is_accepted(self):
         from unittest.mock import patch
         five = self._indicator_frame("LONG")
-        five.loc[five.index[-4], "ema9"] = 100.0
-        five.loc[five.index[-4], "ema21"] = 99.5
+        # EMA9 has been above EMA21 throughout the supplied history: no
+        # crossover exists in the lookback, but directional alignment is valid.
+        five["ema9"] = 101.0
+        five["ema21"] = 100.0
         with patch("strategy.indicators", return_value=five):
             signal = evaluate_setup(self._trend_frame(1, 300000), None)
-        self.assertIsNone(signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertIsNone(signal["diagnostics"]["ema_alignment_age_bars"])
 
-    def test_armed_setup_is_invalidated_when_ema_alignment_exceeds_two_bars(self):
+    def test_armed_setup_remains_valid_when_alignment_is_older_than_two_bars(self):
         from unittest.mock import patch
         five = self._indicator_frame("LONG")
-        five.loc[five.index[-4], "ema9"] = 100.0
-        five.loc[five.index[-4], "ema21"] = 99.5
+        five["ema9"] = 101.0
+        five["ema21"] = 100.0
         with patch("strategy.indicators", return_value=five):
             result = evaluate_state_inputs(self._trend_frame(1, 300000), None, {"LONG"})
-        self.assertFalse(result["LONG"]["setup_valid"])
-        self.assertTrue(result["LONG"]["invalidation"])
+        self.assertTrue(result["LONG"]["setup_valid"])
+        self.assertFalse(result["LONG"]["invalidation"])
         self.assertFalse(result["LONG"]["trigger"])
+
+    def test_short_established_alignment_without_crossover_is_accepted(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("SHORT")
+        five["ema9"] = 99.0
+        five["ema21"] = 100.0
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(-1, 300000), None)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "SHORT")
+        self.assertIsNone(signal["diagnostics"]["ema_alignment_age_bars"])
 
     def test_existing_ema_alignment_is_valid_without_a_new_crossover(self):
         from unittest.mock import patch
