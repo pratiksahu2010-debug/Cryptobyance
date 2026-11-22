@@ -73,7 +73,7 @@ class TelegramNotifier:
             else "EMA 9/21: aligned with signal direction\n"
         )
         vwap_line = (
-            f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\\n"
+            f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\n"
             if vwap is not None else "VWAP: correct side\n"
         )
         target1 = signal.get("target1", signal.get("target"))
