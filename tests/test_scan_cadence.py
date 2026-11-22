@@ -1,4 +1,6 @@
+import asyncio
 import unittest
+from unittest.mock import patch
 
 import main
 
@@ -26,6 +28,15 @@ class ScannerCadenceTests(unittest.TestCase):
     def test_stale_retry_does_not_sleep_past_the_next_close_window(self):
         delay = main.scanner_sleep_seconds(now_epoch=898, stale_data=True)
         self.assertEqual(delay, 5)
+
+
+    def test_first_scan_delay_uses_next_completed_candle_close(self):
+        with patch("main.seconds_until_next_candle_scan", return_value=123.0):
+            with patch("main.asyncio.sleep", new_callable=__import__("unittest").mock.AsyncMock) as sleep:
+                delay = asyncio.run(main.wait_for_first_completed_candle())
+
+        self.assertEqual(delay, 123.0)
+        sleep.assert_awaited_once_with(123.0)
 
     def test_boundary_scan_includes_small_finalization_grace(self):
         delay = main.seconds_until_next_candle_scan(now_epoch=898)
