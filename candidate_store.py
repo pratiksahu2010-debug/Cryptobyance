@@ -681,8 +681,12 @@ class CandidateStore:
         return ("READY", None) if float(adx) >= float(adx_min) else ("REJECT", None)
 
     async def enqueue_signal(self, signal: dict, candidate_id: int | None,
-                             cooldown_candles: int, strategy_key: str = "default") -> bool:
-        """Atomically persist signal, mark candidate, apply durable cooldown and enqueue alert."""
+                             cooldown_candles: int, strategy_key: str = "default") -> str:
+        """Atomically enqueue and return QUEUED or an explicit non-queue reason.
+
+        Database/serialization failures still raise so the caller can retry the
+        same closed candle; expected business rejections are returned by name.
+        """
         symbol, direction = signal["symbol"], signal["side"]
         candle_ms = int(signal["candle"])
         key = f"{symbol}:{direction}:{candle_ms}"
@@ -705,12 +709,12 @@ class CandidateStore:
                         await conn.execute(
                             "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
                             candidate_id)
-                    return False
+                    return "COOLDOWN"
                 existing = await conn.fetchrow(
                     "SELECT id FROM signal_history WHERE idempotency_key=$1", key
                 )
                 if existing is not None:
-                    return False
+                    return "DUPLICATE"
                 lifecycle_recorded = await persist_signal_lifecycle(
                     conn, strategy_key=strategy_key, symbol=symbol, direction=direction,
                     candle_open_ms=candle_ms, cooldown_candles=cooldown_candles,
@@ -720,7 +724,7 @@ class CandidateStore:
                         await conn.execute(
                             "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
                             candidate_id)
-                    return False
+                    return "LIFECYCLE_REJECTED"
                 row = await conn.fetchrow(
                     """INSERT INTO signal_history(idempotency_key,symbol,direction,candle_open_ms,payload)
                        VALUES($1,$2,$3,$4,$5::jsonb)
@@ -735,7 +739,7 @@ class CandidateStore:
                             """UPDATE signal_candidates SET status='TRIGGERED',
                                triggered_at=COALESCE(triggered_at,NOW()),updated_at=NOW()
                                WHERE id=$1 AND status='PENDING'""", candidate_id)
-                    return False
+                    return "DUPLICATE"
                 signal_id = int(row["id"])
                 entry = float(signal["entry"])
                 stop = float(signal["stop"])
@@ -757,7 +761,7 @@ class CandidateStore:
                     await conn.execute(
                         """UPDATE signal_candidates SET status='TRIGGERED',triggered_at=NOW(),updated_at=NOW()
                            WHERE id=$1 AND status='PENDING'""", candidate_id)
-                return True
+                return "QUEUED"
 
     async def update_open_outcomes(self, symbol: str, candles: list[dict]) -> int:
         """Advance delivered-signal outcomes over later completed 5m candles."""
