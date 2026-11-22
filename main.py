@@ -328,9 +328,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # Derive the expected completed 5m open from the wall clock rather
             # than the newest cache row, which may be a provisional live candle.
             effective_now_ms = _effective_candle_clock(now_ms)
+            candle_interval_ms = timeframe_milliseconds("5m")
             expected_closed_open = (
-                (effective_now_ms // CANDLE_INTERVAL_SECONDS // 1) * CANDLE_INTERVAL_SECONDS
-                - CANDLE_INTERVAL_SECONDS
+                (effective_now_ms // candle_interval_ms) * candle_interval_ms
+                - candle_interval_ms
             )
             if last_seen_candle.get(display_symbol) == expected_closed_open:
                 state["symbols_ok"] += 1
