@@ -224,10 +224,12 @@ def indicators(df: pd.DataFrame, include_rsi: bool = True) -> pd.DataFrame:
 
 
 def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Build a signal from completed 5m structure; 15m is optional context only.
+    """Build the executable signal payload for the single Normal 5m model.
 
-    A delayed, neutral, missing, or opposing 15m trend must never veto a valid
-    5m setup. Higher-timeframe values are retained as diagnostics/confidence.
+    EMA, VWAP, ADX and directional DI must agree on the completed 5m candle.
+    The persisted state machine separately requires the RSI threshold-cross
+    before a live alert. 15m is optional descriptive context only and never
+    gates, delays, or cancels a valid 5m setup.
     """
     if not has_contiguous_tail(df5, "5m", 60):
         return None
@@ -236,7 +238,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     if len(a) < 35:
         return None
     c = a.iloc[-1]
-    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr]
+    needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
         return None
     if float(c.atr) <= 0:
