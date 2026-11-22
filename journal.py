@@ -690,10 +690,13 @@ class SignalJournal:
         limit = max(1, min(int(limit), 250))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT id,symbol,direction,candle_open_ms,entry,stop,target,
-                          snapshot::text AS snapshot,rejection_reasons::text AS rejection_reasons,
+                """SELECT id,symbol,direction,candle_open_ms,entry,stop,target,target2,
+                          risk_model,cost_pct,snapshot::text AS snapshot,
+                          rejection_reasons::text AS rejection_reasons,
                           status,best_favorable_r,worst_adverse_r,bars_observed,
-                          data_gap,realized_r,created_at,
+                          data_gap,realized_r,tp1_hit_candle_open_ms,
+                          tp2_hit_candle_open_ms,tp2_tracking_status,tp2_realized_r,
+                          tp2_bars_observed,created_at,
                           (SELECT json_agg(json_build_object('id',f.id,'category',f.category,
                               'comment',f.comment,'source',f.source,'created_at',f.created_at)
                               ORDER BY f.created_at DESC)::text
