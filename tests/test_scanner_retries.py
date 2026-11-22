@@ -26,17 +26,20 @@ class ScannerRetryTests(unittest.TestCase):
         self.assertFalse(main._is_retryable_scan_error(TypeError("bad type")))
 
     def test_successful_symbol_fast_exits_during_same_candle_retry(self):
+        now_ms = 1_900_000_000_000
+        expected_closed_open = (now_ms // 300_000) * 300_000 - 300_000
+
         class CachedFeed:
             def rows(self, pair):
-                return [[1_900_000_000_000, 1, 2, 1, 2, 10]]
+                raise AssertionError("cached symbol must fast-exit before reading rows")
 
             async def refresh_latest_closed_candle(self, pair, now_ms):
                 raise AssertionError("successful symbol must not repeat REST confirmation")
 
-        with patch.dict(main.last_seen_candle, {"CACHED_TEST/USDT": 1_900_000_000_000}):
+        with patch.dict(main.last_seen_candle, {"CACHED_TEST/USDT": expected_closed_open}):
             result = asyncio.run(main.scan_symbol(
                 CachedFeed(), object(), asyncio.Semaphore(1),
-                "CACHED_TEST/USDT", "B-CACHED_TEST_USDT", 1_900_000_000_000,
+                "CACHED_TEST/USDT", "B-CACHED_TEST_USDT", now_ms,
             ))
         self.assertIsNone(result)
 
