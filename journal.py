@@ -200,17 +200,13 @@ def rejected_observation(df5, df15) -> dict[str, Any] | None:
         reasons.append("ema_slope_not_falling")
     if abs(extension) > 1.0:
         reasons.append("entry_extended_from_vwap")
+    # 15m is recorded only as optional context. It is not a live strategy
+    # condition and must never be counted as a reason for rejecting a setup.
     context = None
-    if df15 is None or len(df15) < 35:
-        reasons.append("15m_context_unavailable")
-    else:
+    if df15 is not None and len(df15) >= 35:
         ctx = indicators(df15.copy()).iloc[-1]
-        if not math.isfinite(float(ctx.ema9)) or not math.isfinite(float(ctx.ema21)):
-            reasons.append("15m_context_invalid")
-        else:
+        if (math.isfinite(float(ctx.ema9)) and math.isfinite(float(ctx.ema21))):
             context = "BULLISH" if ctx.ema9 > ctx.ema21 else "BEARISH" if ctx.ema9 < ctx.ema21 else "NEUTRAL"
-            if (side == "LONG" and context != "BULLISH") or (side == "SHORT" and context != "BEARISH"):
-                reasons.append("15m_trend_veto")
     if not reasons:
         reasons.append("strategy_rejected_unclassified")
     entry = values["close"]
