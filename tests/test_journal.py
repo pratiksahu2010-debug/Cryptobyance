@@ -29,10 +29,41 @@ class JournalSchemaTests(unittest.TestCase):
             "ema9": [99.0] * 35, "ema21": [100.0] * 35,
         })
         with patch("journal.indicators", side_effect=[five, fifteen]):
-            observation = rejected_observation(five, fifteen)
+            observation = rejected_observation(\n                five, fifteen, side='LONG',\n                state_input={'setup_valid': True, 'trigger': False},\n            )
         self.assertEqual(observation["snapshot"]["context_15m"], "BEARISH")
         self.assertNotIn("15m_trend_veto", observation["rejection_reasons"])
         self.assertNotIn("15m_context_unavailable", observation["rejection_reasons"])
+        self.assertEqual(observation["rejection_reasons"], ["rsi_cross_not_confirmed"])
+        self.assertEqual(observation["snapshot"]["version"], 2)
+        self.assertGreater(observation["snapshot"]["price_vwap_distance_atr"], 0)
+        self.assertNotIn("entry_extended_from_vwap", observation["rejection_reasons"])
+        self.assertNotIn("ema_alignment_too_old", observation["rejection_reasons"])
+
+    def test_rejected_observation_uses_armed_side_and_exact_live_setup_gates(self):
+        import numpy as np
+        import pandas as pd
+        from unittest.mock import patch
+
+        five = pd.DataFrame({
+            "timestamp": np.arange(60) * 300_000,
+            "open": [101.0] * 60, "high": [102.0] * 60,
+            "low": [100.0] * 60, "close": [101.0] * 60,
+            "volume": [100.0] * 60,
+            "ema9": [101.0] * 60, "ema21": [100.0] * 60,
+            "rsi": [55.0] * 60, "adx": [25.0] * 60,
+            "plus_di": [30.0] * 60, "minus_di": [10.0] * 60,
+            "atr": [2.0] * 60, "vwap": [100.0] * 60,
+        })
+        with patch("journal.indicators", return_value=five):
+            observation = rejected_observation(
+                five, None, side="SHORT",
+                state_input={"setup_valid": False, "trigger": False},
+            )
+        self.assertEqual(observation["direction"], "SHORT")
+        self.assertEqual(
+            observation["rejection_reasons"],
+            ["directional_index_mismatch", "ema_direction_mismatch", "vwap_side_mismatch"],
+        )
 
     def test_journal_tables_are_additive_and_auditable(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_feedback", JOURNAL_DDL)
