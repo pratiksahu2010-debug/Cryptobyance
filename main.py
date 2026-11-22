@@ -280,6 +280,21 @@ def scanner_sleep_seconds(now_epoch: float | None = None, stale_data: bool = Fal
     # the unchanged strict 90s freshness limit.
     return seconds_until_next_candle_scan(now_epoch)
 
+
+async def wait_for_first_completed_candle() -> float:
+    """Delay the first scan until the next 5m close plus finalization grace.
+
+    History bootstrap and WebSocket subscription can take long enough that an
+    immediate first scan would inspect an old candle. Capture the session
+    cutoff before this wait so only the newly completed candle is eligible
+    when scanning starts.
+    """
+    delay = seconds_until_next_candle_scan()
+    log.info("Initial scan waiting %.1fs for next completed 5m candle", delay)
+    await asyncio.sleep(delay)
+    return delay
+
+
 def _effective_candle_clock(reference_ms: int) -> int:
     """Never validate market data against an earlier cycle-start timestamp."""
     return max(int(reference_ms), int(time.time() * 1000))
@@ -778,8 +793,11 @@ async def scanner_session() -> None:
             log.info("CoinDCX websocket ready; all %d candle channels subscribed", len(valid))
         else:
             log.warning("CoinDCX websocket not ready within 20s; starting scan with REST history fallback")
-        # Ignore any setup that formed while history bootstrap/socket startup ran.
+        # Ignore setups that formed during history bootstrap/socket startup,
+        # but allow the next candle that completes after this cutoff. Waiting
+        # avoids repeatedly scanning the previous candle immediately on boot.
         first_scan_cutoff_ms = int(time.time() * 1000)
+        await wait_for_first_completed_candle()
         while True:
             started = time.monotonic()
             state.update(running=True, symbols_ok=0, symbols_failed=0, data_validation_failures=0, stale_candle_failures=0, stale_candle_sample=None)
