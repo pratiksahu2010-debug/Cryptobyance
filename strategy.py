@@ -248,11 +248,13 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         float(c.ema9) > float(c.ema21)
         and float(c.close) > float(c.vwap)
         and float(c.adx) >= ADX_MIN
+        and float(c.plus_di) > float(c.minus_di)
     )
     short_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
         and float(c.adx) >= ADX_MIN
+        and float(c.minus_di) > float(c.plus_di)
     )
     if not (long_ok or short_ok):
         return None
