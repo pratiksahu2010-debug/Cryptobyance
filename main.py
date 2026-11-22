@@ -297,7 +297,7 @@ async def wait_for_first_completed_candle() -> float:
 
 def _is_retryable_scan_error(exc: Exception) -> bool:
     """Retry transient I/O and database failures; never retry invalid market data or code errors."""
-    if isinstance(exc, (ValueError, TypeError, KeyError, AssertionError)):
+    if isinstance(exc, (ValueError, TypeError, KeyError, AssertionError, AttributeError, NameError, ImportError, NotImplementedError)):
         return False
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
@@ -318,7 +318,7 @@ def _effective_candle_clock(reference_ms: int) -> int:
     return max(int(reference_ms), int(time.time() * 1000))
 
 
-async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> None:
+async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str, now_ms: int, session_started_ms: int | None = None, candidate_store=None, journal=None) -> str | None:
     """Scan the single Normal 5m indicator model; 15m is descriptive context only."""
     async with semaphore:
         rows = []
