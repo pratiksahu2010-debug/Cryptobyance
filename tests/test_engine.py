@@ -914,13 +914,16 @@ class EngineTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["context"], "15m unavailable")
 
-    def test_simple_strategy_rejects_ema_alignment_older_than_two_bars(self):
+    def test_simple_strategy_accepts_ema_alignment_older_than_two_bars(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
         five.loc[five.index[-4], "ema9"] = 100.1
         five.loc[five.index[-4], "ema21"] = 100.0
         with patch("strategy.indicators", side_effect=[five, fifteen]):
-            self.assertIsNone(evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000)))
+            signal = evaluate_signal(self._trend_frame(1, 300000), self._trend_frame(1, 900000))
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertEqual(signal["diagnostics"]["ema_alignment_age_bars"], 3)
 
     def test_simple_strategy_does_not_require_ema_slope_gate(self):
         from unittest.mock import patch
