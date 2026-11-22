@@ -77,16 +77,17 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         labels = [button["callback_data"].split("|")[2] for row in keyboard for button in row]
         self.assertEqual(labels, ["GOOD_ENTRY", "BAD_SIGNAL", "LATE_ENTRY", "FAKE_SIGNAL", "SKIP"])
 
-    async def test_retries_rate_limit_then_succeeds(self):
+    async def test_rate_limit_returns_retry_after_to_durable_outbox(self):
         client = FakeClient([
-            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 2}}),
-            httpx.Response(200, json={"ok": True}),
+            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}}),
         ])
         notifier = TelegramNotifier(client, "123:secret", "456")
-        with patch("telegram.asyncio.sleep", new_callable=AsyncMock) as sleep:
-            self.assertTrue(await notifier.send(self._signal()))
-        self.assertEqual(client.calls, 2)
-        sleep.assert_awaited_once_with(2.0)
+        result = await notifier.send(self._signal())
+        self.assertFalse(result)
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.error_type, "HTTP_429")
+        self.assertEqual(result.retry_after, 120.0)
+        self.assertEqual(client.calls, 1)
 
     async def test_does_not_retry_permanent_telegram_rejection(self):
         client = FakeClient([httpx.Response(400, json={"ok": False, "description": "bad request"})])
