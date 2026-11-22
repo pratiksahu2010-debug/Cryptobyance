@@ -926,6 +926,24 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(signal["target2"], signal["entry"] + risk * 2.0, places=8)
         self.assertAlmostEqual(signal["risk_distance"], risk, places=8)
 
+    def test_executable_setup_rejects_long_when_directional_di_is_bearish(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("LONG")
+        five.loc[five.index[-1], "plus_di"] = 10.0
+        five.loc[five.index[-1], "minus_di"] = 30.0
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(1, 300000), None)
+        self.assertIsNone(signal)
+
+    def test_executable_setup_rejects_short_when_directional_di_is_bullish(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("SHORT")
+        five.loc[five.index[-1], "plus_di"] = 30.0
+        five.loc[five.index[-1], "minus_di"] = 10.0
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(-1, 300000), None)
+        self.assertIsNone(signal)
+
     def test_legacy_signal_keeps_atr_stop_and_consistent_supplemental_targets(self):
         from unittest.mock import patch
         five, fifteen = self._indicator_frame("LONG"), self._context_frame(True)
