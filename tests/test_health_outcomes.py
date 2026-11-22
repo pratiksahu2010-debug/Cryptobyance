@@ -27,15 +27,21 @@ class HealthOutcomeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.body, b"OK")
 
-    async def test_readiness_returns_service_unavailable_until_scanner_is_healthy(self):
+    async def test_render_compatibility_probe_returns_200_during_scanner_warmup(self):
         with patch("main.build_health_payload", return_value={"ok": False, "scanner_running": False}):
-            response = await main.readiness()
+            response = await main.readiness_compatibility()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.body, b'{"ok":false,"scanner_running":false}')
+
+    async def test_strict_readiness_returns_service_unavailable_until_scanner_is_healthy(self):
+        with patch("main.build_health_payload", return_value={"ok": False, "scanner_running": False}):
+            response = await main.strict_readiness()
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.body, b'{"ok":false,"scanner_running":false}')
 
-    async def test_readiness_returns_success_when_scanner_is_healthy(self):
+    async def test_strict_readiness_returns_success_when_scanner_is_healthy(self):
         with patch("main.build_health_payload", return_value={"ok": True, "scanner_running": True}):
-            response = await main.readiness()
+            response = await main.strict_readiness()
         self.assertEqual(response.status_code, 200)
 
     def test_health_requires_database_telegram_and_a_fresh_complete_scan(self):
