@@ -91,8 +91,27 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
     async def test_does_not_retry_permanent_telegram_rejection(self):
         client = FakeClient([httpx.Response(400, json={"ok": False, "description": "bad request"})])
         notifier = TelegramNotifier(client, "123:secret", "456")
-        self.assertFalse(await notifier.send(self._signal()))
+        result = await notifier.send(self._signal())
+        self.assertFalse(result)
+        self.assertFalse(result.retryable)
+        self.assertEqual(result.error_type, "HTTP_400")
+        self.assertEqual(result.http_status, 400)
         self.assertEqual(client.calls, 1)
+
+    async def test_server_error_is_classified_as_retryable_after_bounded_attempts(self):
+        client = FakeClient([
+            httpx.Response(503, json={"ok": False}),
+            httpx.Response(503, json={"ok": False}),
+            httpx.Response(503, json={"ok": False}),
+        ])
+        notifier = TelegramNotifier(client, "123:secret", "456")
+        with patch("telegram.asyncio.sleep", new_callable=AsyncMock):
+            result = await notifier.send(self._signal())
+        self.assertFalse(result)
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.error_type, "HTTP_503")
+        self.assertEqual(result.http_status, 503)
+        self.assertEqual(client.calls, 3)
 
     async def test_network_error_does_not_log_bot_token(self):
         token = "123:secret"
