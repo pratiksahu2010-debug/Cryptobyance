@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -32,7 +33,7 @@ class ScannerRetryTests(unittest.TestCase):
             async def refresh_latest_closed_candle(self, pair, now_ms):
                 raise AssertionError("successful symbol must not repeat REST confirmation")
 
-        with unittest.mock.patch.dict(main.last_seen_candle, {"CACHED_TEST/USDT": 1_900_000_000_000}):
+        with patch.dict(main.last_seen_candle, {"CACHED_TEST/USDT": 1_900_000_000_000}):
             result = asyncio.run(main.scan_symbol(
                 CachedFeed(), object(), asyncio.Semaphore(1),
                 "CACHED_TEST/USDT", "B-CACHED_TEST_USDT", 1_900_000_000_000,
