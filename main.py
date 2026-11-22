@@ -325,9 +325,14 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
         try:
             # A same-candle retry must not repeat REST confirmation or outcome
             # work for symbols already completed successfully in this candle.
-            cached_rows = feed.rows(pair)
-            cached_ts = int(cached_rows[-1][0]) if cached_rows else 0
-            if cached_ts and last_seen_candle.get(display_symbol) == cached_ts:
+            # Derive the expected completed 5m open from the wall clock rather
+            # than the newest cache row, which may be a provisional live candle.
+            effective_now_ms = _effective_candle_clock(now_ms)
+            expected_closed_open = (
+                (effective_now_ms // CANDLE_INTERVAL_SECONDS // 1) * CANDLE_INTERVAL_SECONDS
+                - CANDLE_INTERVAL_SECONDS
+            )
+            if last_seen_candle.get(display_symbol) == expected_closed_open:
                 state["symbols_ok"] += 1
                 return
             # Require one REST-confirmed final OHLCV for the newly closed 5m
