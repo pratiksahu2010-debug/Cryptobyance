@@ -302,12 +302,9 @@ class SignalJournal:
         normalized = []
         for candle in candles:
             ts = int(candle.get("timestamp", 0))
-            high, low, close = (
-                float(candle.get("high", 0)), float(candle.get("low", 0)),
-                float(candle.get("close", 0)),
-            )
-            if ts and all(math.isfinite(v) for v in (high, low, close)) and high >= low > 0:
-                normalized.append((ts, high, low, close))
+            high, low = float(candle.get("high", 0)), float(candle.get("low", 0))
+            if ts and math.isfinite(high) and math.isfinite(low) and high >= low > 0:
+                normalized.append((ts, high, low))
         if not normalized:
             return 0
         async with self.pool.acquire() as conn:
@@ -316,6 +313,7 @@ class SignalJournal:
                           COALESCE(target2,target) AS target2,risk_per_unit,cost_pct,
                           best_favorable_r,worst_adverse_r,bars_observed,
                           last_observed_candle_open_ms,data_gap,status,
+                          exit_candle_open_ms,realized_r,
                           tp1_hit_candle_open_ms,tp2_hit_candle_open_ms,
                           tp2_tracking_status,tp2_realized_r,tp2_bars_observed
                    FROM journal_candidates
@@ -327,20 +325,20 @@ class SignalJournal:
                 entry, stop = float(row["entry"]), float(row["stop"])
                 target, target2 = float(row["target"]), float(row["target2"])
                 risk = float(row["risk_per_unit"])
-                cost_r = (entry * float(row.get("cost_pct") or 0.0) / 100.0) / risk
+                cost_r = (entry * float(row["cost_pct"] or 0.0) / 100.0) / risk
                 best, worst = float(row["best_favorable_r"]), float(row["worst_adverse_r"])
                 bars = int(row["bars_observed"])
-                tp2_bars = int(row.get("tp2_bars_observed") or 0)
+                tp2_bars = int(row["tp2_bars_observed"] or 0)
                 last_ts, gap = int(row["last_observed_candle_open_ms"]), bool(row["data_gap"])
-                status = str(row.get("status") or "OPEN")
-                exit_ts, realized = row.get("exit_candle_open_ms"), row.get("realized_r")
-                tp1_ts, tp2_ts = row.get("tp1_hit_candle_open_ms"), row.get("tp2_hit_candle_open_ms")
-                tp2_status = str(row.get("tp2_tracking_status") or "NOT_STARTED")
-                tp2_realized = row.get("tp2_realized_r")
+                status = str(row["status"] or "OPEN")
+                exit_ts, realized = row["exit_candle_open_ms"], row["realized_r"]
+                tp1_ts, tp2_ts = row["tp1_hit_candle_open_ms"], row["tp2_hit_candle_open_ms"]
+                tp2_status = str(row["tp2_tracking_status"] or "NOT_STARTED")
+                tp2_realized = row["tp2_realized_r"]
                 tracking_tp2 = status == "TARGET" and tp2_status == "OPEN"
                 changed = False
 
-                for ts, high, low, close in normalized:
+                for ts, high, low in normalized:
                     if ts <= last_ts or ts <= int(row["candle_open_ms"]):
                         continue
                     if ts - last_ts != 300_000:
