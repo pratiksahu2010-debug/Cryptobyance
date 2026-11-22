@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS journal_candidates (
     target DOUBLE PRECISION NOT NULL,
     target2 DOUBLE PRECISION,
     risk_model TEXT NOT NULL DEFAULT 'legacy_atr',
-    cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.10,
+    cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     risk_per_unit DOUBLE PRECISION NOT NULL CHECK(risk_per_unit > 0),
     snapshot JSONB NOT NULL,
     rejection_reasons JSONB NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS journal_candidates (
 );
 ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS target2 DOUBLE PRECISION;
 ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS risk_model TEXT NOT NULL DEFAULT 'legacy_atr';
-ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.10;
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.0;
 ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp1_hit_candle_open_ms BIGINT;
 ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp2_hit_candle_open_ms BIGINT;
 ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp2_tracking_status TEXT NOT NULL DEFAULT 'NOT_STARTED';
