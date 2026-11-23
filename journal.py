@@ -10,7 +10,8 @@ import math
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from strategy import indicators, ADX_MIN, ATR_STOP_MULT, MIN_RR
+from strategy import indicators, ADX_MIN
+from config import settings
 
 JOURNAL_DDL = """
 CREATE TABLE IF NOT EXISTS journal_feedback (
@@ -40,6 +41,9 @@ CREATE TABLE IF NOT EXISTS journal_candidates (
     entry DOUBLE PRECISION NOT NULL,
     stop DOUBLE PRECISION NOT NULL,
     target DOUBLE PRECISION NOT NULL,
+    target2 DOUBLE PRECISION,
+    risk_model TEXT NOT NULL DEFAULT 'legacy_atr',
+    cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     risk_per_unit DOUBLE PRECISION NOT NULL CHECK(risk_per_unit > 0),
     snapshot JSONB NOT NULL,
     rejection_reasons JSONB NOT NULL,
@@ -52,10 +56,24 @@ CREATE TABLE IF NOT EXISTS journal_candidates (
     data_gap BOOLEAN NOT NULL DEFAULT FALSE,
     exit_candle_open_ms BIGINT,
     realized_r DOUBLE PRECISION,
+    tp1_hit_candle_open_ms BIGINT,
+    tp2_hit_candle_open_ms BIGINT,
+    tp2_tracking_status TEXT NOT NULL DEFAULT 'NOT_STARTED',
+    tp2_realized_r DOUBLE PRECISION,
+    tp2_bars_observed INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(symbol,direction,candle_open_ms)
 );
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS target2 DOUBLE PRECISION;
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS risk_model TEXT NOT NULL DEFAULT 'legacy_atr';
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS cost_pct DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp1_hit_candle_open_ms BIGINT;
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp2_hit_candle_open_ms BIGINT;
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp2_tracking_status TEXT NOT NULL DEFAULT 'NOT_STARTED';
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp2_realized_r DOUBLE PRECISION;
+ALTER TABLE journal_candidates ADD COLUMN IF NOT EXISTS tp2_bars_observed INTEGER NOT NULL DEFAULT 0;
+UPDATE journal_candidates SET target2=target WHERE target2 IS NULL;
 CREATE INDEX IF NOT EXISTS ix_journal_candidates_open
  ON journal_candidates(symbol,status,last_observed_candle_open_ms);
 CREATE TABLE IF NOT EXISTS journal_candidate_feedback (
@@ -221,13 +239,20 @@ def rejected_observation(df5, df15, *, side: str, state_input: dict[str, Any]) -
                        "BEARISH" if ctx.ema9 < ctx.ema21 else "NEUTRAL")
 
     entry = values["close"]
-    risk = values["atr"] * ATR_STOP_MULT
+    # Counterfactual candidates must use the same structural risk model as
+    # executable production alerts; the old ATR/legacy-R model was not comparable.
+    swing = frame.iloc[-(settings.swing_lookback_bars + 1):-1]
+    if len(swing) < settings.swing_lookback_bars:
+        return None
+    stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
+    risk = entry - stop if side == "LONG" else stop - entry
     if not math.isfinite(risk) or risk <= 0:
         return None
-    stop = entry - risk if side == "LONG" else entry + risk
-    target = entry + risk * MIN_RR if side == "LONG" else entry - risk * MIN_RR
+    target = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
+    target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     snapshot = {
-        "version": 2, **values,
+        "version": 3, "risk_model": "swing_structure",
+        "target1_r": settings.tp1_r, "target2_r": settings.tp2_r, **values,
         "rsi_previous": float(p.rsi),
         "ema_alignment_age_bars": alignment_age,
         "ema9_slope_atr_3bars": fast_slope,
@@ -241,8 +266,8 @@ def rejected_observation(df5, df15, *, side: str, state_input: dict[str, Any]) -
         return None
     return {
         "symbol": "", "direction": side, "candle_open_ms": int(c.timestamp),
-        "entry": entry, "stop": stop, "target": target,
-        "risk_per_unit": risk, "snapshot": snapshot,
+        "entry": entry, "stop": stop, "target": target, "target2": target2,
+        "risk_model": "swing_structure", "risk_per_unit": risk, "snapshot": snapshot,
         "rejection_reasons": sorted(set(reasons)),
     }
 
@@ -258,12 +283,14 @@ class SignalJournal:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO journal_candidates(
-                     symbol,direction,candle_open_ms,entry,stop,target,risk_per_unit,
-                     snapshot,rejection_reasons,last_observed_candle_open_ms)
-                   VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$3)
+                     symbol,direction,candle_open_ms,entry,stop,target,target2,risk_model,
+                     cost_pct,risk_per_unit,snapshot,rejection_reasons,last_observed_candle_open_ms)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$3)
                    ON CONFLICT(symbol,direction,candle_open_ms) DO NOTHING RETURNING id""",
                 observation["symbol"], observation["direction"], observation["candle_open_ms"],
                 observation["entry"], observation["stop"], observation["target"],
+                observation.get("target2", observation["target"]),
+                observation.get("risk_model", "legacy_atr"), settings.outcome_cost_pct,
                 observation["risk_per_unit"],
                 json.dumps(observation["snapshot"], separators=(",", ":"), allow_nan=False),
                 json.dumps(observation["rejection_reasons"], separators=(",", ":")),
@@ -271,6 +298,7 @@ class SignalJournal:
         return row is not None
 
     async def update_rejected_outcomes(self, symbol: str, candles: list[dict]) -> int:
+        """Track rejected candidates with production swing risk and TP1/TP2 milestones."""
         normalized = []
         for candle in candles:
             ts = int(candle.get("timestamp", 0))
@@ -281,51 +309,101 @@ class SignalJournal:
             return 0
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT id,direction,candle_open_ms,entry,stop,target,risk_per_unit,
+                """SELECT id,direction,candle_open_ms,entry,stop,target,
+                          COALESCE(target2,target) AS target2,risk_per_unit,cost_pct,
                           best_favorable_r,worst_adverse_r,bars_observed,
-                          last_observed_candle_open_ms,data_gap
-                   FROM journal_candidates WHERE symbol=$1 AND status='OPEN'
+                          last_observed_candle_open_ms,data_gap,status,
+                          exit_candle_open_ms,realized_r,
+                          tp1_hit_candle_open_ms,tp2_hit_candle_open_ms,
+                          tp2_tracking_status,tp2_realized_r,tp2_bars_observed
+                   FROM journal_candidates
+                   WHERE symbol=$1 AND (status='OPEN' OR tp2_tracking_status='OPEN')
                    ORDER BY candle_open_ms""", symbol)
             updated = 0
             for row in rows:
                 side = row["direction"]
-                entry, stop, target = float(row["entry"]), float(row["stop"]), float(row["target"])
+                entry, stop = float(row["entry"]), float(row["stop"])
+                target, target2 = float(row["target"]), float(row["target2"])
                 risk = float(row["risk_per_unit"])
+                cost_r = (entry * float(row["cost_pct"] or 0.0) / 100.0) / risk
                 best, worst = float(row["best_favorable_r"]), float(row["worst_adverse_r"])
-                bars, last_ts, gap = int(row["bars_observed"]), int(row["last_observed_candle_open_ms"]), bool(row["data_gap"])
-                status, exit_ts, realized = "OPEN", None, None
+                bars = int(row["bars_observed"])
+                tp2_bars = int(row["tp2_bars_observed"] or 0)
+                last_ts, gap = int(row["last_observed_candle_open_ms"]), bool(row["data_gap"])
+                status = str(row["status"] or "OPEN")
+                exit_ts, realized = row["exit_candle_open_ms"], row["realized_r"]
+                tp1_ts, tp2_ts = row["tp1_hit_candle_open_ms"], row["tp2_hit_candle_open_ms"]
+                tp2_status = str(row["tp2_tracking_status"] or "NOT_STARTED")
+                tp2_realized = row["tp2_realized_r"]
+                tracking_tp2 = status == "TARGET" and tp2_status == "OPEN"
+                changed = False
+
                 for ts, high, low in normalized:
                     if ts <= last_ts or ts <= int(row["candle_open_ms"]):
                         continue
                     if ts - last_ts != 300_000:
-                        status, gap, exit_ts = "AMBIGUOUS", True, ts
-                        bars += 1
+                        gap = True
                         last_ts = ts
+                        changed = True
+                        if tracking_tp2:
+                            tp2_status = "AMBIGUOUS"
+                        else:
+                            status, exit_ts = "AMBIGUOUS", ts
+                            bars += 1
                         break
+
                     favorable = max(0.0, (high-entry)/risk) if side == "LONG" else max(0.0, (entry-low)/risk)
                     adverse = max(0.0, (entry-low)/risk) if side == "LONG" else max(0.0, (high-entry)/risk)
                     best, worst = max(best, favorable), max(worst, adverse)
                     stop_hit = low <= stop if side == "LONG" else high >= stop
-                    target_hit = high >= target if side == "LONG" else low <= target
-                    bars += 1
+                    tp1_hit = high >= target if side == "LONG" else low <= target
+                    tp2_hit = high >= target2 if side == "LONG" else low <= target2
                     last_ts = ts
-                    if stop_hit and target_hit:
-                        status, exit_ts = "AMBIGUOUS", ts
-                    elif stop_hit:
-                        status, exit_ts, realized = "STOP_LOSS", ts, -1.0
-                    elif target_hit:
-                        status, exit_ts = "TARGET", ts
-                        realized = abs(target-entry)/risk
-                    if status != "OPEN":
+                    changed = True
+
+                    if tracking_tp2:
+                        tp2_bars += 1
+                        if stop_hit:
+                            tp2_status = "STOPPED"
+                            break
+                        if tp2_hit:
+                            tp2_status = "HIT"
+                            tp2_ts = ts
+                            tp2_realized = abs(target2-entry)/risk - cost_r
+                            break
+                        continue
+
+                    bars += 1
+                    # Match the delivered-signal conservative same-bar rule.
+                    if stop_hit:
+                        status, exit_ts, realized = "STOP_LOSS", ts, -1.0 - cost_r
                         break
-                if bars == int(row["bars_observed"]) and gap == bool(row["data_gap"]):
+                    if tp1_hit:
+                        status, exit_ts = "TARGET", ts
+                        tp1_ts = ts
+                        realized = abs(target-entry)/risk - cost_r
+                        if tp2_hit:
+                            tp2_status = "HIT"
+                            tp2_ts = ts
+                            tp2_realized = abs(target2-entry)/risk - cost_r
+                        else:
+                            tp2_status = "OPEN"
+                        break
+
+                if not changed:
                     continue
                 await conn.execute(
-                    """UPDATE journal_candidates SET status=$2,best_favorable_r=$3,
-                         worst_adverse_r=$4,bars_observed=$5,last_observed_candle_open_ms=$6,
-                         data_gap=$7,exit_candle_open_ms=$8,realized_r=$9,updated_at=NOW()
-                       WHERE id=$1 AND status='OPEN'""",
-                    int(row["id"]), status, best, worst, bars, last_ts, gap, exit_ts, realized)
+                    """UPDATE journal_candidates
+                       SET status=$2,best_favorable_r=$3,worst_adverse_r=$4,
+                           bars_observed=$5,last_observed_candle_open_ms=$6,
+                           data_gap=$7,exit_candle_open_ms=$8,realized_r=$9,
+                           tp1_hit_candle_open_ms=$10,tp2_hit_candle_open_ms=$11,
+                           tp2_tracking_status=$12,tp2_realized_r=$13,
+                           tp2_bars_observed=$14,updated_at=NOW()
+                       WHERE id=$1 AND (status='OPEN' OR tp2_tracking_status='OPEN')""",
+                    int(row["id"]), status, best, worst, bars, last_ts, gap, exit_ts,
+                    realized, tp1_ts, tp2_ts, tp2_status, tp2_realized, tp2_bars,
+                )
                 updated += 1
         return updated
 
@@ -366,13 +444,14 @@ class SignalJournal:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO journal_candidates(
-                     symbol,direction,candle_open_ms,entry,stop,target,risk_per_unit,
-                     snapshot,rejection_reasons,last_observed_candle_open_ms)
-                   VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$3)
+                     symbol,direction,candle_open_ms,entry,stop,target,target2,risk_model,
+                     cost_pct,risk_per_unit,snapshot,rejection_reasons,last_observed_candle_open_ms)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,'manual',$8,$9,$10::jsonb,$11::jsonb,$3)
                    ON CONFLICT(symbol,direction,candle_open_ms) DO UPDATE
                      SET snapshot=journal_candidates.snapshot || EXCLUDED.snapshot
                    RETURNING id""",
-                symbol, direction, int(candle_open_ms), entry, stop, target, risk,
+                symbol, direction, int(candle_open_ms), entry, stop, target, target,
+                settings.outcome_cost_pct, risk,
                 json.dumps(snapshot, separators=(",", ":")),
                 json.dumps(["manual_missed_opportunity"]),
             )
@@ -496,8 +575,8 @@ class SignalJournal:
                           COUNT(*) FILTER (WHERE effective_result='LOSS') AS losses,
                           COUNT(*) FILTER (WHERE effective_result='TIMEOUT') AS timeouts,
                           COUNT(*) FILTER (WHERE effective_result IS NULL) AS unresolved,
-                          COUNT(*) FILTER (WHERE category IN ('FAKE_SIGNAL','BAD_SIGNAL','LATE_ENTRY')) AS false_labels,
-                          COUNT(*) FILTER (WHERE category IN ('GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL')) AS manual_labels,
+                          COUNT(*) FILTER (WHERE category IN ('FAKE_SIGNAL','BAD_SIGNAL','LATE_ENTRY','WRONG_DIRECTION')) AS false_labels,
+                          COUNT(*) FILTER (WHERE category IN ('GOOD_ENTRY','BAD_SIGNAL','LATE_ENTRY','FAKE_SIGNAL','WRONG_DIRECTION')) AS manual_labels,
                           ROUND(AVG(realized_r)::numeric,3) AS avg_net_realized_r,
                           ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
                           ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
@@ -554,7 +633,9 @@ class SignalJournal:
                               s.payload::text AS payload,o.status AS outcome_status,
                               o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
                               o.best_favorable_pct,o.worst_adverse_pct,
-                              o.best_favorable_atr,o.worst_adverse_atr
+                              o.best_favorable_atr,o.worst_adverse_atr,
+                              o.tp1_hit_candle_open_ms,o.tp2_hit_candle_open_ms,
+                              o.tp2_tracking_status,o.tp2_realized_r,o.tp2_bars_observed
                        FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                        WHERE s.status='SENT'
                        ORDER BY s.delivered_at DESC,s.id DESC LIMIT $1""", limit)
@@ -582,6 +663,8 @@ class SignalJournal:
                           o.first_hit,o.result,o.realized_r,o.best_favorable_r,o.worst_adverse_r,
                           o.best_favorable_pct,o.worst_adverse_pct,
                           o.best_favorable_atr,o.worst_adverse_atr,
+                          o.tp1_hit_candle_open_ms,o.tp2_hit_candle_open_ms,
+                          o.tp2_tracking_status,o.tp2_realized_r,o.tp2_bars_observed,
                           (SELECT json_agg(json_build_object(
                               'id',f.id,'category',f.category,'comment',f.comment,
                               'source',f.source,'created_at',f.created_at)
@@ -607,10 +690,13 @@ class SignalJournal:
         limit = max(1, min(int(limit), 250))
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT id,symbol,direction,candle_open_ms,entry,stop,target,
-                          snapshot::text AS snapshot,rejection_reasons::text AS rejection_reasons,
+                """SELECT id,symbol,direction,candle_open_ms,entry,stop,target,target2,
+                          risk_model,cost_pct,snapshot::text AS snapshot,
+                          rejection_reasons::text AS rejection_reasons,
                           status,best_favorable_r,worst_adverse_r,bars_observed,
-                          data_gap,realized_r,created_at,
+                          data_gap,realized_r,tp1_hit_candle_open_ms,
+                          tp2_hit_candle_open_ms,tp2_tracking_status,tp2_realized_r,
+                          tp2_bars_observed,created_at,
                           (SELECT json_agg(json_build_object('id',f.id,'category',f.category,
                               'comment',f.comment,'source',f.source,'created_at',f.created_at)
                               ORDER BY f.created_at DESC)::text
@@ -1319,6 +1405,10 @@ class SignalJournal:
                           COUNT(*) FILTER (WHERE o.status='TIMEOUT') AS timeouts,
                           COUNT(*) FILTER (WHERE o.status='OPEN') AS open,
                           COUNT(*) FILTER (WHERE o.status='AMBIGUOUS') AS ambiguous,
+                          COUNT(*) FILTER (WHERE o.first_hit='TP1') AS tp1_hits,
+                          COUNT(*) FILTER (WHERE o.tp2_tracking_status='HIT') AS tp2_hits,
+                          COUNT(*) FILTER (WHERE o.tp2_tracking_status='OPEN') AS tp2_tracking_open,
+                          ROUND(AVG(o.tp2_realized_r) FILTER (WHERE o.tp2_tracking_status='HIT')::numeric,3) AS avg_tp2_net_r,
                           ROUND(AVG(o.realized_r)::numeric,3) AS avg_realized_r
                    FROM signal_history s LEFT JOIN signal_outcomes o ON o.signal_id=s.id
                    WHERE s.status='SENT'""")
@@ -1327,9 +1417,13 @@ class SignalJournal:
             candidate_feedback = await conn.fetch(
                 "SELECT category,COUNT(*) AS count FROM journal_candidate_feedback GROUP BY category ORDER BY count DESC,category")
             rejected = await conn.fetch(
-                """SELECT status,COUNT(*) AS count,ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
-                          ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r
-                   FROM journal_candidates GROUP BY status ORDER BY status""")
+                """SELECT risk_model,status,COUNT(*) AS count,
+                          ROUND(AVG(realized_r)::numeric,3) AS avg_realized_r,
+                          ROUND(AVG(best_favorable_r)::numeric,3) AS avg_mfe_r,
+                          ROUND(AVG(worst_adverse_r)::numeric,3) AS avg_mae_r,
+                          COUNT(*) FILTER (WHERE tp2_tracking_status='HIT') AS tp2_hits,
+                          ROUND(AVG(tp2_realized_r) FILTER (WHERE tp2_tracking_status='HIT')::numeric,3) AS avg_tp2_net_r
+                   FROM journal_candidates GROUP BY risk_model,status ORDER BY risk_model,status""")
             reasons = await conn.fetch(
                 """SELECT r.reason,COUNT(*) AS count FROM journal_candidates c
                    CROSS JOIN LATERAL jsonb_array_elements_text(c.rejection_reasons) AS r(reason)

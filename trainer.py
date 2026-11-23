@@ -69,8 +69,9 @@ def _metrics(samples: list[dict]) -> dict:
         return {"sample_count": 0, "win_rate": None, "expectancy_r": None,
                 "average_r": None, "false_signal_rate": None}
     wins = sum(item["effective_result"] == "WIN" for item in samples)
-    manual = [item for item in samples if item["manual_label"] in
-              {"GOOD_ENTRY", "BAD_SIGNAL", "LATE_ENTRY", "FAKE_SIGNAL"}]
+    # WRONG_DIRECTION is an explicit manual negative label and belongs
+    # in the denominator, just like BAD_SIGNAL/LATE_ENTRY/FAKE_SIGNAL.
+    manual = [item for item in samples if item["manual_label"] in MANUAL_RESULT]
     false_count = sum(item["manual_label"] in FALSE_LABELS for item in manual)
     expectancy = sum(item["realized_r"] for item in samples) / len(samples)
     return {

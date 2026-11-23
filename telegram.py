@@ -3,12 +3,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from html import escape
 from datetime import datetime, timezone
 
 import httpx
 
 log = logging.getLogger("cryptobyance.telegram")
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Structured delivery status for durable outbox retry decisions."""
+
+    delivered: bool
+    retryable: bool = False
+    error_type: str = "UNKNOWN"
+    http_status: int | None = None
+    retry_after: float | None = None
+
+    def __bool__(self) -> bool:
+        return self.delivered
 
 # httpx emits request URLs at INFO level. Telegram's bot token is part of that
 # URL, so keep transport loggers above INFO even when application logging is DEBUG/INFO.
@@ -96,14 +111,14 @@ class TelegramNotifier:
             + "\n\n<i>Signal only. Confirm execution conditions independently; not financial advice.</i>"
         )
 
-    async def send(self, signal: dict, signal_id: int | None = None) -> bool:
+    async def send(self, signal: dict, signal_id: int | None = None) -> DeliveryResult:
         if not self.configured:
             if not self._missing_config_logged:
                 log.error(
                     "Telegram is not configured; set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
                 )
                 self._missing_config_logged = True
-            return False
+            return DeliveryResult(False, False, 'MISSING_CREDENTIALS')
 
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         body = {
@@ -137,34 +152,39 @@ class TelegramNotifier:
                     payload = {}
 
                 if 200 <= status < 300 and isinstance(payload, dict) and payload.get("ok") is True:
-                    return True
+                    return DeliveryResult(True, False, 'DELIVERED', status)
 
                 retry_after = None
                 if isinstance(payload, dict):
                     retry_after = (payload.get("parameters") or {}).get("retry_after")
 
-                retryable = status == 429 or status >= 500
+                retryable = status == 429 or 500 <= status <= 599
+                error_type = f"HTTP_{status}"
                 if not retryable:
                     log.error("Telegram rejected alert status=%s", status)
-                    return False
+                    return DeliveryResult(False, False, error_type, status)
+                if status == 429:
+                    # Honor Telegram's Retry-After via the durable outbox scheduler.
+                    # Do not sleep while holding a short delivery lease.
+                    try:
+                        retry_after_value = float(retry_after) if retry_after is not None else None
+                    except (TypeError, ValueError):
+                        retry_after_value = None
+                    return DeliveryResult(False, True, error_type, status, retry_after_value)
                 if attempt == self.attempts:
                     log.error("Telegram delivery exhausted retries status=%s", status)
-                    return False
+                    return DeliveryResult(False, True, error_type, status)
 
-                try:
-                    delay = min(5.0, max(1.0, float(retry_after))) if retry_after is not None else float(attempt)
-                except (TypeError, ValueError):
-                    delay = float(attempt)
-                await asyncio.sleep(delay)
+                await asyncio.sleep(float(attempt))
 
             except httpx.RequestError as exc:
                 # Exception strings may contain the bot-token URL; log only its type.
                 if attempt == self.attempts:
                     log.error("Telegram network delivery failed after retries error_type=%s", type(exc).__name__)
-                    return False
+                    return DeliveryResult(False, True, type(exc).__name__)
                 await asyncio.sleep(float(attempt))
             except Exception as exc:
                 log.error("Telegram delivery failed error_type=%s", type(exc).__name__)
-                return False
+                return DeliveryResult(False, False, type(exc).__name__)
 
-        return False
+        return DeliveryResult(False, True, 'RETRY_EXHAUSTED')

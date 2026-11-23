@@ -37,10 +37,42 @@ class JournalSchemaTests(unittest.TestCase):
         self.assertNotIn("15m_trend_veto", observation["rejection_reasons"])
         self.assertNotIn("15m_context_unavailable", observation["rejection_reasons"])
         self.assertEqual(observation["rejection_reasons"], ["rsi_cross_not_confirmed"])
-        self.assertEqual(observation["snapshot"]["version"], 2)
+        self.assertEqual(observation["snapshot"]["version"], 3)
+        self.assertEqual(observation["risk_model"], "swing_structure")
+        self.assertAlmostEqual(observation["risk_per_unit"], 1.0)
+        self.assertAlmostEqual(observation["target"], 102.0)
+        self.assertAlmostEqual(observation["target2"], 103.0)
         self.assertGreater(observation["snapshot"]["price_vwap_distance_atr"], 0)
         self.assertNotIn("entry_extended_from_vwap", observation["rejection_reasons"])
         self.assertNotIn("ema_alignment_too_old", observation["rejection_reasons"])
+
+    def test_rejected_observation_uses_production_swing_risk_and_targets(self):
+        import numpy as np
+        import pandas as pd
+        from unittest.mock import patch
+
+        lows = [100.0] * 60
+        highs = [102.0] * 60
+        lows[-11:-1] = [99.0] * 10
+        five = pd.DataFrame({
+            "timestamp": np.arange(60) * 300_000,
+            "open": [101.0] * 60, "high": highs, "low": lows,
+            "close": [101.0] * 60, "volume": [100.0] * 60,
+            "ema9": [101.0] * 60, "ema21": [100.0] * 60,
+            "rsi": [55.0] * 60, "adx": [25.0] * 60,
+            "plus_di": [30.0] * 60, "minus_di": [10.0] * 60,
+            "atr": [2.0] * 60, "vwap": [100.0] * 60,
+        })
+        with patch("journal.indicators", return_value=five):
+            observation = rejected_observation(
+                five, None, side="LONG",
+                state_input={"setup_valid": True, "trigger": False},
+            )
+        self.assertEqual(observation["risk_model"], "swing_structure")
+        self.assertAlmostEqual(observation["stop"], 99.0)
+        self.assertAlmostEqual(observation["risk_per_unit"], 2.0)
+        self.assertAlmostEqual(observation["target"], 103.0)
+        self.assertAlmostEqual(observation["target2"], 105.0)
 
     def test_rejected_observation_uses_armed_side_and_exact_live_setup_gates(self):
         import numpy as np
@@ -71,6 +103,9 @@ class JournalSchemaTests(unittest.TestCase):
     def test_journal_tables_are_additive_and_auditable(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_feedback", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS journal_candidates", JOURNAL_DDL)
+        self.assertIn("target2 DOUBLE PRECISION", JOURNAL_DDL)
+        self.assertIn("risk_model TEXT", JOURNAL_DDL)
+        self.assertIn("tp2_tracking_status", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS training_proposals", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS config_history", JOURNAL_DDL)
         self.assertIn("CREATE TABLE IF NOT EXISTS config_history_events", JOURNAL_DDL)
@@ -138,6 +173,54 @@ class FakeStore:
     def __init__(self, conn):
         self.pool = FakePool(conn)
 
+
+class RejectedOutcomeTrackingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejected_candidate_tracks_tp2_after_tp1(self):
+        conn = FakeConnection(fetchrows_result=[{
+            "id": 41, "direction": "LONG", "candle_open_ms": 1_800_000,
+            "entry": 101.0, "stop": 99.0, "target": 103.0, "target2": 105.0,
+            "risk_per_unit": 2.0, "cost_pct": 0.10,
+            "best_favorable_r": 1.0, "worst_adverse_r": 0.25,
+            "bars_observed": 1, "last_observed_candle_open_ms": 2_100_000,
+            "data_gap": False, "status": "TARGET",
+            "exit_candle_open_ms": 2_100_000, "realized_r": 0.9495,
+            "tp1_hit_candle_open_ms": 2_100_000, "tp2_hit_candle_open_ms": None,
+            "tp2_tracking_status": "OPEN", "tp2_realized_r": None,
+            "tp2_bars_observed": 0,
+        }])
+        journal = SignalJournal(FakeStore(conn))
+        updated = await journal.update_rejected_outcomes("BTC/USDT", [{
+            "timestamp": 2_400_000, "high": 106.0, "low": 100.5, "close": 105.0,
+        }])
+        self.assertEqual(updated, 1)
+        args = conn.execute.await_args.args
+        self.assertEqual(args[2], "TARGET")
+        self.assertAlmostEqual(args[9], 0.9495)
+        self.assertEqual(args[11], 2_400_000)
+        self.assertEqual(args[12], "HIT")
+        self.assertAlmostEqual(args[13], 1.9495)
+
+    async def test_rejected_candidate_stop_after_tp1_only_closes_continuation(self):
+        conn = FakeConnection(fetchrows_result=[{
+            "id": 42, "direction": "LONG", "candle_open_ms": 1_800_000,
+            "entry": 101.0, "stop": 99.0, "target": 103.0, "target2": 105.0,
+            "risk_per_unit": 2.0, "cost_pct": 0.10,
+            "best_favorable_r": 1.0, "worst_adverse_r": 0.25,
+            "bars_observed": 1, "last_observed_candle_open_ms": 2_100_000,
+            "data_gap": False, "status": "TARGET",
+            "exit_candle_open_ms": 2_100_000, "realized_r": 0.9495,
+            "tp1_hit_candle_open_ms": 2_100_000, "tp2_hit_candle_open_ms": None,
+            "tp2_tracking_status": "OPEN", "tp2_realized_r": None,
+            "tp2_bars_observed": 0,
+        }])
+        journal = SignalJournal(FakeStore(conn))
+        await journal.update_rejected_outcomes("BTC/USDT", [{
+            "timestamp": 2_400_000, "high": 102.0, "low": 98.0, "close": 100.0,
+        }])
+        args = conn.execute.await_args.args
+        self.assertEqual(args[2], "TARGET")
+        self.assertAlmostEqual(args[9], 0.9495)
+        self.assertEqual(args[12], "STOPPED")
 
 class ConfigApprovalTests(unittest.IsolatedAsyncioTestCase):
     async def test_approve_proposal_merges_delta_and_records_version(self):

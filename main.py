@@ -543,16 +543,32 @@ async def telegram_outbox_loop(candidate_store: CandidateStore, notifier: Telegr
             if item is None:
                 await asyncio.sleep(1.0)
                 continue
-            delivered = await notifier.send(item["payload"], signal_id=item.get("signal_id"))
-            if delivered:
+            delivery = await notifier.send(item["payload"], signal_id=item.get("signal_id"))
+            if bool(delivery):
                 await candidate_store.finish_outbox(item["id"])
                 state["signals_sent"] += 1
                 state["last_telegram_success"] = datetime.now(timezone.utc).isoformat()
                 log.info("TELEGRAM OUTBOX SENT id=%s attempt=%d", item["id"], item["attempts"])
             else:
-                await candidate_store.retry_outbox(item["id"], item["attempts"], "TelegramRejectedOrUnavailable")
+                # Older notifier mocks/adapters returning False remain retryable;
+                # the production notifier supplies an explicit classification.
+                retryable = bool(getattr(delivery, "retryable", True))
+                error_type = str(getattr(delivery, "error_type", "TelegramRejectedOrUnavailable"))
+                if retryable:
+                    await candidate_store.retry_outbox(
+                        item["id"], item["attempts"], error_type,
+                        retry_after=getattr(delivery, "retry_after", None),
+                    )
+                    log.warning("TELEGRAM OUTBOX RETRY id=%s attempt=%d error_type=%s",
+                                item["id"], item["attempts"], error_type)
+                else:
+                    await candidate_store.fail_outbox(item["id"], error_type)
+                    state["telegram_permanent_failures"] = int(
+                        state.get("telegram_permanent_failures", 0)
+                    ) + 1
+                    log.error("TELEGRAM OUTBOX DEAD id=%s attempt=%d error_type=%s",
+                              item["id"], item["attempts"], error_type)
                 state["telegram_delivery_failures"] += 1
-                log.warning("TELEGRAM OUTBOX RETRY id=%s attempt=%d", item["id"], item["attempts"])
         except asyncio.CancelledError:
             raise
         except Exception as exc:

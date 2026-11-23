@@ -1,6 +1,6 @@
 import unittest
 
-from trainer import build_training_proposal, prepare_samples
+from trainer import _metrics, build_training_proposal, prepare_samples
 
 
 CURRENT = {
@@ -49,6 +49,14 @@ class OfflineTrainerTests(unittest.TestCase):
         prepared, conflicts = prepare_samples(rows)
         self.assertEqual(conflicts, 1)
         self.assertEqual(prepared[0]["effective_result"], "LOSS")
+
+    def test_wrong_direction_feedback_is_in_false_signal_denominator(self):
+        rows = [
+            {**sample(0), "manual_label": "GOOD_ENTRY"},
+            {**sample(1), "manual_label": "WRONG_DIRECTION"},
+        ]
+        metrics = _metrics(prepare_samples(rows)[0])
+        self.assertEqual(metrics["false_signal_rate"], 0.5)
 
     def test_proposal_requires_stable_out_of_sample_improvement(self):
         rows = []

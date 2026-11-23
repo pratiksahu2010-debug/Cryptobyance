@@ -77,22 +77,42 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
         labels = [button["callback_data"].split("|")[2] for row in keyboard for button in row]
         self.assertEqual(labels, ["GOOD_ENTRY", "BAD_SIGNAL", "LATE_ENTRY", "FAKE_SIGNAL", "SKIP"])
 
-    async def test_retries_rate_limit_then_succeeds(self):
+    async def test_rate_limit_returns_retry_after_to_durable_outbox(self):
         client = FakeClient([
-            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 2}}),
-            httpx.Response(200, json={"ok": True}),
+            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}}),
         ])
         notifier = TelegramNotifier(client, "123:secret", "456")
-        with patch("telegram.asyncio.sleep", new_callable=AsyncMock) as sleep:
-            self.assertTrue(await notifier.send(self._signal()))
-        self.assertEqual(client.calls, 2)
-        sleep.assert_awaited_once_with(2.0)
+        result = await notifier.send(self._signal())
+        self.assertFalse(result)
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.error_type, "HTTP_429")
+        self.assertEqual(result.retry_after, 120.0)
+        self.assertEqual(client.calls, 1)
 
     async def test_does_not_retry_permanent_telegram_rejection(self):
         client = FakeClient([httpx.Response(400, json={"ok": False, "description": "bad request"})])
         notifier = TelegramNotifier(client, "123:secret", "456")
-        self.assertFalse(await notifier.send(self._signal()))
+        result = await notifier.send(self._signal())
+        self.assertFalse(result)
+        self.assertFalse(result.retryable)
+        self.assertEqual(result.error_type, "HTTP_400")
+        self.assertEqual(result.http_status, 400)
         self.assertEqual(client.calls, 1)
+
+    async def test_server_error_is_classified_as_retryable_after_bounded_attempts(self):
+        client = FakeClient([
+            httpx.Response(503, json={"ok": False}),
+            httpx.Response(503, json={"ok": False}),
+            httpx.Response(503, json={"ok": False}),
+        ])
+        notifier = TelegramNotifier(client, "123:secret", "456")
+        with patch("telegram.asyncio.sleep", new_callable=AsyncMock):
+            result = await notifier.send(self._signal())
+        self.assertFalse(result)
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.error_type, "HTTP_503")
+        self.assertEqual(result.http_status, 503)
+        self.assertEqual(client.calls, 3)
 
     async def test_network_error_does_not_log_bot_token(self):
         token = "123:secret"
