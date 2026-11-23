@@ -462,7 +462,7 @@ class CandidateStore:
                        COUNT(o.signal_id) FILTER (WHERE o.tp2_tracking_status='STOPPED') AS tp2_stopped_after_tp1,
                        COUNT(o.signal_id) FILTER (WHERE o.tp2_tracking_status='TIMEOUT') AS tp2_tracking_timeouts,
                        COUNT(o.signal_id) FILTER (WHERE o.tp2_tracking_status='AMBIGUOUS') AS tp2_tracking_ambiguous,
-                       ROUND(AVG(o.tp2_realized_r) FILTER (WHERE o.tp2_tracking_status='HIT'),3) AS avg_tp2_net_r,
+                       ROUND((AVG(o.tp2_realized_r) FILTER (WHERE o.tp2_tracking_status='HIT'))::numeric, 3) AS avg_tp2_net_r,
                        COUNT(*) FILTER (WHERE s.status='SENT' AND o.signal_id IS NULL) AS sent_without_outcome,
                        ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT') AND o.first_hit IS NOT NULL))::numeric, 3) AS avg_realized_r,
                        ROUND((AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3) AS avg_mfe_r,

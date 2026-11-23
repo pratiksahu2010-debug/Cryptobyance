@@ -204,6 +204,12 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("legacy_unclassified_outcomes", totals_sql)
         self.assertIn("o.first_hit IS NOT NULL", totals_sql)
         self.assertIn("o.first_hit IS NOT NULL OR o.status='OPEN'", totals_sql)
+        self.assertIn("ROUND((AVG(o.tp2_realized_r) FILTER (WHERE o.tp2_tracking_status='HIT'))::numeric, 3)", totals_sql)
+        self.assertIn("ROUND((AVG(o.realized_r) FILTER (WHERE o.status IN ('TARGET','STOP_LOSS','TIMEOUT') AND o.first_hit IS NOT NULL))::numeric, 3)", totals_sql)
+        self.assertIn("ROUND((AVG(o.best_favorable_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3)", totals_sql)
+        self.assertIn("ROUND((AVG(o.worst_adverse_r) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3)", totals_sql)
+        self.assertIn("ROUND((AVG(o.best_favorable_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3)", totals_sql)
+        self.assertIn("ROUND((AVG(o.worst_adverse_pct) FILTER (WHERE o.first_hit IS NOT NULL OR o.status='OPEN'))::numeric, 3)", totals_sql)
 
     async def test_outbox_claim_uses_skip_locked_and_lease(self):
         conn = FakeConnection(fetchrows=[{
