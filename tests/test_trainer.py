@@ -60,8 +60,8 @@ class OfflineTrainerTests(unittest.TestCase):
 
     def test_proposal_requires_stable_out_of_sample_improvement(self):
         rows = []
-        for i in range(300):
-            good = i % 2 == 0
+        for i in range(400):
+            good = i % 4 in (0, 1)
             rows.append(sample(i, adx=25.0 if good else 20.0,
                                realized_r=1.0 if good else -0.5))
         result = build_training_proposal(
@@ -73,6 +73,8 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertIn("adx_min", result["changes"])
         self.assertGreaterEqual(result["proposed_config"]["adx_min"], CURRENT["adx_min"])
         self.assertEqual(len(result["expected_effect"]["walk_forward_folds"]), 2)
+        self.assertEqual(result["summary"]["directional_validation"]["LONG"]["status"], "PASS")
+        self.assertEqual(result["summary"]["directional_validation"]["SHORT"]["status"], "PASS")
         self.assertGreater(result["expected_effect"]["baseline_resolved_signals_per_day"], 0)
         self.assertGreaterEqual(result["expected_effect"]["candidate_resolved_signals_per_day"], 0)
         self.assertIn("not a forecast", result["expected_effect"]["signal_rate_basis"])
@@ -80,6 +82,18 @@ class OfflineTrainerTests(unittest.TestCase):
             fold["expectancy_improvement_r"] >= 0.02
             for fold in result["expected_effect"]["walk_forward_folds"]
         ))
+
+    def test_one_direction_failure_blocks_combined_proposal(self):
+        rows = []
+        for i in range(400):
+            if i % 2 == 0:
+                good = i % 4 == 0
+                rows.append(sample(i, adx=25.0 if good else 20.0, realized_r=1.0 if good else -0.5))
+            else:
+                rows.append(sample(i, adx=25.0 if i % 4 == 1 else 20.0, realized_r=0.1))
+        result = build_training_proposal(rows, CURRENT, min_samples=100, min_bucket_samples=30)
+        self.assertNotEqual(result["status"], "PROPOSED")
+        self.assertNotEqual(result["summary"]["directional_validation"]["SHORT"]["status"], "PASS")
 
     def test_no_edge_does_not_produce_a_proposal(self):
         rows = [sample(i, adx=25.0, realized_r=0.25) for i in range(300)]
