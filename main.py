@@ -39,7 +39,7 @@ logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s:
 log = logging.getLogger("cryptobyance")
 
 # Fixed, deterministic universe: liquid USDT-margined perpetual contracts.
-assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
+assert len(SYMBOLS) == 59 and len(set(SYMBOLS)) == 59
 
 # Scan only around completed 5m candle closes. Stale data waits for the
 # next close rather than repeatedly retrying the same expired candle.
