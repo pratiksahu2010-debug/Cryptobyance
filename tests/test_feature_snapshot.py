@@ -97,5 +97,5 @@ class FeatureSnapshotTests(unittest.TestCase):
         self.assertIsNone(snapshot["shadow_diagnostics"]["ema9_slope_in_signal_direction_atr_3bars"])
 
 
-if __main__ == "__main__":
+if __name__ == "__main__":
     unittest.main()
