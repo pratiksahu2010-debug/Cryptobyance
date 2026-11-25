@@ -258,24 +258,22 @@ def evaluate_setup(
     def reject(reason: str):
         if rejection is not None:
             rejection["reason"] = reason
-        return reject("insufficient_5m_history")
+        return None
+
     if not has_contiguous_tail(df5, "5m", 60):
-        return reject("insufficient_indicator_history")
+        return reject("insufficient_5m_history")
 
     a = indicators(df5.copy(), include_rsi=True)
     if len(a) < 35:
-        return reject("invalid_indicator_values")
+        return reject("insufficient_indicator_history")
     c = a.iloc[-1]
-    # EMA direction is a persistent trend-alignment condition. The age of the
-    # last crossover is diagnostic only; an established aligned trend remains
-    # eligible while the current 5m filters continue to agree.
     long_alignment_age = ema_alignment_age_bars(a, "LONG")
     short_alignment_age = ema_alignment_age_bars(a, "SHORT")
     needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
-        return reject("invalid_atr")
+        return reject("invalid_indicator_values")
     if float(c.atr) <= 0:
-        return reject("insufficient_swing_history")
+        return reject("invalid_atr")
 
     long_direction_ok = (
         float(c.ema9) > float(c.ema21)
@@ -293,17 +291,15 @@ def evaluate_setup(
         return reject("directional_setup_not_met")
     side = "LONG" if long_direction_ok else "SHORT"
 
-    # RSI is evaluated on this same completed candle. It is not a crossover
-    # event and does not depend on a persisted ARMED state from an earlier scan.
+    # Apply the existing RSI band on this same completed candle. This is a
+    # level condition, not a crossover event or a dependency on prior state.
     rsi_value = float(c.rsi)
     if side == "LONG" and not (settings.rsi_long_min <= rsi_value <= settings.rsi_long_max):
         return reject("rsi_outside_long_entry_band")
     if side == "SHORT" and not (settings.rsi_short_min <= rsi_value <= settings.rsi_short_max):
         return reject("rsi_outside_short_entry_band")
 
-    # 15m is descriptive only. Do not wait for a 15m EMA alignment or a new
-    # 15m close before acting on a fully confirmed 5m setup.
-    context_frame = None
+    # 15m is descriptive only. It never vetoes, delays, or cancels a valid 5m setup.
     context_row = None
     prev15 = None
     context = "15m unavailable"
@@ -313,7 +309,6 @@ def evaluate_setup(
             candidate_row = candidate_context.iloc[-1]
             if all(pd.notna(v) and np.isfinite(float(v))
                    for v in (candidate_row.ema9, candidate_row.ema21)):
-                context_frame = candidate_context
                 context_row = candidate_row
                 prev15 = candidate_context.iloc[-4]
                 if float(candidate_row.ema9) > float(candidate_row.ema21):
@@ -327,11 +322,11 @@ def evaluate_setup(
     atr_value = float(c.atr)
     swing = a.iloc[-(settings.swing_lookback_bars + 1):-1]
     if len(swing) < settings.swing_lookback_bars:
-        return reject("invalid_stop_risk")
+        return reject("insufficient_swing_history")
     stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
     risk = entry - stop if side == "LONG" else stop - entry
     if not np.isfinite(risk) or risk <= 0:
-        return reject("non_finite_diagnostics")
+        return reject("invalid_stop_risk")
     target1 = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
@@ -360,7 +355,7 @@ def evaluate_setup(
         value is None or isinstance(value, (bool, np.bool_)) or np.isfinite(float(value))
         for value in diagnostics.values()
     ):
-        return None
+        return reject("non_finite_diagnostics")
 
     if rejection is not None:
         rejection["reason"] = "VALID"
@@ -372,8 +367,7 @@ def evaluate_setup(
         "target1_r": settings.tp1_r, "target2_r": settings.tp2_r,
         "rr": settings.tp2_r, "rsi": float(c.rsi), "adx": float(c.adx),
         "ema9": float(c.ema9), "ema21": float(c.ema21), "vwap": float(c.vwap),
-        "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
-        "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
+        "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
         "atr": atr_value, "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": context,
