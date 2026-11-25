@@ -38,7 +38,7 @@ LOG_LEVEL = settings.log_level
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cryptobyance")
 
-# Fixed, deterministic universe: liquid USDT-margined perpetual contracts.
+# Fixed, deterministic universe: 59 unique configured USDT-margined perpetual contracts.
 assert len(SYMBOLS) == 59 and len(set(SYMBOLS)) == 59
 
 # Scan only around completed 5m candle closes. Stale data waits for the
