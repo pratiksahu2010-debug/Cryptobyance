@@ -272,7 +272,7 @@ def build_training_proposal(
     directional_validation = _directional_validation(samples, {
         key: float(current_config[key])
         for key in ("adx_min", "rsi_long_min", "rsi_long_max", "rsi_short_min", "rsi_short_max")
-    }, min_bucket_samples)
+    }, min_samples)
     base = {
         key: float(current_config[key])
         for key in ("adx_min", "rsi_long_min", "rsi_long_max", "rsi_short_min", "rsi_short_max")
