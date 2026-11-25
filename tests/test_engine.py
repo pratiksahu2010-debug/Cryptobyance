@@ -277,9 +277,9 @@ class CoinDCXFeedTests(unittest.TestCase):
         rows = [[base + i * 300_000, 10, 12, 9, 11, 10] for i in (0, 1, 3)]
         self.assertEqual(aggregate_5m_to_15m(rows, base + 2_000_000), [])
 
-    def test_universe_has_exactly_60_unique_symbols(self):
-        self.assertEqual(len(SYMBOLS), 60)
-        self.assertEqual(len(set(SYMBOLS)), 60)
+    def test_universe_has_exactly_59_unique_symbols(self):
+        self.assertEqual(len(SYMBOLS), 59)
+        self.assertEqual(len(set(SYMBOLS)), 59)
 
     def test_ping_returns_http_200_keepalive_response(self):
         import asyncio
