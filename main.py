@@ -125,6 +125,8 @@ state: dict[str, Any] = {
     "last_cycle_symbols_ok": 0, "last_cycle_symbols_failed": 0,
     "symbols_ok": 0, "symbols_failed": 0,
     "signals_sent": 0, "telegram_delivery_failures": 0, "last_telegram_success": None,
+    "candidate_rejections": 0, "candidate_rejections_by_reason": {},
+    "last_cycle_candidates_rejected": 0,
     "last_error": None, "running": False, "stale_candle_failures": 0, "stale_candle_sample": None,
     "active_symbols": 0, "unavailable_symbols": [], "data_validation_failures": 0,
     "market_metadata_ready": False, "websocket_connected": False, "last_websocket_event": None,
@@ -422,11 +424,12 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             if not setup:
                 reason = rejection.get("reason", "NO_SIGNAL")
                 state["candidate_rejections"] = state.get("candidate_rejections", 0) + 1
+                state["candidate_rejections_cycle"] = state.get("candidate_rejections_cycle", 0) + 1
                 by_reason = state.setdefault("candidate_rejections_by_reason", {})
                 by_reason[reason] = int(by_reason.get(reason, 0)) + 1
                 log.info(
-                    "SIGNAL CANDIDATE REJECTED symbol=%s reason=%s candle=%s",
-                    display_symbol, reason, closed_ts,
+                    "SIGNAL CANDIDATE REJECTED symbol=%s reason=%s candle=%s details=%s",
+                    display_symbol, reason, closed_ts, rejection,
                 )
                 last_seen_candle[display_symbol] = closed_ts
                 state["symbols_ok"] += 1
@@ -820,6 +823,7 @@ async def scanner_session() -> None:
                 data_validation_failures=0, stale_candle_failures=0,
                 stale_candle_sample=None, state_input_deferred=0,
                 trigger_setup_mismatch=0, retryable_scan_failures=0,
+                candidate_rejections_cycle=0,
             )
             cycle_now_ms = int(time.time() * 1000)
             results = await asyncio.gather(*(scan_symbol(feed, notifier, semaphore, symbol, pair, cycle_now_ms, first_scan_cutoff_ms, candidate_store, journal_service) for symbol, pair in valid), return_exceptions=True)
@@ -830,6 +834,7 @@ async def scanner_session() -> None:
             state['last_scan_epoch'] = time.time()
             state['last_cycle_symbols_ok'] = state['symbols_ok']
             state['last_cycle_symbols_failed'] = state['symbols_failed']
+            state['last_cycle_candidates_rejected'] = state.get('candidate_rejections_cycle', 0)
             state['last_scan_seconds'] = round(time.monotonic() - started, 2)
             state['websocket_connected'] = feed.websocket_connected
             state['last_websocket_event'] = datetime.fromtimestamp(feed.last_ws_event, timezone.utc).isoformat() if feed.last_ws_event else None
