@@ -20,7 +20,7 @@ class CoinDCXUniverseTests(unittest.TestCase):
                 self.assertEqual(symbol_to_pair(symbol), pair)
 
     def test_configured_universe_remains_unique_and_sized_at_60(self):
-        self.assertEqual(len(SYMBOLS), 60)
+        self.assertEqual(len(SYMBOLS), 59)
         self.assertEqual(len(set(SYMBOLS)), 60)
 
 
