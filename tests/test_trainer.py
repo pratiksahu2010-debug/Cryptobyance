@@ -42,6 +42,18 @@ class OfflineTrainerTests(unittest.TestCase):
         self.assertEqual(result["status"], "INSUFFICIENT_DATA")
         self.assertIn("Need at least 100", result["reason"])
 
+    def test_directional_validation_uses_full_minimum_sample_count(self):
+        rows = [sample(i) for i in range(140)]
+        result = build_training_proposal(
+            rows, CURRENT, min_samples=100, min_bucket_samples=30,
+        )
+        directional = result["summary"]["directional_validation"]
+        self.assertEqual(directional["LONG"]["sample_count"], 70)
+        self.assertEqual(directional["SHORT"]["sample_count"], 70)
+        self.assertEqual(directional["LONG"]["status"], "INSUFFICIENT_DATA")
+        self.assertEqual(directional["SHORT"]["status"], "INSUFFICIENT_DATA")
+        self.assertIn("Need at least 100", directional["LONG"]["reason"])
+
     def test_manual_label_overrides_auto_result_and_conflict_is_counted(self):
         rows = [sample(i) for i in range(100)]
         rows[0]["auto_result"] = "WIN"
