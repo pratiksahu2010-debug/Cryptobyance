@@ -92,6 +92,26 @@ def _bucket(value: float, edges: list[float]) -> str:
     return f"{edges[-1]:g}+"
 
 
+def _directional_vwap_distance_pct(sample: dict) -> float | None:
+    """Return VWAP distance signed in the candidate's trade direction.
+
+    Positive means price is above VWAP for LONG or below VWAP for SHORT.
+    Negative means the candidate is on the wrong side of VWAP.
+    """
+    direction = str(sample.get("direction") or "").upper()
+    if direction not in {"LONG", "SHORT"}:
+        return None
+    features = sample.get("features") or {}
+    distance = _finite(features.get("price_vwap_distance_pct"))
+    if distance is None:
+        close = _finite(features.get("close"))
+        vwap = _finite(features.get("vwap"))
+        if close is None or vwap in (None, 0):
+            return None
+        distance = (close - vwap) / abs(vwap) * 100.0
+    return distance if direction == "LONG" else -distance
+
+
 def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
     definitions = {
         "adx14": ([20, 25, 30], lambda x: x["adx"]),
@@ -118,6 +138,7 @@ def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
                   if _finite(x["features"].get("close")) is not None
                   and _finite(x["features"].get("vwap")) not in (None, 0) else None)
         )),
+        "directional_vwap_distance_pct": ([0.10, 0.30, 0.60], _directional_vwap_distance_pct),
         "relative_volume_20": ([1, 1.5, 2], lambda x: _finite(x["features"].get("relative_volume_20"))),
         "cooldown_candles": ([2, 3, 4, 5, 6, 8], lambda x: _finite(x["features"].get("cooldown_candles"))),
         "hour_utc": ([6, 12, 18], lambda x: float(x["hour_utc"]) if x["hour_utc"] is not None else None),
