@@ -92,6 +92,26 @@ def _bucket(value: float, edges: list[float]) -> str:
     return f"{edges[-1]:g}+"
 
 
+def _directional_vwap_distance_pct(sample: dict) -> float | None:
+    """Return VWAP distance signed in the candidate's trade direction.
+
+    Positive means price is above VWAP for LONG or below VWAP for SHORT.
+    Negative means the candidate is on the wrong side of VWAP.
+    """
+    direction = str(sample.get("direction") or "").upper()
+    if direction not in {"LONG", "SHORT"}:
+        return None
+    features = sample.get("features") or {}
+    distance = _finite(features.get("price_vwap_distance_pct"))
+    if distance is None:
+        close = _finite(features.get("close"))
+        vwap = _finite(features.get("vwap"))
+        if close is None or vwap in (None, 0):
+            return None
+        distance = (close - vwap) / abs(vwap) * 100.0
+    return distance if direction == "LONG" else -distance
+
+
 def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
     definitions = {
         "adx14": ([20, 25, 30], lambda x: x["adx"]),
@@ -118,6 +138,7 @@ def _analysis_buckets(samples: list[dict], min_bucket_samples: int) -> dict:
                   if _finite(x["features"].get("close")) is not None
                   and _finite(x["features"].get("vwap")) not in (None, 0) else None)
         )),
+        "directional_vwap_distance_pct": ([0.10, 0.30, 0.60], _directional_vwap_distance_pct),
         "relative_volume_20": ([1, 1.5, 2], lambda x: _finite(x["features"].get("relative_volume_20"))),
         "cooldown_candles": ([2, 3, 4, 5, 6, 8], lambda x: _finite(x["features"].get("cooldown_candles"))),
         "hour_utc": ([6, 12, 18], lambda x: float(x["hour_utc"]) if x["hour_utc"] is not None else None),
@@ -185,6 +206,58 @@ def _candidate_configs(current: dict) -> list[dict]:
     return candidates
 
 
+def _directional_validation(samples: list[dict], base: dict, min_samples: int) -> dict:
+    """Validate candidate filters independently for LONG and SHORT."""
+    report = {}
+    for direction in ("LONG", "SHORT"):
+        side = [item for item in samples if item["direction"] == direction]
+        result = {"sample_count": len(side), "baseline": _metrics(side), "status": "INSUFFICIENT_DATA"}
+        if len(side) < min_samples:
+            result["reason"] = f"Need at least {min_samples} resolved {direction} samples; found {len(side)}."
+            report[direction] = result
+            continue
+        split = int(len(side) * 0.70)
+        train, oos = side[:split], side[split:]
+        if len(train) < min_samples or len(oos) < 20:
+            result["reason"] = "Insufficient chronological train/OOS samples for this direction."
+            report[direction] = result
+            continue
+        best = None
+        for config in _candidate_configs(base):
+            selected = [item for item in train if _passes(item, config)]
+            if len(selected) < min_samples:
+                continue
+            metrics = _metrics(selected)
+            changes = sum(abs(config[key] - base[key]) > 1e-9 for key in base)
+            distance = sum(abs(config[key] - base[key]) for key in base)
+            score = (metrics["expectancy_r"], -changes, -distance)
+            if best is None or score > best["score"]:
+                best = {"config": config, "metrics": metrics, "score": score}
+        if best is None:
+            result["reason"] = "No candidate retained the minimum directional training sample."
+            report[direction] = result
+            continue
+        baseline_oos = _metrics(oos)
+        selected_oos = [item for item in oos if _passes(item, best["config"])]
+        candidate_oos = _metrics(selected_oos)
+        improvement = (candidate_oos["expectancy_r"] - baseline_oos["expectancy_r"]
+                       if candidate_oos["expectancy_r"] is not None and baseline_oos["expectancy_r"] is not None else None)
+        passed = (len(selected_oos) >= 10 and improvement is not None
+                  and improvement >= MIN_EXPECTANCY_IMPROVEMENT_R
+                  and candidate_oos["expectancy_r"] is not None and candidate_oos["expectancy_r"] > 0
+                  and best["metrics"]["expectancy_r"] > 0
+                  and candidate_oos["expectancy_r"] >= best["metrics"]["expectancy_r"] * 0.5)
+        result.update({
+            "status": "PASS" if passed else "NO_OOS_IMPROVEMENT",
+            "train": best["metrics"], "baseline_oos": baseline_oos,
+            "candidate_oos": candidate_oos, "candidate_config": best["config"],
+            "expectancy_improvement_r": round(improvement, 4) if improvement is not None else None,
+            "selected_oos_sample_count": len(selected_oos),
+            "reason": None if passed else "Candidate failed independent directional OOS guards.",
+        })
+        report[direction] = result
+    return report
+
 def build_training_proposal(
     rows: Iterable[dict],
     current_config: dict,
@@ -196,6 +269,10 @@ def build_training_proposal(
     """Build a research proposal only when sample and walk-forward guards pass."""
     samples, conflicts = prepare_samples(rows)
     analysis = _analysis_buckets(samples, min_bucket_samples)
+    directional_validation = _directional_validation(samples, {
+        key: float(current_config[key])
+        for key in ("adx_min", "rsi_long_min", "rsi_long_max", "rsi_short_min", "rsi_short_max")
+    }, min_bucket_samples)
     base = {
         key: float(current_config[key])
         for key in ("adx_min", "rsi_long_min", "rsi_long_max", "rsi_short_min", "rsi_short_max")
@@ -206,6 +283,7 @@ def build_training_proposal(
         "minimum_samples": min_samples,
         "minimum_bucket_samples": min_bucket_samples,
         "bucket_analysis": analysis,
+        "directional_validation": directional_validation,
     }
     if len(samples) < min_samples:
         return {
@@ -294,11 +372,12 @@ def build_training_proposal(
         train_expectancy > 0
         and (test_expectancy is None or test_expectancy < train_expectancy * 0.5)
     )
-    if (not changes or not stable or test_expectancy is None
+    directional_pass = all(directional_validation[side].get("status") == "PASS" for side in ("LONG", "SHORT"))
+    if (not changes or not stable or not directional_pass or test_expectancy is None
             or test_expectancy <= 0 or train_test_collapse):
         return {
             "status": "NO_OOS_IMPROVEMENT",
-            "reason": "No stricter candidate passed positive expectancy, stable out-of-sample improvement, and train/test-collapse guards.",
+            "reason": "No stricter candidate passed combined and independent LONG/SHORT out-of-sample improvement and train/test-collapse guards.",
             "base_config_version": base_config_version,
             "summary": summary,
             "walk_forward": {
