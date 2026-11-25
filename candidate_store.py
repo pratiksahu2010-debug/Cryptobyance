@@ -1,4 +1,8 @@
-"""Transactional persistence for candidates, signals, cooldowns and Telegram outbox."""
+"""Transactional persistence for direct signals, outcomes and Telegram outbox.
+
+Legacy candidate/state/cooldown tables remain for shadow experiments and
+historical compatibility; they are not consulted by live signal enqueue.
+"""
 from __future__ import annotations
 
 import json
