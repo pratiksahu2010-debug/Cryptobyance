@@ -99,6 +99,62 @@ def build_indicator_snapshot(
         ),
     }
 
+    # Entry-quality measurements are deliberately shadow-only. They are
+    # recorded for outcome analysis and never participate in setup eligibility.
+    candle_open = float(current.open)
+    candle_high = float(current.high)
+    candle_low = float(current.low)
+    candle_range = candle_high - candle_low
+    candle_body = close - candle_open
+    upper_wick = candle_high - max(candle_open, close)
+    lower_wick = min(candle_open, close) - candle_low
+    entry_quality_shadow = {
+        "mode": "OBSERVATION_ONLY",
+        "candle_range": candle_range if candle_range > 0 else None,
+        "body_ratio": abs(candle_body) / candle_range if candle_range > 0 else None,
+        "directional_body_ratio": (
+            direction_sign * candle_body / candle_range
+            if direction_sign is not None and candle_range > 0 else None
+        ),
+        "directional_close_location": (
+            ((close - candle_low) if direction_sign > 0 else (candle_high - close)) / candle_range
+            if direction_sign is not None and candle_range > 0 else None
+        ),
+        "opposing_wick_ratio": (
+            (upper_wick if direction_sign > 0 else lower_wick) / candle_range
+            if direction_sign is not None and candle_range > 0 else None
+        ),
+        "supporting_wick_ratio": (
+            (lower_wick if direction_sign > 0 else upper_wick) / candle_range
+            if direction_sign is not None and candle_range > 0 else None
+        ),
+        "relative_volume_20": relative_volume,
+        "rsi_momentum_aligned": (
+            direction_sign * (float(current.rsi) - float(prior3.rsi)) > 0
+            if direction_sign is not None and prior3 is not None
+            and pd.notna(current.rsi) and pd.notna(prior3.rsi) else None
+        ),
+        "di_spread_aligned": (
+            direction_sign * (float(current.plus_di) - float(current.minus_di)) > 0
+            if direction_sign is not None else None
+        ),
+        "di_spread_improving": (
+            direction_sign * (
+                (float(current.plus_di) - float(current.minus_di))
+                - (float(prior3.plus_di) - float(prior3.minus_di))
+            ) > 0
+            if direction_sign is not None and prior3 is not None else None
+        ),
+        "macd_momentum_aligned": (
+            direction_sign * float(macd_histogram.iloc[-1]) > 0
+            if direction_sign is not None else None
+        ),
+        "macd_momentum_improving": (
+            direction_sign * (float(macd_histogram.iloc[-1]) - float(macd_histogram.iloc[-4])) > 0
+            if direction_sign is not None and len(macd_histogram) >= 4 else None
+        ),
+    }
+
     state_metadata = state_metadata or {}
     armed_open_ms = state_metadata.get("armed_candle_open_ms")
     bars_since_armed = (
