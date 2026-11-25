@@ -274,6 +274,13 @@ def evaluate_setup(
         return reject("invalid_indicator_values")
     if float(c.atr) <= 0:
         return reject("invalid_atr")
+    if rejection is not None:
+        rejection.update({
+            "rsi": float(c.rsi), "adx": float(c.adx), "atr": float(c.atr),
+            "ema9": float(c.ema9), "ema21": float(c.ema21),
+            "close": float(c.close), "vwap": float(c.vwap),
+            "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
+        })
 
     long_direction_ok = (
         float(c.ema9) > float(c.ema21)
@@ -290,6 +297,8 @@ def evaluate_setup(
     if not (long_direction_ok or short_direction_ok):
         return reject("directional_setup_not_met")
     side = "LONG" if long_direction_ok else "SHORT"
+    if rejection is not None:
+        rejection["direction"] = side
 
     # Apply the existing RSI band on this same completed candle. This is a
     # level condition, not a crossover event or a dependency on prior state.
@@ -376,11 +385,11 @@ def evaluate_setup(
 
 
 def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Backward-compatible standalone evaluator; the scanner uses the staged state machine.
+    """Backward-compatible standalone evaluator using direct current-candle rules.
 
     Keep the pre-v2 public helper's ATR stop and configured risk/reward contract
-    for existing integrations. Production alerts are built by evaluate_setup
-    only after a persisted ARMED RSI trigger and use swing-based TP1/TP2 levels.
+    for existing integrations. The production scanner uses evaluate_setup and
+    the swing-based TP1/TP2 levels.
     """
     signal = evaluate_setup(df5, df15)
     if signal is None:
