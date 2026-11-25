@@ -206,7 +206,7 @@ def _candidate_configs(current: dict) -> list[dict]:
     return candidates
 
 
-def _directional_validation(samples: list[dict], base: dict, min_samples: int) -> dict:
+def _directional_validation(samples: list[dict], base: dict, min_samples: int, min_bucket_samples: int) -> dict:
     """Validate candidate filters independently for LONG and SHORT."""
     report = {}
     for direction in ("LONG", "SHORT"):
@@ -218,14 +218,14 @@ def _directional_validation(samples: list[dict], base: dict, min_samples: int) -
             continue
         split = int(len(side) * 0.70)
         train, oos = side[:split], side[split:]
-        if len(train) < min_samples or len(oos) < 20:
+        if len(train) < min_bucket_samples or len(oos) < 20:
             result["reason"] = "Insufficient chronological train/OOS samples for this direction."
             report[direction] = result
             continue
         best = None
         for config in _candidate_configs(base):
             selected = [item for item in train if _passes(item, config)]
-            if len(selected) < min_samples:
+            if len(selected) < min_bucket_samples:
                 continue
             metrics = _metrics(selected)
             changes = sum(abs(config[key] - base[key]) > 1e-9 for key in base)
@@ -272,7 +272,7 @@ def build_training_proposal(
     directional_validation = _directional_validation(samples, {
         key: float(current_config[key])
         for key in ("adx_min", "rsi_long_min", "rsi_long_max", "rsi_short_min", "rsi_short_max")
-    }, min_samples)
+    }, min_samples, min_bucket_samples)
     base = {
         key: float(current_config[key])
         for key in ("adx_min", "rsi_long_min", "rsi_long_max", "rsi_short_min", "rsi_short_max")
