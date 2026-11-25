@@ -126,6 +126,28 @@ class OfflineTrainerTests(unittest.TestCase):
             for bucket in buckets
         ))
 
+    def test_directional_vwap_distance_respects_trade_side(self):
+        from trainer import _directional_vwap_distance_pct
+        self.assertAlmostEqual(_directional_vwap_distance_pct({
+            "direction": "LONG", "features": {"price_vwap_distance_pct": 0.5}
+        }), 0.5)
+        self.assertAlmostEqual(_directional_vwap_distance_pct({
+            "direction": "SHORT", "features": {"price_vwap_distance_pct": -0.5}
+        }), 0.5)
+        self.assertAlmostEqual(_directional_vwap_distance_pct({
+            "direction": "LONG", "features": {"price_vwap_distance_pct": -0.5}
+        }), -0.5)
+        self.assertAlmostEqual(_directional_vwap_distance_pct({
+            "direction": "SHORT", "features": {"price_vwap_distance_pct": 0.5}
+        }), -0.5)
+
+    def test_directional_vwap_distance_falls_back_to_close_and_vwap(self):
+        from trainer import _directional_vwap_distance_pct
+        value = _directional_vwap_distance_pct({
+            "direction": "SHORT", "features": {"close": 99.0, "vwap": 100.0}
+        })
+        self.assertAlmostEqual(value, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
