@@ -52,57 +52,48 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("s.status='SENT'", statements)
         self.assertIn("ON CONFLICT(signal_id) DO NOTHING", statements)
 
-    async def test_signal_is_atomically_recorded_and_queued(self):
-        conn = FakeConnection(fetchrows=[None, None, None, {"id": 71}])
+    async def test_signal_is_atomically_recorded_without_state_or_cooldown_gates(self):
+        conn = FakeConnection(fetchrows=[None, {"id": 71}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
-        queued = await store.enqueue_signal(signal, candidate_id=9, cooldown_candles=3)
+        queued = await store.enqueue_signal(signal, candidate_id=9, cooldown_candles=4)
         self.assertEqual(queued, "QUEUED")
         history_insert = next(args for query, args in conn.fetchrow_calls
                               if "INSERT INTO signal_history" in query)
         saved_payload = json.loads(history_insert[4])
-        self.assertEqual(
-            saved_payload["performance_attribution"]["strategy_key"], "default"
-        )
-        self.assertEqual(len(conn.fetchrow_calls), 4)
+        self.assertEqual(saved_payload["performance_attribution"]["strategy_key"], "default")
+        self.assertEqual(len(conn.fetchrow_calls), 2)
         sql = "\n".join(call[0] for call in conn.fetchrow_calls)
-        self.assertIn("signal_cooldowns", sql)
         self.assertIn("signal_history", sql)
+        self.assertNotIn("signal_cooldowns", sql)
         executed = "\n".join(call.args[0] for call in conn.execute.await_args_list)
         self.assertIn("telegram_outbox", executed)
-        self.assertIn("TRIGGERED", executed)
-        self.assertIn("signal_cooldowns", executed)
-        self.assertIn("strategy_state_events", executed)
-        self.assertIn("strategy_signal_states", executed)
-        self.assertTrue(any("strategy_signal_states" in query for query, _ in conn.fetchrow_calls))
+        self.assertNotIn("strategy_state_events", executed)
+        self.assertNotIn("strategy_signal_states", executed)
+        self.assertNotIn("signal_cooldowns", executed)
 
     async def test_duplicate_signal_is_not_queued_twice(self):
-        conn = FakeConnection(fetchrows=[None, {"id": 72}])
+        conn = FakeConnection(fetchrows=[{"id": 72}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "ETH/USDT", "side": "SHORT", "candle": 2_100_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
         self.assertEqual(await store.enqueue_signal(signal, None, 3), "DUPLICATE")
         self.assertEqual(conn.execute.await_count, 2)  # symbol and strategy-direction advisory locks
 
-    async def test_same_direction_cooldown_is_durable(self):
-        conn = FakeConnection(fetchrows=[{
-            "last_direction": "LONG", "last_candle_open_ms": 3_000_000
-        }])
+    async def test_legacy_cooldown_rows_do_not_block_a_new_valid_signal(self):
+        # A historical cooldown row is deliberately not read by live enqueue.
+        conn = FakeConnection(fetchrows=[None, {"id": 73}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "SOL/USDT", "side": "LONG", "candle": 3_300_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
-        self.assertEqual(await store.enqueue_signal(signal, candidate_id=12, cooldown_candles=3), "COOLDOWN")
-        self.assertEqual(conn.execute.await_count, 3)  # two advisory locks plus candidate invalidation
-        self.assertIn("INVALID", conn.execute.await_args_list[-1].args[0])
+        self.assertEqual(await store.enqueue_signal(signal, candidate_id=None, cooldown_candles=99), "QUEUED")
+        self.assertEqual(conn.execute.await_count, 3)  # two locks plus outbox insert
+        sql = "\n".join(call[0] for call in conn.fetchrow_calls)
+        self.assertNotIn("signal_cooldowns", sql)
 
     async def test_opposite_direction_is_not_blocked_by_same_direction_cooldown(self):
-        conn = FakeConnection(fetchrows=[
-            {"last_direction": "LONG", "last_candle_open_ms": 3_000_000},
-            None,
-            None,
-            {"id": 81},
-        ])
+        conn = FakeConnection(fetchrows=[None, {"id": 81}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "SOL/USDT", "side": "SHORT", "candle": 3_300_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
@@ -270,7 +261,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("signal_outcomes", deleted_tables)
 
     async def test_queued_signal_does_not_create_outcome_before_delivery(self):
-        conn = FakeConnection(fetchrows=[None, None, None, {"id": 101}])
+        conn = FakeConnection(fetchrows=[None, {"id": 101}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0,
