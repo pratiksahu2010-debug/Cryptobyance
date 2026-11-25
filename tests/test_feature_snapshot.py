@@ -85,6 +85,46 @@ class FeatureSnapshotTests(unittest.TestCase):
         self.assertEqual(long_snapshot["shadow_diagnostics"]["direction"], "LONG")
         self.assertEqual(short_snapshot["shadow_diagnostics"]["direction"], "SHORT")
 
+    def test_entry_quality_shadow_metrics_are_direction_normalized_and_non_blocking(self):
+        candles, indicator_frame = self._frames()
+        candle_open = int(candles.iloc[-1]["timestamp"])
+        long_snapshot = build_indicator_snapshot(
+            indicator_frame, candles, {"side": "LONG"},
+            candle_open_ms=candle_open, config_version="v3", cooldown_candles=4,
+        )
+        short_snapshot = build_indicator_snapshot(
+            indicator_frame, candles, {"side": "SHORT"},
+            candle_open_ms=candle_open, config_version="v3", cooldown_candles=4,
+        )
+        long_quality = long_snapshot["entry_quality_shadow"]
+        short_quality = short_snapshot["entry_quality_shadow"]
+        self.assertEqual(long_quality["mode"], "OBSERVATION_ONLY")
+        self.assertGreater(long_quality["directional_body_ratio"], 0)
+        self.assertLess(short_quality["directional_body_ratio"], 0)
+        self.assertAlmostEqual(
+            long_quality["directional_close_location"],
+            1.0 - short_quality["directional_close_location"],
+        )
+        self.assertEqual(long_quality["di_spread_aligned"], True)
+        self.assertEqual(short_quality["di_spread_aligned"], False)
+        # The new research measurements are metadata only; signal direction is untouched.
+        self.assertEqual(long_snapshot["shadow_diagnostics"]["direction"], "LONG")
+        self.assertEqual(short_snapshot["shadow_diagnostics"]["direction"], "SHORT")
+
+    def test_zero_range_candle_keeps_entry_quality_ratios_null(self):
+        candles, indicator_frame = self._frames()
+        for frame in (candles, indicator_frame):
+            frame.loc[frame.index[-1], ["open", "high", "low", "close"]] = 100.0
+        snapshot = build_indicator_snapshot(
+            indicator_frame, candles, {"side": "LONG"},
+            candle_open_ms=int(candles.iloc[-1]["timestamp"]),
+            config_version="v3", cooldown_candles=4,
+        )
+        quality = snapshot["entry_quality_shadow"]
+        self.assertIsNone(quality["body_ratio"])
+        self.assertIsNone(quality["directional_close_location"])
+        self.assertIsNone(quality["opposing_wick_ratio"])
+
     def test_short_history_keeps_shadow_metrics_null_without_blocking_snapshot(self):
         candles, indicator_frame = self._frames()
         short_frame = indicator_frame.tail(2).copy()
