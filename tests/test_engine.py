@@ -594,9 +594,11 @@ class EngineTests(unittest.TestCase):
 
         last_seen_candle.pop('BTC/USDT', None)
         captured = {}
-        def fake_evaluate(df5, df15=None):
+        def fake_evaluate(df5, df15=None, rejection=None):
             captured['df5'] = df5
             captured['df15'] = df15
+            if rejection is not None:
+                rejection['reason'] = 'test_no_signal'
             return None
 
         with patch('main.evaluate_setup', side_effect=fake_evaluate):
