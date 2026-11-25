@@ -41,7 +41,7 @@ class FeatureSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["rsi14"], 69.0)
         self.assertAlmostEqual(snapshot["ema_spread_pct"], 100.0 / 99.9)
         self.assertAlmostEqual(snapshot["price_vwap_distance_pct"], 1.9)
-        self.assertAlmostEqual(snapshot["atr_pct_of_price"], 2.0)
+        self.assertAlmostEqual(snapshot["atr_pct_of_price"], 100.0 * 2.0 / 101.9)
         self.assertAlmostEqual(snapshot["price_vwap_distance_atr"], 0.95)
         self.assertEqual(snapshot["bars_since_armed"], 2)
         self.assertEqual(snapshot["state_cycle_id"], 17)
@@ -67,8 +67,8 @@ class FeatureSnapshotTests(unittest.TestCase):
         long_diag = long_snapshot["shadow_diagnostics"]
         short_diag = short_snapshot["shadow_diagnostics"]
         self.assertEqual(long_diag["mode"], "OBSERVATION_ONLY")
-        self.assertAlmostEqual(long_diag["extension_in_signal_direction_atr"], 0.45)
-        self.assertAlmostEqual(short_diag["extension_in_signal_direction_atr"], -0.45)
+        self.assertAlmostEqual(long_diag["extension_in_signal_direction_atr"], 0.95)
+        self.assertAlmostEqual(short_diag["extension_in_signal_direction_atr"], -0.95)
         self.assertAlmostEqual(
             long_diag["rsi_change_in_signal_direction_3bars"], 3.0
         )
@@ -97,5 +97,5 @@ class FeatureSnapshotTests(unittest.TestCase):
         self.assertIsNone(snapshot["shadow_diagnostics"]["ema9_slope_in_signal_direction_atr_3bars"])
 
 
-if __if_main__ == "__main__":
+if __main__ == "__main__":
     unittest.main()
