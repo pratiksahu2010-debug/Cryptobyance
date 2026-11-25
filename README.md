@@ -15,11 +15,11 @@ A Python signal-only scanner for a fixed 60-symbol target universe of CoinDCX US
 **ARMED trigger (a later closed 5m bar):**
 - LONG: RSI crosses upward through `RSI_LONG_MIN` (default 52) and closes inside `RSI_LONG_MIN..RSI_LONG_MAX` (default 52..70).
 - SHORT: RSI crosses downward through `RSI_SHORT_MAX` (default 42) and closes inside `RSI_SHORT_MIN..RSI_SHORT_MAX` (default 30..42).
-- A trigger is accepted only while the setup remains valid. Any 5m EMA9/EMA21 cross against the direction, close crossing VWAP against the direction, ADX below minimum, DI cross against the direction, or completed 15m EMA9/EMA21 reversal/loss of directional alignment invalidates an ARMED setup. If 15m EMA values are unavailable or invalid, state processing is deferred rather than falsely invalidating the setup.
+- A trigger is accepted only while the setup remains valid. Any 5m EMA9/EMA21 alignment loss, close crossing VWAP against the direction, ADX below minimum, or DI mismatch invalidates an ARMED setup. 15m data is never consulted for setup validity, invalidation, or trigger eligibility.
 
 **Cooldown and re-arming:** `SIGNAL_COOLDOWN_CANDLES` defaults to 4 (20 minutes on 5m). After the bar count expires, the direction remains in COOLDOWN-WAIT until its setup has invalidated at least once during or after cooldown. It then returns to IDLE; a later qualifying candle must arm it again before another alert is possible. State and the processed-candle checkpoint persist across restarts. Reprocessing the same/older candle is a no-op. Signal history, state transition, cooldown and Telegram outbox are committed transactionally.
 
-**15-minute veto:** LONG is allowed only when 15m EMA(9) > EMA(21); SHORT only when 15m EMA(9) < EMA(21). Missing, stale, invalid, or insufficient 15m context defers state processing rather than firing on stale data. At least 35 contiguous 15m bars and 60 contiguous 5m bars are required.
+**15-minute context (non-blocking):** 15m EMA trend may be attached to a signal as descriptive metadata only. Bullish, bearish, neutral, missing, stale, or insufficient 15m data must never change a 5m setup, invalidate an ARMED state, delay a trigger, or block an alert. Only the 60-bar contiguous 5m history requirement applies to signal eligibility.
 
 **Production risk levels:** the scanner uses the prior swing low for LONG or prior swing high for SHORT, using `SWING_LOOKBACK_BARS` (default 10; signal candle excluded). TP1 and TP2 are configured at `TP1_R` (default 1R) and `TP2_R` (default 2R) of that swing-based risk. Production signal payloads identify this as `risk_model=swing_structure` and include the actual risk distance and percentage. These are informational planning levels, not exchange orders or guaranteed fills.
 
@@ -39,7 +39,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 - Active futures instruments: public CoinDCX active-instruments endpoint.
 - Historical 5m candles: public CoinDCX futures candlestick REST endpoint.
 - Live updates: public CoinDCX futures Socket.IO 5m candlestick channels.
-- The scanner aggregates aligned groups of three completed 5m candles into 15m bars. At least 35 valid, contiguous 15m bars are required; the latest 15m EMA(9)/EMA(21) direction is a mandatory veto. Signal calculation also requires the latest 60 completed 5m bars to be contiguous; gaps in either indicator window block signals until a complete window is restored.
+- The scanner may aggregate completed 5m candles into 15m bars for descriptive metadata. 15m history is optional: missing, stale, gapped, or opposing 15m context never blocks or delays a signal. Signal eligibility requires the latest 60 completed 5m bars to be contiguous.
 - Reconnects: Socket.IO reconnection with bounded retry delay.
 - Recovery: REST history is refreshed for symbols whose candle cache is missing or stale.
 - Public market data only. No CoinDCX API key or secret is required.
@@ -47,7 +47,7 @@ At startup the bot compares each exact pair (for example `BTC/USDT` → `B-BTC_U
 
 ## Telegram
 
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a TradingView market-directory link for the symbol, where you can select an exchange that lists the market. This is deliberately not presented as a CoinDCX chart: the bot's signal data and contract validation remain CoinDCX-based. Alerts include entry, bar time, ADX, 5m RSI, EMA9/21 values, VWAP, swing-based stop, TP1, TP2, mandatory 15m EMA trend confirmation, optional 15m RSI confidence (explicitly marked non-blocking), and the signal ID used by feedback buttons. Symbols that cannot be safely converted to a USDT ticker omit the link.
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Alerts identify CoinDCX USDT Perpetual and include a TradingView market-directory link for the symbol, where you can select an exchange that lists the market. This is deliberately not presented as a CoinDCX chart: the bot's signal data and contract validation remain CoinDCX-based. Alerts include entry, bar time, ADX, 5m RSI, EMA9/21 values, VWAP, swing-based stop, TP1, TP2, optional descriptive 15m EMA trend context (never a confirmation requirement), and the signal ID used by feedback buttons. Symbols that cannot be safely converted to a USDT ticker omit the link.
 
 ## Code architecture
 
