@@ -414,11 +414,10 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict
 
 
 def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict | None:
-    """Evaluate setup, invalidation and RSI-cross inputs using closed 5m bars.
+    """Legacy/shadow lifecycle inputs; the live scanner does not call this.
 
-    15m trend is deliberately excluded from setup and invalidation gates. It is
-    passed through to signal diagnostics elsewhere, never allowed to delay or
-    cancel an otherwise valid 5m setup.
+    The live signal path uses evaluate_setup on each completed 5m candle and
+    does not require ARMED state or an RSI crossing event.
     """
     if not has_contiguous_tail(df5, "5m", 60):
         return None
