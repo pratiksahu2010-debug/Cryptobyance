@@ -1,3 +1,4 @@
+import inspect
 import unittest
 
 import pandas as pd
@@ -32,14 +33,11 @@ class FifteenMinuteContextMustNotVetoTests(unittest.TestCase):
         self.assertEqual(signal["side"], "LONG")
         self.assertEqual(signal["context"], "15m bearish")
 
-    def test_15m_presence_or_absence_does_not_change_state_inputs(self):
-        without_context = evaluate_state_inputs(self.df5, None, armed_sides={"LONG"})
-        with_opposing_context = evaluate_state_inputs(
-            self.df5, self.opposing_df15, armed_sides={"LONG"}
-        )
-        self.assertEqual(with_opposing_context, without_context)
-        self.assertTrue(with_opposing_context["LONG"]["setup_valid"])
-        self.assertFalse(with_opposing_context["LONG"]["invalidation"])
+    def test_state_decision_api_cannot_receive_a_15m_veto_input(self):
+        self.assertNotIn("df15", inspect.signature(evaluate_state_inputs).parameters)
+        state_inputs = evaluate_state_inputs(self.df5, armed_sides={"LONG"})
+        self.assertTrue(state_inputs["LONG"]["setup_valid"])
+        self.assertFalse(state_inputs["LONG"]["invalidation"])
 
     def test_opposing_15m_trend_does_not_change_emitted_setup_side(self):
         without_context = evaluate_setup(self.df5, None)
