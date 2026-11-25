@@ -243,20 +243,28 @@ def ema_alignment_age_bars(frame: pd.DataFrame, side: str) -> int | None:
     return int(len(frame) - 1 - locations[-1])
 
 
-def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Build the executable signal payload for the single Normal 5m model.
+def evaluate_setup(
+    df5: pd.DataFrame,
+    df15: pd.DataFrame | None = None,
+    rejection: dict | None = None,
+) -> dict | None:
+    """Evaluate one completed 5m candle independently of prior scanner state.
 
-    EMA, VWAP, ADX and directional DI must agree on the completed 5m candle.
-    The persisted state machine separately requires the RSI threshold-cross
-    before a live alert. 15m is optional descriptive context only and never
-    gates, delays, or cancels a valid 5m setup.
+    EMA/VWAP/ADX/DI determine direction; the existing RSI band qualifies entry.
+    15m remains optional descriptive context and never gates the 5m decision.
+    When supplied, rejection receives an auditable reason on every no-signal
+    path. No previous ARMED state or RSI crossing event is required.
     """
+    def reject(reason: str):
+        if rejection is not None:
+            rejection["reason"] = reason
+        return reject("insufficient_5m_history")
     if not has_contiguous_tail(df5, "5m", 60):
-        return None
+        return reject("insufficient_indicator_history")
 
     a = indicators(df5.copy(), include_rsi=True)
     if len(a) < 35:
-        return None
+        return reject("invalid_indicator_values")
     c = a.iloc[-1]
     # EMA direction is a persistent trend-alignment condition. The age of the
     # last crossover is diagnostic only; an established aligned trend remains
@@ -265,25 +273,33 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     short_alignment_age = ema_alignment_age_bars(a, "SHORT")
     needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
-        return None
+        return reject("invalid_atr")
     if float(c.atr) <= 0:
-        return None
+        return reject("insufficient_swing_history")
 
-    long_ok = (
+    long_direction_ok = (
         float(c.ema9) > float(c.ema21)
         and float(c.close) > float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.plus_di) > float(c.minus_di)
     )
-    short_ok = (
+    short_direction_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.minus_di) > float(c.plus_di)
     )
-    if not (long_ok or short_ok):
-        return None
-    side = "LONG" if long_ok else "SHORT"
+    if not (long_direction_ok or short_direction_ok):
+        return reject("directional_setup_not_met")
+    side = "LONG" if long_direction_ok else "SHORT"
+
+    # RSI is evaluated on this same completed candle. It is not a crossover
+    # event and does not depend on a persisted ARMED state from an earlier scan.
+    rsi_value = float(c.rsi)
+    if side == "LONG" and not (settings.rsi_long_min <= rsi_value <= settings.rsi_long_max):
+        return reject("rsi_outside_long_entry_band")
+    if side == "SHORT" and not (settings.rsi_short_min <= rsi_value <= settings.rsi_short_max):
+        return reject("rsi_outside_short_entry_band")
 
     # 15m is descriptive only. Do not wait for a 15m EMA alignment or a new
     # 15m close before acting on a fully confirmed 5m setup.
@@ -311,11 +327,11 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     atr_value = float(c.atr)
     swing = a.iloc[-(settings.swing_lookback_bars + 1):-1]
     if len(swing) < settings.swing_lookback_bars:
-        return None
+        return reject("invalid_stop_risk")
     stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
     risk = entry - stop if side == "LONG" else stop - entry
     if not np.isfinite(risk) or risk <= 0:
-        return None
+        return reject("non_finite_diagnostics")
     target1 = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
@@ -346,6 +362,8 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     ):
         return None
 
+    if rejection is not None:
+        rejection["reason"] = "VALID"
     return {
         "side": side, "entry": entry, "stop": stop,
         "target": target2, "target1": target1, "target2": target2,
