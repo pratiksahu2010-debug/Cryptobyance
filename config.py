@@ -20,11 +20,11 @@ SYMBOLS = (
     "SAND/USDT", "MANA/USDT", "AXS/USDT", "EGLD/USDT", "ALGO/USDT",
     "VET/USDT", "THETA/USDT", "EOS/USDT", "XLM/USDT", "HBAR/USDT",
     "SKY/USDT", "CRV/USDT", "LDO/USDT", "DYDX/USDT", "1000BONK/USDT",
-    "1000PEPE/USDT", "ORDI/USDT", "STX/USDT", "IMX/USDT", "GRT/USDT",
+    "ORDI/USDT", "STX/USDT", "IMX/USDT", "GRT/USDT",
     "QNT/USDT", "ENS/USDT", "KAS/USDT", "PENDLE/USDT", "ONDO/USDT",
  )
 
-assert len(SYMBOLS) == 60 and len(set(SYMBOLS)) == 60
+assert len(SYMBOLS) == 59 and len(set(SYMBOLS)) == 59
 
 
 def _integer(name: str, default: str, minimum: int, maximum: int) -> int:
