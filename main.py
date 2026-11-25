@@ -186,7 +186,7 @@ async def process_shadow_symbol(candidate_store, journal, symbol: str,
         persisted = await candidate_store.load_symbol_states(strategy_key, symbol)
         armed_sides = {side for side, value in persisted.items() if value == "ARMED"}
         with strategy_module.using_runtime_settings(shadow_settings):
-            inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+            inputs = evaluate_state_inputs(df5, armed_sides=armed_sides)
         if inputs is None:
             return
         triggered_side = None
@@ -428,7 +428,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     STRATEGY_KEY, display_symbol
                 )
                 armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
-                state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
+                state_inputs = evaluate_state_inputs(df5, armed_sides=armed_sides)
                 if state_inputs is None:
                     # Do not consume this candle: a transient/incomplete indicator
                     # snapshot may be recoverable on the next scan cycle. The
