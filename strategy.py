@@ -392,12 +392,11 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict
     return signal
 
 
-def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict | None:
+def evaluate_state_inputs(df5: pd.DataFrame, armed_sides: set[str] | None = None) -> dict | None:
     """Evaluate setup, invalidation and RSI-cross inputs using closed 5m bars.
 
-    15m trend is deliberately excluded from setup and invalidation gates. It is
-    passed through to signal diagnostics elsewhere, never allowed to delay or
-    cancel an otherwise valid 5m setup.
+    This function deliberately accepts no 15m frame: setup validity,
+    invalidation, and RSI triggers are determined only from completed 5m bars.
     """
     if not has_contiguous_tail(df5, "5m", 60):
         return None
