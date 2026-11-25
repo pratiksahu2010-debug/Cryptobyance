@@ -27,7 +27,7 @@ load_dotenv()
 from coindcx_feed import CoinDCXFuturesFeed, aggregate_5m_to_15m, symbol_to_pair
 import strategy as strategy_module
 from strategy import evaluate_setup, evaluate_state_inputs, indicators, timeframe_milliseconds, validate_ohlcv
-from journal import DASHBOARD_HTML, SignalJournal, rejected_observation
+from journal import DASHBOARD_HTML, SignalJournal
 from candidate_store import CandidateStore
 from telegram import TelegramNotifier
 from feature_snapshot import build_indicator_snapshot
@@ -413,82 +413,24 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 await process_shadow_symbol(
                     candidate_store, journal, display_symbol, df5, df15, closed_ts
                 )
+            # Every completed 5m candle is evaluated independently. Persistent
+            # ARMED/TRIGGERED lifecycle state is intentionally not consulted by
+            # the live signal path; it must never gate a valid current-candle setup.
             state_metadata = {}
-            # Backward-compatible path for isolated scanner adapters/tests that
-            # do not implement the v2 durable state API. The deployed
-            # CandidateStore always takes the staged branch below.
-            if candidate_store is None or not hasattr(candidate_store, "load_symbol_states"):
-                setup = evaluate_setup(df5, df15)
-                if not setup or candidate_store is None:
-                    last_seen_candle[display_symbol] = closed_ts
-                    state['symbols_ok'] += 1
-                    return
-            else:
-                persisted_states = await candidate_store.load_symbol_states(
-                    STRATEGY_KEY, display_symbol
+            rejection = {}
+            setup = evaluate_setup(df5, df15, rejection=rejection)
+            if not setup:
+                reason = rejection.get("reason", "NO_SIGNAL")
+                state["candidate_rejections"] = state.get("candidate_rejections", 0) + 1
+                by_reason = state.setdefault("candidate_rejections_by_reason", {})
+                by_reason[reason] = int(by_reason.get(reason, 0)) + 1
+                log.info(
+                    "SIGNAL CANDIDATE REJECTED symbol=%s reason=%s candle=%s",
+                    display_symbol, reason, closed_ts,
                 )
-                armed_sides = {side for side, value in persisted_states.items() if value == "ARMED"}
-                state_inputs = evaluate_state_inputs(df5, df15, armed_sides=armed_sides)
-                if state_inputs is None:
-                    # Do not consume this candle: a transient/incomplete indicator
-                    # snapshot may be recoverable on the next scan cycle. The
-                    # persisted state machine has not advanced, so retrying the
-                    # same closed candle is safe and idempotent.
-                    state["state_input_deferred"] = state.get("state_input_deferred", 0) + 1
-                    log.warning("state scan deferred; candle remains retryable symbol=%s candle=%s",
-                                display_symbol, closed_ts)
-                    state['symbols_ok'] += 1
-                    return "RETRYABLE"
-                triggered_side = None
-                for side in ("LONG", "SHORT"):
-                    item = state_inputs[side]
-                    action = await candidate_store.advance_symbol_state(
-                        strategy_key=STRATEGY_KEY,
-                        symbol=display_symbol, direction=side,
-                        candle_open_ms=closed_ts,
-                        setup_valid=item["setup_valid"],
-                        invalidation=item["invalidation"],
-                        trigger=item["trigger"],
-                        cooldown_candles=COOLDOWN_CANDLES,
-                    )
-                    if action == "TRIGGER":
-                        triggered_side = side
-                if triggered_side is None:
-                    if journal is not None and armed_sides:
-                        try:
-                            for armed_side in sorted(armed_sides):
-                                observation = rejected_observation(
-                                    df5, df15, side=armed_side,
-                                    state_input=state_inputs[armed_side],
-                                )
-                                if observation:
-                                    observation["symbol"] = display_symbol
-                                    await journal.record_rejected(observation)
-                        except Exception as journal_error:
-                            log.warning('rejected-candidate journal failed symbol=%s error_type=%s', display_symbol, type(journal_error).__name__)
-                    last_seen_candle[display_symbol] = closed_ts
-                    state['symbols_ok'] += 1
-                    return
-                setup = evaluate_setup(df5, df15)
-                if not setup or setup.get("side") != triggered_side:
-                    # TRIGGER is intentionally not committed by advance_symbol_state
-                    # until enqueue_signal atomically persists the alert and cooldown.
-                    # Keep the candle retryable instead of losing a trigger on a
-                    # transient indicator/stop-construction mismatch.
-                    state["trigger_setup_mismatch"] = state.get("trigger_setup_mismatch", 0) + 1
-                    log.error("state trigger lacked matching executable signal; candle remains retryable symbol=%s side=%s candle=%s",
-                              display_symbol, triggered_side, closed_ts)
-                    state['symbols_ok'] += 1
-                    return "RETRYABLE"
-            if candidate_store is not None and hasattr(candidate_store, "load_symbol_state_metadata"):
-                try:
-                    details = await candidate_store.load_symbol_state_metadata(
-                        STRATEGY_KEY, display_symbol
-                    )
-                    state_metadata = details.get(setup.get("side"), {})
-                except Exception as metadata_error:
-                    log.warning("state metadata snapshot unavailable symbol=%s error_type=%s",
-                                display_symbol, type(metadata_error).__name__)
+                last_seen_candle[display_symbol] = closed_ts
+                state["symbols_ok"] += 1
+                return
             signal = {k: v for k, v in setup.items() if k != 'adx_satisfied'}
             signal['symbol'] = display_symbol
             signal['config_version'] = CONFIG_VERSION
@@ -497,18 +439,14 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # Point-in-time research snapshot: telemetry only; never feeds back into entry rules.
             try:
                 ind = indicators(df5.copy())
-                signal["armed_candle_open_ms"] = state_metadata.get("armed_candle_open_ms")
-                signal["state_cycle_id"] = state_metadata.get("cycle_id")
-                signal["bars_since_armed"] = (
-                    max(0, (closed_ts - int(state_metadata["armed_candle_open_ms"])) // 300_000)
-                    if state_metadata.get("armed_candle_open_ms") is not None else None
-                )
+                # Lifecycle-state fields are intentionally absent: this signal
+                # was qualified directly from the current completed 5m candle.
                 signal["indicator_snapshot"] = build_indicator_snapshot(
                     ind, df5, signal,
                     candle_open_ms=closed_ts,
                     config_version=CONFIG_VERSION,
-                    cooldown_candles=COOLDOWN_CANDLES,
-                    state_metadata=state_metadata,
+                    cooldown_candles=0,
+                    state_metadata={},
                 )
             except Exception as snapshot_error:
                 log.warning("signal snapshot enrichment failed symbol=%s error_type=%s", display_symbol, type(snapshot_error).__name__)
@@ -520,8 +458,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
             if int(final_df5.iloc[-1].timestamp) != closed_ts:
                 raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
+            # Atomic idempotency remains enabled, but live signal cooldown
+            # and strategy-state lifecycle gates are deliberately disabled.
             queued = await candidate_store.enqueue_signal(
-                signal, None, COOLDOWN_CANDLES,
+                signal, None, 0,
                 strategy_key=STRATEGY_KEY,
             )
             last_seen_candle[display_symbol] = closed_ts
