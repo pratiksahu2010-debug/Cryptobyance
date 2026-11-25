@@ -185,6 +185,7 @@ def build_indicator_snapshot(
         "macd_signal": float(macd_signal.iloc[-1]),
         "macd_histogram": float(macd_histogram.iloc[-1]),
         "shadow_diagnostics": shadow_diagnostics,
+        "entry_quality_shadow": entry_quality_shadow,
         "open": float(current.open),
         "high": float(current.high),
         "low": float(current.low),
