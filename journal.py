@@ -1419,6 +1419,14 @@ class SignalJournal:
         end_ms = int(local_end.astimezone(timezone.utc).timestamp() * 1000)
 
         async with self.pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                """SELECT summary::text AS summary FROM entry_timing_daily_reviews
+                   WHERE training_day=$1""",
+                training_day,
+            )
+            if existing is not None:
+                stored = existing["summary"]
+                return json.loads(stored) if isinstance(stored, str) else dict(stored)
             signals = await conn.fetch(
                 """SELECT s.id AS signal_id,s.symbol,s.direction,s.candle_open_ms,
                           o.entry,o.stop,COALESCE(o.target1,o.target) AS target1,
