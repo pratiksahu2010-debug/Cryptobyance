@@ -628,14 +628,13 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
 
 
 async def daily_entry_timing_training_loop(journal: SignalJournal) -> None:
-    """Train once after each completed Asia/Kolkata calendar day."""
+    """Train once after each completed Asia/Kolkata day, including restart catch-up."""
     timezone_ist = ZoneInfo("Asia/Kolkata")
     while True:
         now = datetime.now(timezone_ist)
-        next_run = now.replace(hour=1, minute=15, second=0, microsecond=0)
-        if next_run <= now:
-            next_run += timedelta(days=1)
-        await asyncio.sleep(max(1.0, (next_run - now).total_seconds()))
+        scheduled = now.replace(hour=1, minute=15, second=0, microsecond=0)
+        if scheduled > now:
+            await asyncio.sleep(max(1.0, (scheduled - now).total_seconds()))
         try:
             summary = await journal.train_entry_timing_for_previous_day()
             directions = summary.get("directions", {})
@@ -651,7 +650,15 @@ async def daily_entry_timing_training_loop(journal: SignalJournal) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("daily entry-timing training failed error_type=%s", type(exc).__name__)
+            log.warning("daily entry-timing training failed error_type=%s; retrying in 5m",
+                        type(exc).__name__)
+            await asyncio.sleep(5 * 60)
+            continue
+        # The journal's unique training_day row makes a restart/catch-up safe.
+        next_run = datetime.now(timezone_ist).replace(
+            hour=1, minute=15, second=0, microsecond=0
+        ) + timedelta(days=1)
+        await asyncio.sleep(max(1.0, (next_run - datetime.now(timezone_ist)).total_seconds()))
 
 
 async def daily_training_review_loop(journal: SignalJournal) -> None:
