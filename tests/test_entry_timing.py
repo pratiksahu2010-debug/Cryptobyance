@@ -5,7 +5,7 @@ from entry_timing import train_entry_timing
 
 class EntryTimingTests(unittest.TestCase):
 
-    def test_daily_trainer_selects_supported_five_minute_entry_delay():
+    def test_daily_trainer_selects_supported_five_minute_entry_delay(self):
         signals = []
         candles_by_symbol = {}
         for index in range(20):
@@ -44,7 +44,7 @@ class EntryTimingTests(unittest.TestCase):
         assert report["live_strategy_changed"] is False
 
 
-    def test_daily_trainer_holds_immediate_entry_when_sample_is_small():
+    def test_daily_trainer_holds_immediate_entry_when_sample_is_small(self):
         signals = [{
             "signal_id": index + 1,
             "symbol": f"COIN{index}/USDT",
