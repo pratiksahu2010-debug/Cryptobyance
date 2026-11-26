@@ -13,6 +13,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import replace
 from typing import Any
 
@@ -382,6 +383,19 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         display_symbol, type(outcome_error).__name__,
                     )
 
+            # Entry-timing training needs a durable, finalized 5m OHLCV tape.
+            # This write is observational and failure-isolated from signal generation.
+            if journal is not None:
+                try:
+                    await journal.record_entry_timing_candle(
+                        display_symbol, df5.iloc[-1].to_dict()
+                    )
+                except Exception as timing_store_error:
+                    log.warning(
+                        "entry-timing candle persistence failed symbol=%s error_type=%s",
+                        display_symbol, type(timing_store_error).__name__,
+                    )
+
             # Never emit a historical setup discovered during process startup.
             if session_started_ms is not None and five_minute_close <= session_started_ms:
                 last_seen_candle[display_symbol] = closed_ts
@@ -461,6 +475,32 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
             if int(final_df5.iloc[-1].timestamp) != closed_ts:
                 raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
+            # Apply only a previously validated policy from a completed prior IST day.
+            # The alert is still queued immediately; only its suggested entry/levels shift.
+            if journal is not None:
+                try:
+                    policy = await journal.get_entry_timing_policy(signal["side"])
+                    if policy and int(policy.get("delay_bars") or 0) > 0:
+                        adjustment_pct = float(policy.get("median_entry_adjustment_pct") or 0.0)
+                        if math.isfinite(adjustment_pct):
+                            original_entry = float(signal["entry"])
+                            price_delta = original_entry * adjustment_pct / 100.0
+                            if math.isfinite(price_delta):
+                                for price_key in ("entry", "stop", "target", "target1", "target2"):
+                                    if signal.get(price_key) is not None:
+                                        signal[price_key] = float(signal[price_key]) + price_delta
+                                signal["entry_timing"] = {
+                                    "delay_minutes": int(policy["delay_bars"]) * 5,
+                                    "adjustment_pct": adjustment_pct,
+                                    "sample_count": int(policy.get("sample_count") or 0),
+                                    "training_day": str(policy.get("training_day")),
+                                    "effective_from": str(policy.get("effective_from")),
+                                }
+                except Exception as timing_policy_error:
+                    log.warning(
+                        "entry-timing policy unavailable; using immediate entry symbol=%s error_type=%s",
+                        display_symbol, type(timing_policy_error).__name__,
+                    )
             # Per-candle idempotency plus a four-candle per-symbol cooldown
             # that begins only after Telegram confirms delivery.
             queued = await candidate_store.enqueue_signal(
@@ -585,6 +625,33 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
             raise
         except Exception:
             log.exception("Database nightly cleanup failed; scanner will continue")
+
+
+async def daily_entry_timing_training_loop(journal: SignalJournal) -> None:
+    """Train once after each completed Asia/Kolkata calendar day."""
+    timezone_ist = ZoneInfo("Asia/Kolkata")
+    while True:
+        now = datetime.now(timezone_ist)
+        next_run = now.replace(hour=1, minute=15, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep(max(1.0, (next_run - now).total_seconds()))
+        try:
+            summary = await journal.train_entry_timing_for_previous_day()
+            directions = summary.get("directions", {})
+            log.info(
+                "Daily entry-timing training complete day=%s long=%s short=%s "
+                "delivered=%s candles_symbols=%s",
+                summary.get("training_day"),
+                directions.get("LONG", {}).get("status"),
+                directions.get("SHORT", {}).get("status"),
+                summary.get("delivered_signal_count"),
+                summary.get("candle_symbol_count"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("daily entry-timing training failed error_type=%s", type(exc).__name__)
 
 
 async def daily_training_review_loop(journal: SignalJournal) -> None:
