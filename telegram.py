@@ -91,8 +91,11 @@ class TelegramNotifier:
             f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\n"
             if vwap is not None else "VWAP: correct side\n"
         )
-        target1 = signal.get("target1", signal.get("target"))
-        target2 = signal.get("target2", signal.get("target"))
+        target1 = timing.get("suggested_target1", signal.get("target1", signal.get("target")))
+        target2 = timing.get("suggested_target2", signal.get("target2", signal.get("target")))
+        display_entry = timing.get("suggested_entry", signal["entry"])
+        display_stop = timing.get("suggested_stop", signal["stop"])
+        entry_label = "Suggested entry (model-adjusted)" if int(timing.get("delay_minutes") or 0) > 0 else "Entry"
         signal_ref = f"\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
         timing = signal.get("entry_timing") or {}
         timing_line = ""
