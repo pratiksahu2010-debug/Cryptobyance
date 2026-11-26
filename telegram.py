@@ -100,7 +100,7 @@ class TelegramNotifier:
             timing_line = (
                 f"<b>Entry timing model: {int(timing['delay_minutes'])}m historical adjustment</b> "
                 f"(trained on {escape(str(timing.get('training_day', 'prior day')))}; "
-                "alert delivered immediately; refresh the live price before acting)\\n"
+                "alert delivered immediately; refresh the live price before acting)\n"
             )
         return (
             f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
