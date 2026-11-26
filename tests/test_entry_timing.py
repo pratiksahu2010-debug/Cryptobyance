@@ -22,7 +22,7 @@ def test_daily_trainer_selects_supported_five_minute_entry_delay():
         candles = {}
         for bar in range(1, 16):
             candles[signal_ts + bar * 300_000] = {
-                "open": 99.9 if bar == 1 else 100.9,
+                "open": 100.0 if bar == 1 else (99.9 if bar == 2 else 100.9),
                 "high": 100.95,
                 "low": 99.8,
                 "close": 100.9,
