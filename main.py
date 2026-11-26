@@ -501,6 +501,11 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         "entry-timing policy unavailable; using immediate entry symbol=%s error_type=%s",
                         display_symbol, type(timing_policy_error).__name__,
                     )
+            # Policy lookup is optional but may add database latency; validate
+            # candle freshness again after it, immediately before enqueue.
+            final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
+            if int(final_df5.iloc[-1].timestamp) != closed_ts:
+                raise ValueError('latest 5m candle changed during timing-policy lookup; defer to next cycle')
             # Per-candle idempotency plus a four-candle per-symbol cooldown
             # that begins only after Telegram confirms delivery.
             queued = await candidate_store.enqueue_signal(
