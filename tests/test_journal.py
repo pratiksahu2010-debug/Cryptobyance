@@ -362,3 +362,36 @@ class ShadowModeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntryTimingPolicyFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_latest_hold_policy_disables_an_older_active_adjustment(self):
+        conn = FakeConnection(fetchrows=[{
+            "training_day": "2026-11-25",
+            "effective_from": "2026-11-26",
+            "direction": "LONG",
+            "status": "HOLD",
+            "delay_bars": 0,
+            "median_entry_adjustment_pct": 0.0,
+            "sample_count": 4,
+        }])
+        journal = SignalJournal(FakeStore(conn))
+        policy = await journal.get_entry_timing_policy("LONG")
+        self.assertIsNone(policy)
+        self.assertIn("status", conn.fetchrow.await_args.args[0])
+
+    async def test_active_policy_is_returned_when_it_is_the_latest_daily_decision(self):
+        conn = FakeConnection(fetchrows=[{
+            "training_day": "2026-11-25",
+            "effective_from": "2026-11-26",
+            "direction": "SHORT",
+            "status": "ACTIVE",
+            "delay_bars": 2,
+            "median_entry_adjustment_pct": -0.18,
+            "sample_count": 24,
+        }])
+        journal = SignalJournal(FakeStore(conn))
+        policy = await journal.get_entry_timing_policy("SHORT")
+        self.assertEqual(policy["delay_bars"], 2)
+        self.assertEqual(policy["status"], "ACTIVE")
+
