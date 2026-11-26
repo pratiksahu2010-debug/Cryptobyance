@@ -472,9 +472,6 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
             # DB work above may also take time. Recheck immediately before the
             # durable enqueue so a candle that aged out during processing cannot alert.
-            final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
-            if int(final_df5.iloc[-1].timestamp) != closed_ts:
-                raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
             # Apply only a previously validated policy from a completed prior IST day.
             # The alert is still queued immediately; only its suggested entry/levels shift.
             if journal is not None:
@@ -501,6 +498,9 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         "entry-timing policy unavailable; using immediate entry symbol=%s error_type=%s",
                         display_symbol, type(timing_policy_error).__name__,
                     )
+            final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
+            if int(final_df5.iloc[-1].timestamp) != closed_ts:
+                raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
             # Per-candle idempotency plus a four-candle per-symbol cooldown
             # that begins only after Telegram confirms delivery.
             queued = await candidate_store.enqueue_signal(
