@@ -1,7 +1,7 @@
 """Transactional persistence for direct signals, outcomes and Telegram outbox.
 
-Legacy candidate/state/cooldown tables remain for shadow experiments and
-historical compatibility; they are not consulted by live signal enqueue.
+Legacy candidate/state tables remain for shadow experiments and historical
+compatibility. Live signals use a delivery-based per-symbol cooldown.
 """
 from __future__ import annotations
 
@@ -707,10 +707,10 @@ class CandidateStore:
                              cooldown_candles: int = 0, strategy_key: str = "default") -> str:
         """Atomically persist one current-candle signal and its Telegram outbox event.
 
-        The live path uses candle-level idempotency only. No prior ARMED state,
-        strategy lifecycle transition, or per-symbol cooldown may veto a valid
-        signal. The legacy cooldown argument remains accepted for callers but
-        is intentionally ignored.
+        The live path uses candle-level idempotency and a delivery-based
+        per-symbol cooldown. No prior ARMED state or strategy lifecycle
+        transition may veto a valid signal. Cooldown starts only after
+        successful Telegram delivery.
         """
         symbol, direction = signal["symbol"], signal["side"]
         candle_ms = int(signal["candle"])
@@ -733,6 +733,19 @@ class CandidateStore:
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"{strategy_key}:{symbol}:{direction}",
                 )
+                # Cooldown begins only after Telegram confirms delivery. Four
+                # completed 5m bars suppress this symbol for 20m; other symbols
+                # continue independently.
+                if int(cooldown_candles or 0) > 0:
+                    cooldown = await conn.fetchrow(
+                        "SELECT last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1",
+                        symbol,
+                    )
+                    if cooldown is not None:
+                        elapsed_ms = candle_ms - int(cooldown["last_candle_open_ms"])
+                        if elapsed_ms < int(cooldown_candles) * 5 * 60_000:
+                            return "COOLDOWN"
+
                 existing = await conn.fetchrow(
                     "SELECT id FROM signal_history WHERE idempotency_key=$1", key
                 )
@@ -854,6 +867,23 @@ class CandidateStore:
                     "UPDATE telegram_outbox SET status='SENT',sent_at=NOW(),lease_until=NULL WHERE id=$1 RETURNING signal_id",
                     outbox_id)
                 if row:
+                    signal_row = await conn.fetchrow(
+                        "SELECT symbol,direction,candle_open_ms FROM signal_history WHERE id=$1 FOR UPDATE",
+                        row["signal_id"],
+                    )
+                    if signal_row is not None:
+                        # Persist cooldown only after Telegram confirms delivery.
+                        await conn.execute(
+                            """INSERT INTO signal_cooldowns(
+                                   symbol,last_direction,last_candle_open_ms,updated_at
+                               ) VALUES($1,$2,$3,NOW())
+                               ON CONFLICT(symbol) DO UPDATE SET
+                                   last_direction=EXCLUDED.last_direction,
+                                   last_candle_open_ms=EXCLUDED.last_candle_open_ms,
+                                   updated_at=NOW()""",
+                            signal_row["symbol"], signal_row["direction"],
+                            signal_row["candle_open_ms"],
+                        )
                     await conn.execute(
                         "UPDATE signal_history SET status='SENT',delivered_at=NOW() WHERE id=$1", row["signal_id"])
                     # Outcome tracking starts only after Telegram confirms delivery.
