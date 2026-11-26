@@ -94,11 +94,20 @@ class TelegramNotifier:
         target1 = signal.get("target1", signal.get("target"))
         target2 = signal.get("target2", signal.get("target"))
         signal_ref = f"\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
+        timing = signal.get("entry_timing") or {}
+        timing_line = ""
+        if isinstance(timing, dict) and int(timing.get("delay_minutes") or 0) > 0:
+            timing_line = (
+                f"<b>Entry timing model: {int(timing['delay_minutes'])}m historical adjustment</b> "
+                f"(trained on {escape(str(timing.get('training_day', 'prior day')))}; "
+                "alert delivered immediately; refresh the live price before acting)\n"
+            )
         return (
             f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
             + f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
             + chart_link
             + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
+            + timing_line
             + f"<b>5m candle close: <code>{candle_time}</code></b>\n"
             + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\n"
             + ema_line
