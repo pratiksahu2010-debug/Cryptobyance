@@ -998,7 +998,7 @@ async def scanner_session() -> None:
         training_review_task.cancel()
         entry_timing_task.cancel()
         weekly_digest_task.cancel()
-        for background_task in (cleanup_task, outbox_task, training_review_task, weekly_digest_task):
+        for background_task in (cleanup_task, outbox_task, training_review_task, entry_timing_task, weekly_digest_task):
             try:
                 await background_task
             except asyncio.CancelledError:
