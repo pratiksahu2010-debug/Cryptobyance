@@ -825,6 +825,7 @@ async def scanner_session() -> None:
     cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="database-nightly-cleanup")
     outbox_task = asyncio.create_task(telegram_outbox_loop(candidate_store, notifier), name="telegram-outbox")
     training_review_task = asyncio.create_task(daily_training_review_loop(journal_service), name="daily-training-review")
+    entry_timing_task = asyncio.create_task(daily_entry_timing_training_loop(journal_service), name="daily-entry-timing-training")
     weekly_digest_task = asyncio.create_task(weekly_digest_loop(journal_service), name="weekly-digest")
     try:
         startup_attempt = 0
@@ -995,6 +996,7 @@ async def scanner_session() -> None:
         cleanup_task.cancel()
         outbox_task.cancel()
         training_review_task.cancel()
+        entry_timing_task.cancel()
         weekly_digest_task.cancel()
         for background_task in (cleanup_task, outbox_task, training_review_task, weekly_digest_task):
             try:
