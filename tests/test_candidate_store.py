@@ -74,7 +74,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("signal_cooldowns", executed)
 
     async def test_four_candle_cooldown_blocks_only_same_symbol_until_elapsed(self):
-        conn = FakeConnection(fetchrows=[None, {"symbol": "BTC/USDT"}])
+        conn = FakeConnection(fetchrows=[{"symbol": "BTC/USDT"}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "SHORT", "candle": 2_100_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
@@ -119,7 +119,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("signal_cooldowns", sql)
 
     async def test_opposite_direction_is_blocked_by_per_symbol_cooldown(self):
-        conn = FakeConnection(fetchrows=[None, {"symbol": "SOL/USDT"}])
+        conn = FakeConnection(fetchrows=[{"symbol": "SOL/USDT"}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "SOL/USDT", "side": "SHORT", "candle": 3_300_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
