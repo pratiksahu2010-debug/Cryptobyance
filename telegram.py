@@ -109,13 +109,13 @@ class TelegramNotifier:
             f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
             + f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
             + chart_link
-            + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
+            + f"<b>{entry_label}: <code>{fmt_price(display_entry)}</code></b>\n"
             + timing_line
             + f"<b>5m candle close: <code>{candle_time}</code></b>\n"
             + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\n"
             + ema_line
             + vwap_line
-            + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
+            + f"<b>Stop loss (swing): <code>{fmt_price(display_stop)}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
             + f"<b>15m context: {escape(str(signal.get('context', 'unavailable')))}</b> (informational only; not used to approve or block 5m signals)\n"
