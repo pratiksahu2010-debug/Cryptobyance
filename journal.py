@@ -7,8 +7,9 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from strategy import indicators, ADX_MIN
 from config import settings
@@ -106,6 +107,43 @@ CREATE TABLE IF NOT EXISTS training_daily_reviews (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(window_start,window_end)
 );
+CREATE TABLE IF NOT EXISTS entry_timing_candles (
+    symbol TEXT NOT NULL,
+    candle_open_ms BIGINT NOT NULL,
+    open DOUBLE PRECISION NOT NULL,
+    high DOUBLE PRECISION NOT NULL,
+    low DOUBLE PRECISION NOT NULL,
+    close DOUBLE PRECISION NOT NULL,
+    volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(symbol,candle_open_ms),
+    CHECK(high >= low AND low > 0 AND open > 0 AND close > 0)
+);
+CREATE INDEX IF NOT EXISTS ix_entry_timing_candles_time
+ ON entry_timing_candles(candle_open_ms);
+CREATE TABLE IF NOT EXISTS entry_timing_daily_reviews (
+    training_day DATE PRIMARY KEY,
+    effective_from DATE NOT NULL,
+    summary JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS entry_timing_policies (
+    training_day DATE NOT NULL,
+    effective_from DATE NOT NULL,
+    direction TEXT NOT NULL CHECK(direction IN ('LONG','SHORT')),
+    status TEXT NOT NULL CHECK(status IN ('ACTIVE','HOLD','INSUFFICIENT_DATA')),
+    delay_bars INTEGER NOT NULL DEFAULT 0 CHECK(delay_bars BETWEEN 0 AND 3),
+    median_entry_adjustment_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    baseline_expectancy_r DOUBLE PRECISION,
+    candidate_expectancy_r DOUBLE PRECISION,
+    improvement_lower_bound_r DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(training_day,direction)
+);
+CREATE INDEX IF NOT EXISTS ix_entry_timing_policies_effective
+ ON entry_timing_policies(direction,effective_from DESC,status);
+
 CREATE TABLE IF NOT EXISTS training_proposals (
     id BIGSERIAL PRIMARY KEY,
     base_config_version TEXT NOT NULL,
@@ -1345,6 +1383,148 @@ class SignalJournal:
             await conn.execute(
                 """UPDATE training_weekly_digests SET attempts=attempts+1
                    WHERE id=$1 AND status='PENDING'""", int(digest_id))
+
+    async def record_entry_timing_candle(self, symbol: str, candle: dict) -> None:
+        """Persist one finalized 5m candle; this telemetry never gates signals."""
+        timestamp = int(candle.get("timestamp") or 0)
+        values = [float(candle.get(key) or 0) for key in ("open", "high", "low", "close")]
+        volume = float(candle.get("volume") or 0)
+        if not timestamp or not all(math.isfinite(value) and value > 0 for value in values):
+            return
+        open_price, high, low, close = values
+        if high < low or high < max(open_price, close) or low > min(open_price, close):
+            return
+        if not math.isfinite(volume) or volume < 0:
+            volume = 0.0
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO entry_timing_candles(
+                     symbol,candle_open_ms,open,high,low,close,volume)
+                   VALUES($1,$2,$3,$4,$5,$6,$7)
+                   ON CONFLICT(symbol,candle_open_ms) DO UPDATE SET
+                     open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,
+                     close=EXCLUDED.close,volume=EXCLUDED.volume,recorded_at=NOW()""",
+                str(symbol), timestamp, open_price, high, low, close, volume,
+            )
+
+    async def train_entry_timing_for_previous_day(self) -> dict:
+        """Train on one completed Asia/Kolkata calendar day; policy starts next day."""
+        from entry_timing import train_entry_timing
+
+        local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        training_day = local_today - timedelta(days=1)
+        local_start = datetime.combine(training_day, datetime.min.time(), ZoneInfo("Asia/Kolkata"))
+        local_end = local_start + timedelta(days=1)
+        start_ms = int(local_start.astimezone(timezone.utc).timestamp() * 1000)
+        end_ms = int(local_end.astimezone(timezone.utc).timestamp() * 1000)
+
+        async with self.pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                """SELECT summary::text AS summary FROM entry_timing_daily_reviews
+                   WHERE training_day=$1""",
+                training_day,
+            )
+            if existing is not None:
+                stored = existing["summary"]
+                return json.loads(stored) if isinstance(stored, str) else dict(stored)
+            signals = await conn.fetch(
+                """SELECT s.id AS signal_id,s.symbol,s.direction,s.candle_open_ms,
+                          o.entry,o.stop,COALESCE(o.target1,o.target) AS target1,
+                          o.risk_per_unit,o.outcome_horizon_bars,o.cost_pct
+                   FROM signal_history s
+                   JOIN signal_outcomes o ON o.signal_id=s.id
+                   WHERE s.status='SENT' AND s.candle_open_ms >= $1
+                     AND s.candle_open_ms < $2
+                   ORDER BY s.candle_open_ms,s.id""",
+                start_ms, end_ms,
+            )
+            candle_rows = await conn.fetch(
+                """SELECT symbol,candle_open_ms,open,high,low,close,volume
+                   FROM entry_timing_candles
+                   WHERE candle_open_ms >= $1 AND candle_open_ms < $2
+                   ORDER BY symbol,candle_open_ms""",
+                start_ms, end_ms + 90 * 60 * 1000,
+            )
+
+        candles_by_symbol: dict[str, dict[int, dict]] = {}
+        for row in candle_rows:
+            candles_by_symbol.setdefault(str(row["symbol"]), {})[int(row["candle_open_ms"])] = {
+                "open": float(row["open"]), "high": float(row["high"]),
+                "low": float(row["low"]), "close": float(row["close"]),
+                "volume": float(row["volume"] or 0),
+            }
+        dataset = [dict(row) for row in signals]
+        summary = await asyncio.to_thread(train_entry_timing, dataset, candles_by_symbol)
+        summary["training_day"] = training_day.isoformat()
+        summary["effective_from"] = local_today.isoformat()
+        summary["delivered_signal_count"] = len(dataset)
+        summary["candle_symbol_count"] = len(candles_by_symbol)
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """INSERT INTO entry_timing_daily_reviews(training_day,effective_from,summary)
+                       VALUES($1,$2,$3::jsonb)
+                       ON CONFLICT(training_day) DO UPDATE SET
+                         effective_from=EXCLUDED.effective_from,summary=EXCLUDED.summary""",
+                    training_day, local_today,
+                    json.dumps(summary, default=str, separators=(",", ":"), allow_nan=False),
+                )
+                for direction in ("LONG", "SHORT"):
+                    result = summary["directions"][direction]
+                    policy = result.get("policy") or {}
+                    status = "ACTIVE" if policy else (
+                        "INSUFFICIENT_DATA" if result["status"] == "INSUFFICIENT_DATA" else "HOLD"
+                    )
+                    await conn.execute(
+                        """INSERT INTO entry_timing_policies(
+                             training_day,effective_from,direction,status,delay_bars,
+                             median_entry_adjustment_pct,sample_count,baseline_expectancy_r,
+                             candidate_expectancy_r,improvement_lower_bound_r)
+                           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                           ON CONFLICT(training_day,direction) DO UPDATE SET
+                             effective_from=EXCLUDED.effective_from,status=EXCLUDED.status,
+                             delay_bars=EXCLUDED.delay_bars,
+                             median_entry_adjustment_pct=EXCLUDED.median_entry_adjustment_pct,
+                             sample_count=EXCLUDED.sample_count,
+                             baseline_expectancy_r=EXCLUDED.baseline_expectancy_r,
+                             candidate_expectancy_r=EXCLUDED.candidate_expectancy_r,
+                             improvement_lower_bound_r=EXCLUDED.improvement_lower_bound_r""",
+                        training_day, local_today, direction, status,
+                        int(policy.get("delay_bars", 0)),
+                        float(policy.get("median_entry_adjustment_pct", 0)),
+                        int(policy.get("sample_count", result.get("sample_count", 0))),
+                        policy.get("baseline_expectancy_r", result.get("baseline_expectancy_r")),
+                        policy.get("candidate_expectancy_r"),
+                        policy.get("improvement_lower_bound_r"),
+                    )
+                # Keep only 14 days of raw candles; policy and review history remain durable.
+                await conn.execute(
+                    "DELETE FROM entry_timing_candles WHERE candle_open_ms < $1",
+                    start_ms - 13 * 24 * 60 * 60 * 1000,
+                )
+        return summary
+
+    async def get_entry_timing_policy(self, direction: str, for_day: date | None = None) -> dict | None:
+        """Return the latest validated policy effective for this IST calendar day."""
+        side = str(direction or "").upper()
+        if side not in {"LONG", "SHORT"}:
+            return None
+        active_day = for_day or datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT training_day,effective_from,direction,status,delay_bars,
+                          median_entry_adjustment_pct,sample_count,
+                          baseline_expectancy_r,candidate_expectancy_r,
+                          improvement_lower_bound_r
+                   FROM entry_timing_policies
+                   WHERE direction=$1 AND effective_from <= $2
+                   ORDER BY effective_from DESC,training_day DESC LIMIT 1""",
+                side, active_day,
+            )
+        if row is None or row["status"] != "ACTIVE":
+            return None
+        return dict(row)
 
     async def daily_training_review(self) -> dict:
         async with self.pool.acquire() as conn:

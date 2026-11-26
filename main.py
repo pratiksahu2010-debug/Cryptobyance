@@ -13,6 +13,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import replace
 from typing import Any
 
@@ -431,6 +432,17 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     "SIGNAL CANDIDATE REJECTED symbol=%s reason=%s candle=%s details=%s",
                     display_symbol, reason, closed_ts, rejection,
                 )
+                # Persist the candle after deciding there is no alert to send.
+                if journal is not None:
+                    try:
+                        await journal.record_entry_timing_candle(
+                            display_symbol, df5.iloc[-1].to_dict()
+                        )
+                    except Exception as timing_store_error:
+                        log.warning(
+                            "entry-timing candle persistence failed symbol=%s error_type=%s",
+                            display_symbol, type(timing_store_error).__name__,
+                        )
                 last_seen_candle[display_symbol] = closed_ts
                 state["symbols_ok"] += 1
                 return
@@ -458,6 +470,39 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             # Durable idempotency, same-direction cooldown and outbox stay atomic.
             # DB work above may also take time. Recheck immediately before the
             # durable enqueue so a candle that aged out during processing cannot alert.
+            # Apply only a previously validated policy from a completed prior IST day.
+            # The alert is still queued immediately; only its suggested entry/levels shift.
+            if journal is not None:
+                try:
+                    policy = await journal.get_entry_timing_policy(signal["side"])
+                    if policy and int(policy.get("delay_bars") or 0) > 0:
+                        adjustment_pct = float(policy.get("median_entry_adjustment_pct") or 0.0)
+                        if math.isfinite(adjustment_pct):
+                            original_entry = float(signal["entry"])
+                            price_delta = original_entry * adjustment_pct / 100.0
+                            if math.isfinite(price_delta):
+                                suggested_levels = {
+                                    price_key: float(signal[price_key]) + price_delta
+                                    for price_key in ("entry", "stop", "target", "target1", "target2")
+                                    if signal.get(price_key) is not None
+                                }
+                                signal["entry_timing"] = {
+                                    "delay_minutes": int(policy["delay_bars"]) * 5,
+                                    "adjustment_pct": adjustment_pct,
+                                    "sample_count": int(policy.get("sample_count") or 0),
+                                    "training_day": str(policy.get("training_day")),
+                                    "effective_from": str(policy.get("effective_from")),
+                                    "suggested_entry": suggested_levels.get("entry", original_entry),
+                                    "suggested_stop": suggested_levels.get("stop", signal.get("stop")),
+                                    "suggested_target": suggested_levels.get("target", signal.get("target")),
+                                    "suggested_target1": suggested_levels.get("target1", signal.get("target1")),
+                                    "suggested_target2": suggested_levels.get("target2", signal.get("target2")),
+                                }
+                except Exception as timing_policy_error:
+                    log.warning(
+                        "entry-timing policy unavailable; using immediate entry symbol=%s error_type=%s",
+                        display_symbol, type(timing_policy_error).__name__,
+                    )
             final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
             if int(final_df5.iloc[-1].timestamp) != closed_ts:
                 raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
@@ -468,6 +513,17 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 strategy_key=STRATEGY_KEY,
             )
             last_seen_candle[display_symbol] = closed_ts
+            # Queue the live alert first; telemetry persistence must not delay delivery.
+            if journal is not None:
+                try:
+                    await journal.record_entry_timing_candle(
+                        display_symbol, df5.iloc[-1].to_dict()
+                    )
+                except Exception as timing_store_error:
+                    log.warning(
+                        "entry-timing candle persistence failed symbol=%s error_type=%s",
+                        display_symbol, type(timing_store_error).__name__,
+                    )
             if queued == "QUEUED" or queued is True:
                 state['signals_queued'] = state.get('signals_queued', 0) + 1
                 log.info(
@@ -585,6 +641,40 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
             raise
         except Exception:
             log.exception("Database nightly cleanup failed; scanner will continue")
+
+
+async def daily_entry_timing_training_loop(journal: SignalJournal) -> None:
+    """Train once after each completed Asia/Kolkata day, including restart catch-up."""
+    timezone_ist = ZoneInfo("Asia/Kolkata")
+    while True:
+        now = datetime.now(timezone_ist)
+        scheduled = now.replace(hour=1, minute=15, second=0, microsecond=0)
+        if scheduled > now:
+            await asyncio.sleep(max(1.0, (scheduled - now).total_seconds()))
+        try:
+            summary = await journal.train_entry_timing_for_previous_day()
+            directions = summary.get("directions", {})
+            log.info(
+                "Daily entry-timing training complete day=%s long=%s short=%s "
+                "delivered=%s candles_symbols=%s",
+                summary.get("training_day"),
+                directions.get("LONG", {}).get("status"),
+                directions.get("SHORT", {}).get("status"),
+                summary.get("delivered_signal_count"),
+                summary.get("candle_symbol_count"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("daily entry-timing training failed error_type=%s; retrying in 5m",
+                        type(exc).__name__)
+            await asyncio.sleep(5 * 60)
+            continue
+        # The journal's unique training_day row makes a restart/catch-up safe.
+        next_run = datetime.now(timezone_ist).replace(
+            hour=1, minute=15, second=0, microsecond=0
+        ) + timedelta(days=1)
+        await asyncio.sleep(max(1.0, (next_run - datetime.now(timezone_ist)).total_seconds()))
 
 
 async def daily_training_review_loop(journal: SignalJournal) -> None:
@@ -758,6 +848,7 @@ async def scanner_session() -> None:
     cleanup_task = asyncio.create_task(candidate_cleanup_loop(candidate_store), name="database-nightly-cleanup")
     outbox_task = asyncio.create_task(telegram_outbox_loop(candidate_store, notifier), name="telegram-outbox")
     training_review_task = asyncio.create_task(daily_training_review_loop(journal_service), name="daily-training-review")
+    entry_timing_task = asyncio.create_task(daily_entry_timing_training_loop(journal_service), name="daily-entry-timing-training")
     weekly_digest_task = asyncio.create_task(weekly_digest_loop(journal_service), name="weekly-digest")
     try:
         startup_attempt = 0
@@ -928,8 +1019,9 @@ async def scanner_session() -> None:
         cleanup_task.cancel()
         outbox_task.cancel()
         training_review_task.cancel()
+        entry_timing_task.cancel()
         weekly_digest_task.cancel()
-        for background_task in (cleanup_task, outbox_task, training_review_task, weekly_digest_task):
+        for background_task in (cleanup_task, outbox_task, training_review_task, entry_timing_task, weekly_digest_task):
             try:
                 await background_task
             except asyncio.CancelledError:

@@ -91,19 +91,31 @@ class TelegramNotifier:
             f"<b>VWAP: <code>{fmt_price(float(vwap))}</code></b>\n"
             if vwap is not None else "VWAP: correct side\n"
         )
-        target1 = signal.get("target1", signal.get("target"))
-        target2 = signal.get("target2", signal.get("target"))
+        timing = signal.get("entry_timing") or {}
+        target1 = timing.get("suggested_target1", signal.get("target1", signal.get("target")))
+        target2 = timing.get("suggested_target2", signal.get("target2", signal.get("target")))
+        display_entry = timing.get("suggested_entry", signal["entry"])
+        display_stop = timing.get("suggested_stop", signal["stop"])
+        entry_label = "Suggested entry (model-adjusted)" if int(timing.get("delay_minutes") or 0) > 0 else "Entry"
         signal_ref = f"\n<b>Signal ID: <code>{int(signal_id)}</code></b>" if signal_id is not None else ""
+        timing_line = ""
+        if isinstance(timing, dict) and int(timing.get("delay_minutes") or 0) > 0:
+            timing_line = (
+                f"<b>Entry timing model: {int(timing['delay_minutes'])}m historical adjustment</b> "
+                f"(trained on {escape(str(timing.get('training_day', 'prior day')))}; "
+                "alert delivered immediately; refresh the live price before acting)\n"
+            )
         return (
             f"{emoji} <b>{signal['side']} SIGNAL</b>\n"
             + f"<b>{signal['symbol']}</b> · CoinDCX USDT Perpetual\n"
             + chart_link
-            + f"<b>Entry: <code>{fmt_price(signal['entry'])}</code></b>\n"
+            + f"<b>{entry_label}: <code>{fmt_price(display_entry)}</code></b>\n"
+            + timing_line
             + f"<b>5m candle close: <code>{candle_time}</code></b>\n"
             + f"<b>ADX(14): <code>{signal['adx']:.1f}</code> · RSI(14): <code>{signal['rsi']:.1f}</code></b>\n"
             + ema_line
             + vwap_line
-            + f"<b>Stop loss (swing): <code>{fmt_price(signal['stop'])}</code></b>\n"
+            + f"<b>Stop loss (swing): <code>{fmt_price(display_stop)}</code></b>\n"
             + f"<b>TP1: <code>{fmt_price(target1)}</code></b>\n"
             + f"<b>TP2: <code>{fmt_price(target2)}</code></b>\n"
             + f"<b>15m context: {escape(str(signal.get('context', 'unavailable')))}</b> (informational only; not used to approve or block 5m signals)\n"
