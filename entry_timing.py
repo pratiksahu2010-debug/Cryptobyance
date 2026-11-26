@@ -112,7 +112,7 @@ def train_entry_timing(
     all_samples = list(signals)
     for direction in ("LONG", "SHORT"):
         side_signals = [s for s in all_samples if str(s.get("direction", "")).upper() == direction]
-        per_offset: dict[int, list[tuple[int, float, float]]] = {offset: [] for offset in OFFSETS}
+        per_offset: dict[int, list[tuple[int, float, float | None]]] = {offset: [] for offset in OFFSETS}
         for signal in side_signals:
             candles = candles_by_symbol.get(str(signal.get("symbol")), {})
             signal_id = int(signal.get("signal_id") or 0)
