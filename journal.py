@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -1430,17 +1430,13 @@ class SignalJournal:
                    ORDER BY s.candle_open_ms,s.id""",
                 start_ms, end_ms,
             )
-            symbols = sorted({str(row["symbol"]) for row in signals})
-            candle_rows = []
-            if symbols:
-                candle_rows = await conn.fetch(
-                    """SELECT symbol,candle_open_ms,open,high,low,close,volume
-                       FROM entry_timing_candles
-                       WHERE symbol=ANY($1::text[]) AND candle_open_ms >= $2
-                         AND candle_open_ms < $3
-                       ORDER BY symbol,candle_open_ms""",
-                    symbols, start_ms, end_ms + 90 * 60 * 1000,
-                )
+            candle_rows = await conn.fetch(
+                """SELECT symbol,candle_open_ms,open,high,low,close,volume
+                   FROM entry_timing_candles
+                   WHERE candle_open_ms >= $1 AND candle_open_ms < $2
+                   ORDER BY symbol,candle_open_ms""",
+                start_ms, end_ms + 90 * 60 * 1000,
+            )
 
         candles_by_symbol: dict[str, dict[int, dict]] = {}
         for row in candle_rows:
