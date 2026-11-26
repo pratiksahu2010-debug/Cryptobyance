@@ -628,8 +628,31 @@ async def candidate_cleanup_loop(candidate_store: CandidateStore) -> None:
 
 
 async def daily_entry_timing_training_loop(journal: SignalJournal) -> None:
-    """Train once after each completed Asia/Kolkata calendar day."""
+    """Train the previous completed IST day at startup and once each morning."""
     timezone_ist = ZoneInfo("Asia/Kolkata")
+
+    async def run_training() -> None:
+        summary = await journal.train_entry_timing_for_previous_day()
+        directions = summary.get("directions", {})
+        log.info(
+            "Daily entry-timing training complete day=%s long=%s short=%s "
+            "delivered=%s candles_symbols=%s",
+            summary.get("training_day"),
+            directions.get("LONG", {}).get("status"),
+            directions.get("SHORT", {}).get("status"),
+            summary.get("delivered_signal_count"),
+            summary.get("candle_symbol_count"),
+        )
+
+    # Catch up after a Render restart or sleep that crossed the scheduled run.
+    # The database uses one row per training day, so this is idempotent.
+    try:
+        await run_training()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning("startup entry-timing training catch-up failed error_type=%s", type(exc).__name__)
+
     while True:
         now = datetime.now(timezone_ist)
         next_run = now.replace(hour=1, minute=15, second=0, microsecond=0)
@@ -637,17 +660,7 @@ async def daily_entry_timing_training_loop(journal: SignalJournal) -> None:
             next_run += timedelta(days=1)
         await asyncio.sleep(max(1.0, (next_run - now).total_seconds()))
         try:
-            summary = await journal.train_entry_timing_for_previous_day()
-            directions = summary.get("directions", {})
-            log.info(
-                "Daily entry-timing training complete day=%s long=%s short=%s "
-                "delivered=%s candles_symbols=%s",
-                summary.get("training_day"),
-                directions.get("LONG", {}).get("status"),
-                directions.get("SHORT", {}).get("status"),
-                summary.get("delivered_signal_count"),
-                summary.get("candle_symbol_count"),
-            )
+            await run_training()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
