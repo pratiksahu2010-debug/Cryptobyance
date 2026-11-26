@@ -512,6 +512,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 signal, None, COOLDOWN_CANDLES,
                 strategy_key=STRATEGY_KEY,
             )
+            last_seen_candle[display_symbol] = closed_ts
             # Queue the live alert first; telemetry persistence must not delay delivery.
             if journal is not None:
                 try:
@@ -523,7 +524,6 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         "entry-timing candle persistence failed symbol=%s error_type=%s",
                         display_symbol, type(timing_store_error).__name__,
                     )
-            last_seen_candle[display_symbol] = closed_ts
             if queued == "QUEUED" or queued is True:
                 state['signals_queued'] = state.get('signals_queued', 0) + 1
                 log.info(
