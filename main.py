@@ -383,19 +383,6 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                         display_symbol, type(outcome_error).__name__,
                     )
 
-            # Entry-timing training needs a durable, finalized 5m OHLCV tape.
-            # This write is observational and failure-isolated from signal generation.
-            if journal is not None:
-                try:
-                    await journal.record_entry_timing_candle(
-                        display_symbol, df5.iloc[-1].to_dict()
-                    )
-                except Exception as timing_store_error:
-                    log.warning(
-                        "entry-timing candle persistence failed symbol=%s error_type=%s",
-                        display_symbol, type(timing_store_error).__name__,
-                    )
-
             # Never emit a historical setup discovered during process startup.
             if session_started_ms is not None and five_minute_close <= session_started_ms:
                 last_seen_candle[display_symbol] = closed_ts
@@ -445,6 +432,17 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     "SIGNAL CANDIDATE REJECTED symbol=%s reason=%s candle=%s details=%s",
                     display_symbol, reason, closed_ts, rejection,
                 )
+                # Persist the candle after deciding there is no alert to send.
+            if journal is not None:
+                try:
+                    await journal.record_entry_timing_candle(
+                        display_symbol, df5.iloc[-1].to_dict()
+                    )
+                except Exception as timing_store_error:
+                    log.warning(
+                        "entry-timing candle persistence failed symbol=%s error_type=%s",
+                        display_symbol, type(timing_store_error).__name__,
+                    )
                 last_seen_candle[display_symbol] = closed_ts
                 state["symbols_ok"] += 1
                 return
@@ -514,6 +512,17 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                 signal, None, COOLDOWN_CANDLES,
                 strategy_key=STRATEGY_KEY,
             )
+            # Queue the live alert first; telemetry persistence must not delay delivery.
+            if journal is not None:
+                try:
+                    await journal.record_entry_timing_candle(
+                        display_symbol, df5.iloc[-1].to_dict()
+                    )
+                except Exception as timing_store_error:
+                    log.warning(
+                        "entry-timing candle persistence failed symbol=%s error_type=%s",
+                        display_symbol, type(timing_store_error).__name__,
+                    )
             last_seen_candle[display_symbol] = closed_ts
             if queued == "QUEUED" or queued is True:
                 state['signals_queued'] = state.get('signals_queued', 0) + 1
