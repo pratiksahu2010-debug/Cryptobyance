@@ -433,16 +433,16 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     display_symbol, reason, closed_ts, rejection,
                 )
                 # Persist the candle after deciding there is no alert to send.
-            if journal is not None:
-                try:
-                    await journal.record_entry_timing_candle(
-                        display_symbol, df5.iloc[-1].to_dict()
-                    )
-                except Exception as timing_store_error:
-                    log.warning(
-                        "entry-timing candle persistence failed symbol=%s error_type=%s",
-                        display_symbol, type(timing_store_error).__name__,
-                    )
+                if journal is not None:
+                    try:
+                        await journal.record_entry_timing_candle(
+                            display_symbol, df5.iloc[-1].to_dict()
+                        )
+                    except Exception as timing_store_error:
+                        log.warning(
+                            "entry-timing candle persistence failed symbol=%s error_type=%s",
+                            display_symbol, type(timing_store_error).__name__,
+                        )
                 last_seen_candle[display_symbol] = closed_ts
                 state["symbols_ok"] += 1
                 return
