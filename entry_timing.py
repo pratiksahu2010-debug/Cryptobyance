@@ -28,7 +28,7 @@ def _number(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _simulate(signal: dict, candles: dict[int, dict], offset: int) -> tuple[float, float] | None:
+def _simulate(signal: dict, candles: dict[int, dict], offset: int) -> tuple[float, float | None] | None:
     direction = str(signal.get("direction") or "").upper()
     if direction not in {"LONG", "SHORT"}:
         return None
@@ -65,7 +65,8 @@ def _simulate(signal: dict, candles: dict[int, dict], offset: int) -> tuple[floa
         signed_move = sign * (entry - original_entry)
         # Do not chase an entry that has already crossed the original stop or TP1.
         if signed_move <= -stop_distance or signed_move >= reward_distance:
-            return None
+            # No fill: count the signal as a zero-R opportunity, not as missing data.
+            return 0.0, None
         first_bar_ts = entry_ts
 
     stop = entry - sign * stop_distance
@@ -149,7 +150,7 @@ def train_entry_timing(
                 "candidate_expectancy_r": round(mean(new for _, new, _ in paired), 4),
                 "mean_improvement_r": round(improvement, 4),
                 "improvement_lower_bound_r": round(lower_bound, 4),
-                "median_entry_adjustment_pct": round(median(adjustment for _, _, adjustment in paired), 5),
+                "median_entry_adjustment_pct": round(median(adjustment for _, _, adjustment in paired if adjustment is not None), 5) if any(adjustment is not None for _, _, adjustment in paired) else 0.0,
                 "status": "PASS" if lower_bound >= MIN_EXPECTANCY_LCB_R and mean(new for _, new, _ in paired) > 0 else "NO_CONFIDENT_IMPROVEMENT",
             }
             comparisons[offset] = candidate
