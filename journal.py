@@ -1513,16 +1513,16 @@ class SignalJournal:
         active_day = for_day or datetime.now(ZoneInfo("Asia/Kolkata")).date()
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT training_day,effective_from,direction,delay_bars,
+                """SELECT training_day,effective_from,direction,status,delay_bars,
                           median_entry_adjustment_pct,sample_count,
                           baseline_expectancy_r,candidate_expectancy_r,
                           improvement_lower_bound_r
                    FROM entry_timing_policies
-                   WHERE direction=$1 AND status='ACTIVE' AND effective_from <= $2
+                   WHERE direction=$1 AND effective_from <= $2
                    ORDER BY effective_from DESC,training_day DESC LIMIT 1""",
                 side, active_day,
             )
-        if row is None:
+        if row is None or row["status"] != "ACTIVE":
             return None
         return dict(row)
 
