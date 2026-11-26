@@ -82,6 +82,10 @@ def _translate_sql(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...
         r"datetime('now', '+' || $\1 || ' seconds')", query, flags=re.IGNORECASE,
     )
     query = re.sub(
+        r"NOW\(\)\s*-\s*\(\$(\d+)\s*\*\s*INTERVAL\s*'5 minutes'\)",
+        r"datetime('now', '-' || ($\1 * 5) || ' minutes')", query, flags=re.IGNORECASE,
+    )
+    query = re.sub(
         r"NOW\(\)\s*\+\s*INTERVAL\s*'([0-9]+)\s+(seconds?|minutes?|hours?|days?)'",
         r"datetime('now', '+\1 \2')", query, flags=re.IGNORECASE,
     )

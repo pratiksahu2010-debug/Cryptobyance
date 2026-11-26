@@ -594,9 +594,11 @@ class EngineTests(unittest.TestCase):
 
         last_seen_candle.pop('BTC/USDT', None)
         captured = {}
-        def fake_evaluate(df5, df15=None):
+        def fake_evaluate(df5, df15=None, rejection=None):
             captured['df5'] = df5
             captured['df15'] = df15
+            if rejection is not None:
+                rejection['reason'] = 'test_no_signal'
             return None
 
         with patch('main.evaluate_setup', side_effect=fake_evaluate):
@@ -674,7 +676,7 @@ class EngineTests(unittest.TestCase):
         finally:
             last_seen_candle.pop("BTC/USDT", None)
 
-    def test_incomplete_state_inputs_leave_closed_candle_retryable(self):
+    def test_live_scanner_does_not_consult_persisted_state_machine(self):
         import asyncio
         from unittest.mock import patch
 
@@ -693,34 +695,27 @@ class EngineTests(unittest.TestCase):
                 raise AssertionError("scanner must not send directly")
 
         class FakeStore:
-            def __init__(self):
-                self.state_loads = 0
-
             async def update_open_outcomes(self, symbol, candles):
                 return 0
 
-            async def load_symbol_states(self, strategy_key, symbol):
-                self.state_loads += 1
-                return {}
+            async def load_symbol_states(self, *args):
+                raise AssertionError("live scanner must not consult ARMED state")
+
+            async def advance_symbol_state(self, **kwargs):
+                raise AssertionError("live scanner must not advance state machine")
 
         symbol = "BTC/USDT"
         last_seen_candle.pop(symbol, None)
-        store = FakeStore()
-        before = state.get("state_input_deferred", 0)
         try:
-            with patch("main.evaluate_state_inputs", return_value=None):
-                async def run_twice():
-                    for _ in range(2):
-                        await scan_symbol(
-                            FakeFeed(), FakeNotifier(), asyncio.Semaphore(1),
-                            symbol, "B-BTC_USDT", now_ms,
-                            candidate_store=store,
-                        )
-                asyncio.run(run_twice())
-
-            self.assertEqual(store.state_loads, 2)
-            self.assertNotIn(symbol, last_seen_candle)
-            self.assertEqual(state.get("state_input_deferred", 0), before + 2)
+            with patch("main.evaluate_setup", return_value=None) as evaluate:
+                async def run_once():
+                    await scan_symbol(
+                        FakeFeed(), FakeNotifier(), asyncio.Semaphore(1),
+                        symbol, "B-BTC_USDT", now_ms, candidate_store=FakeStore(),
+                    )
+                asyncio.run(run_once())
+            evaluate.assert_called_once()
+            self.assertEqual(last_seen_candle[symbol], int(rows[-1][0]))
         finally:
             last_seen_candle.pop(symbol, None)
 
@@ -850,6 +845,37 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(signal["side"], "LONG")
         self.assertEqual(signal["context"], "15m bullish")
         self.assertGreaterEqual(signal["adx"], 20)
+
+    def test_direct_evaluator_accepts_rsi_already_inside_long_band_without_arming(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("LONG")
+        rejection = {}
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(1, 300000), None, rejection=rejection)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "LONG")
+        self.assertEqual(rejection["reason"], "VALID")
+
+    def test_direct_evaluator_reports_rsi_band_rejection_without_waiting_for_cross(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("LONG")
+        five.loc[five.index[-1], "rsi"] = 51.9
+        rejection = {}
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(1, 300000), None, rejection=rejection)
+        self.assertIsNone(signal)
+        self.assertEqual(rejection["reason"], "rsi_outside_long_entry_band")
+
+    def test_direct_evaluator_accepts_short_rsi_inside_existing_band(self):
+        from unittest.mock import patch
+        five = self._indicator_frame("SHORT")
+        five.loc[five.index[-1], "rsi"] = 35.0
+        rejection = {}
+        with patch("strategy.indicators", return_value=five):
+            signal = evaluate_setup(self._trend_frame(-1, 300000), None, rejection=rejection)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["side"], "SHORT")
+        self.assertEqual(rejection["reason"], "VALID")
 
     def test_two_bar_ema_alignment_age_is_accepted(self):
         from unittest.mock import patch

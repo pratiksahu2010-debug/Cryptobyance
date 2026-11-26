@@ -1,4 +1,8 @@
-"""Transactional persistence for candidates, signals, cooldowns and Telegram outbox."""
+"""Transactional persistence for direct signals, outcomes and Telegram outbox.
+
+Legacy candidate/state tables remain for shadow experiments and historical
+compatibility. Live signals use a delivery-based per-symbol cooldown.
+"""
 from __future__ import annotations
 
 import json
@@ -8,7 +12,7 @@ import asyncpg
 from sqlite_store import SQLitePool
 from config import settings
 from outcomes import advance_outcome
-from state_machine import STATE_DDL, advance_persisted_state, persist_signal_lifecycle
+from state_machine import STATE_DDL, advance_persisted_state
 
 def _percentile(values: list[float], fraction: float) -> float | None:
     ordered = sorted(float(value) for value in values if value is not None)
@@ -700,86 +704,78 @@ class CandidateStore:
         return ("READY", None) if float(adx) >= float(adx_min) else ("REJECT", None)
 
     async def enqueue_signal(self, signal: dict, candidate_id: int | None,
-                             cooldown_candles: int, strategy_key: str = "default") -> str:
-        """Atomically enqueue and return QUEUED or an explicit non-queue reason.
+                             cooldown_candles: int = 0, strategy_key: str = "default") -> str:
+        """Atomically persist one current-candle signal and its Telegram outbox event.
 
-        Database/serialization failures still raise so the caller can retry the
-        same closed candle; expected business rejections are returned by name.
+        The live path uses candle-level idempotency and a delivery-based
+        per-symbol cooldown. No prior ARMED state or strategy lifecycle
+        transition may veto a valid signal. Cooldown starts only after
+        successful Telegram delivery.
         """
         symbol, direction = signal["symbol"], signal["side"]
         candle_ms = int(signal["candle"])
         key = f"{symbol}:{direction}:{candle_ms}"
-        # Persist the exact strategy lifecycle key with each newly queued signal.
-        # Older rows intentionally remain unattributed; never infer their version.
+        entry = float(signal["entry"])
+        stop = float(signal["stop"])
+        risk_per_unit = abs(entry - stop)
+        if risk_per_unit <= 0:
+            raise ValueError("signal stop must define positive risk")
+
         attributed_signal = dict(signal)
         attributed_signal["performance_attribution"] = {"strategy_key": str(strategy_key)}
         payload = json.dumps(attributed_signal, separators=(",", ":"), allow_nan=False)
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # Serialize competing signal writers for this symbol even when
-                # no cooldown row exists yet (SELECT FOR UPDATE cannot lock absence).
+                # Serialize writers for a symbol; the unique idempotency key
+                # remains the final cross-process duplicate-protection boundary.
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", symbol)
-                lock_key = f"{strategy_key}:{symbol}:{direction}"
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", lock_key)
-                cooldown = await conn.fetchrow(
-                    "SELECT last_direction,last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1 FOR UPDATE", symbol)
-                if cooldown and cooldown["last_direction"] == direction and candle_ms - int(cooldown["last_candle_open_ms"]) < cooldown_candles * 300_000:
-                    if candidate_id is not None:
-                        await conn.execute(
-                            "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
-                            candidate_id)
-                    return "COOLDOWN"
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"{strategy_key}:{symbol}:{direction}",
+                )
+                # Cooldown begins only after Telegram confirms delivery. Four
+                # completed 5m bars suppress this symbol for 20m; other symbols
+                # continue independently.
+                if int(cooldown_candles or 0) > 0:
+                    cooldown = await conn.fetchrow(
+                        """SELECT symbol FROM signal_cooldowns
+                           WHERE symbol=$1
+                             AND updated_at > NOW() - ($2 * INTERVAL '5 minutes')""",
+                        symbol, int(cooldown_candles),
+                    )
+                    if cooldown is not None:
+                        return "COOLDOWN"
+
                 existing = await conn.fetchrow(
                     "SELECT id FROM signal_history WHERE idempotency_key=$1", key
                 )
                 if existing is not None:
                     return "DUPLICATE"
-                lifecycle_recorded = await persist_signal_lifecycle(
-                    conn, strategy_key=strategy_key, symbol=symbol, direction=direction,
-                    candle_open_ms=candle_ms, cooldown_candles=cooldown_candles,
-                )
-                if not lifecycle_recorded:
-                    if candidate_id is not None:
-                        await conn.execute(
-                            "UPDATE signal_candidates SET status='INVALID',updated_at=NOW() WHERE id=$1 AND status='PENDING'",
-                            candidate_id)
-                    return "LIFECYCLE_REJECTED"
+
                 row = await conn.fetchrow(
                     """INSERT INTO signal_history(idempotency_key,symbol,direction,candle_open_ms,payload)
                        VALUES($1,$2,$3,$4,$5::jsonb)
                        ON CONFLICT(idempotency_key) DO NOTHING RETURNING id""",
-                    key,symbol,direction,candle_ms,payload)
+                    key, symbol, direction, candle_ms, payload,
+                )
                 if row is None:
-                    # The same signal may already have been committed before a
-                    # process restart; complete the candidate transition without
-                    # creating another outbox message.
-                    if candidate_id is not None:
-                        await conn.execute(
-                            """UPDATE signal_candidates SET status='TRIGGERED',
-                               triggered_at=COALESCE(triggered_at,NOW()),updated_at=NOW()
-                               WHERE id=$1 AND status='PENDING'""", candidate_id)
                     return "DUPLICATE"
+
                 signal_id = int(row["id"])
-                entry = float(signal["entry"])
-                stop = float(signal["stop"])
-                target = float(signal["target"])
-                risk_per_unit = abs(entry - stop)
-                if risk_per_unit <= 0:
-                    raise ValueError("signal stop must define positive risk")
                 await conn.execute(
                     """INSERT INTO telegram_outbox(signal_id,idempotency_key,payload)
                        VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING""",
-                    signal_id,key,payload)
-                await conn.execute(
-                    """INSERT INTO signal_cooldowns(symbol,last_direction,last_candle_open_ms)
-                       VALUES($1,$2,$3)
-                       ON CONFLICT(symbol) DO UPDATE SET last_direction=EXCLUDED.last_direction,
-                       last_candle_open_ms=EXCLUDED.last_candle_open_ms,updated_at=NOW()""",
-                    symbol,direction,candle_ms)
+                    signal_id, key, payload,
+                )
+                # Legacy callers may still pass a candidate ID. This only
+                # updates its audit status; it is never consulted for eligibility.
                 if candidate_id is not None:
                     await conn.execute(
-                        """UPDATE signal_candidates SET status='TRIGGERED',triggered_at=NOW(),updated_at=NOW()
-                           WHERE id=$1 AND status='PENDING'""", candidate_id)
+                        """UPDATE signal_candidates SET status='TRIGGERED',
+                           triggered_at=COALESCE(triggered_at,NOW()),updated_at=NOW()
+                           WHERE id=$1 AND status='PENDING'""",
+                        candidate_id,
+                    )
                 return "QUEUED"
 
     async def update_open_outcomes(self, symbol: str, candles: list[dict]) -> int:
@@ -871,6 +867,23 @@ class CandidateStore:
                     "UPDATE telegram_outbox SET status='SENT',sent_at=NOW(),lease_until=NULL WHERE id=$1 RETURNING signal_id",
                     outbox_id)
                 if row:
+                    signal_row = await conn.fetchrow(
+                        "SELECT symbol,direction,candle_open_ms FROM signal_history WHERE id=$1",
+                        row["signal_id"],
+                    )
+                    if signal_row is not None:
+                        # Persist cooldown only after Telegram confirms delivery.
+                        await conn.execute(
+                            """INSERT INTO signal_cooldowns(
+                                   symbol,last_direction,last_candle_open_ms,updated_at
+                               ) VALUES($1,$2,$3,NOW())
+                               ON CONFLICT(symbol) DO UPDATE SET
+                                   last_direction=EXCLUDED.last_direction,
+                                   last_candle_open_ms=EXCLUDED.last_candle_open_ms,
+                                   updated_at=NOW()""",
+                            signal_row["symbol"], signal_row["direction"],
+                            signal_row["candle_open_ms"],
+                        )
                     await conn.execute(
                         "UPDATE signal_history SET status='SENT',delivered_at=NOW() WHERE id=$1", row["signal_id"])
                     # Outcome tracking starts only after Telegram confirms delivery.

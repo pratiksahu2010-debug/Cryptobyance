@@ -243,51 +243,72 @@ def ema_alignment_age_bars(frame: pd.DataFrame, side: str) -> int | None:
     return int(len(frame) - 1 - locations[-1])
 
 
-def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Build the executable signal payload for the single Normal 5m model.
+def evaluate_setup(
+    df5: pd.DataFrame,
+    df15: pd.DataFrame | None = None,
+    rejection: dict | None = None,
+) -> dict | None:
+    """Evaluate one completed 5m candle independently of prior scanner state.
 
-    EMA, VWAP, ADX and directional DI must agree on the completed 5m candle.
-    The persisted state machine separately requires the RSI threshold-cross
-    before a live alert. 15m is optional descriptive context only and never
-    gates, delays, or cancels a valid 5m setup.
+    EMA/VWAP/ADX/DI determine direction; the existing RSI band qualifies entry.
+    15m remains optional descriptive context and never gates the 5m decision.
+    When supplied, rejection receives an auditable reason on every no-signal
+    path. No previous ARMED state or RSI crossing event is required.
     """
-    if not has_contiguous_tail(df5, "5m", 60):
+    def reject(reason: str):
+        if rejection is not None:
+            rejection["reason"] = reason
         return None
+
+    if not has_contiguous_tail(df5, "5m", 60):
+        return reject("insufficient_5m_history")
 
     a = indicators(df5.copy(), include_rsi=True)
     if len(a) < 35:
-        return None
+        return reject("insufficient_indicator_history")
     c = a.iloc[-1]
-    # EMA direction is a persistent trend-alignment condition. The age of the
-    # last crossover is diagnostic only; an established aligned trend remains
-    # eligible while the current 5m filters continue to agree.
     long_alignment_age = ema_alignment_age_bars(a, "LONG")
     short_alignment_age = ema_alignment_age_bars(a, "SHORT")
     needed = [c.ema9, c.ema21, c.vwap, c.rsi, c.adx, c.atr, c.plus_di, c.minus_di]
     if not all(pd.notna(v) and np.isfinite(float(v)) for v in needed):
-        return None
+        return reject("invalid_indicator_values")
     if float(c.atr) <= 0:
-        return None
+        return reject("invalid_atr")
+    if rejection is not None:
+        rejection.update({
+            "rsi": float(c.rsi), "adx": float(c.adx), "atr": float(c.atr),
+            "ema9": float(c.ema9), "ema21": float(c.ema21),
+            "close": float(c.close), "vwap": float(c.vwap),
+            "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
+        })
 
-    long_ok = (
+    long_direction_ok = (
         float(c.ema9) > float(c.ema21)
         and float(c.close) > float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.plus_di) > float(c.minus_di)
     )
-    short_ok = (
+    short_direction_ok = (
         float(c.ema9) < float(c.ema21)
         and float(c.close) < float(c.vwap)
         and float(c.adx) >= ADX_MIN
         and float(c.minus_di) > float(c.plus_di)
     )
-    if not (long_ok or short_ok):
-        return None
-    side = "LONG" if long_ok else "SHORT"
+    if not (long_direction_ok or short_direction_ok):
+        return reject("directional_setup_not_met")
+    side = "LONG" if long_direction_ok else "SHORT"
+    if rejection is not None:
+        rejection["direction"] = side
 
-    # 15m is descriptive only. Do not wait for a 15m EMA alignment or a new
-    # 15m close before acting on a fully confirmed 5m setup.
-    context_frame = None
+    # Apply the existing RSI band on this same completed candle. This is a
+    # level condition, not a crossover event or a dependency on prior state.
+    rsi_value = float(c.rsi)
+    if side == "LONG" and not (settings.rsi_long_min <= rsi_value <= settings.rsi_long_max):
+        return reject("rsi_outside_long_entry_band")
+    if side == "SHORT" and not (settings.rsi_short_min <= rsi_value <= settings.rsi_short_max):
+        return reject("rsi_outside_short_entry_band")
+
+    # 15m is descriptive only. It never vetoes, delays, or cancels a valid 5m setup.
     context_row = None
     prev15 = None
     context = "15m unavailable"
@@ -297,7 +318,6 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
             candidate_row = candidate_context.iloc[-1]
             if all(pd.notna(v) and np.isfinite(float(v))
                    for v in (candidate_row.ema9, candidate_row.ema21)):
-                context_frame = candidate_context
                 context_row = candidate_row
                 prev15 = candidate_context.iloc[-4]
                 if float(candidate_row.ema9) > float(candidate_row.ema21):
@@ -311,11 +331,11 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
     atr_value = float(c.atr)
     swing = a.iloc[-(settings.swing_lookback_bars + 1):-1]
     if len(swing) < settings.swing_lookback_bars:
-        return None
+        return reject("insufficient_swing_history")
     stop = float(swing["low"].min()) if side == "LONG" else float(swing["high"].max())
     risk = entry - stop if side == "LONG" else stop - entry
     if not np.isfinite(risk) or risk <= 0:
-        return None
+        return reject("invalid_stop_risk")
     target1 = entry + risk * settings.tp1_r if side == "LONG" else entry - risk * settings.tp1_r
     target2 = entry + risk * settings.tp2_r if side == "LONG" else entry - risk * settings.tp2_r
     prev5 = a.iloc[-4]
@@ -344,8 +364,10 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         value is None or isinstance(value, (bool, np.bool_)) or np.isfinite(float(value))
         for value in diagnostics.values()
     ):
-        return None
+        return reject("non_finite_diagnostics")
 
+    if rejection is not None:
+        rejection["reason"] = "VALID"
     return {
         "side": side, "entry": entry, "stop": stop,
         "target": target2, "target1": target1, "target2": target2,
@@ -354,8 +376,7 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
         "target1_r": settings.tp1_r, "target2_r": settings.tp2_r,
         "rr": settings.tp2_r, "rsi": float(c.rsi), "adx": float(c.adx),
         "ema9": float(c.ema9), "ema21": float(c.ema21), "vwap": float(c.vwap),
-        "plus_di": float(c.plus_di) if pd.notna(c.plus_di) else None,
-        "minus_di": float(c.minus_di) if pd.notna(c.minus_di) else None,
+        "plus_di": float(c.plus_di), "minus_di": float(c.minus_di),
         "atr": atr_value, "candle": int(c.timestamp),
         "candle_close": int(c.timestamp) + timeframe_milliseconds("5m"),
         "context": context,
@@ -364,11 +385,11 @@ def evaluate_setup(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict 
 
 
 def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict | None:
-    """Backward-compatible standalone evaluator; the scanner uses the staged state machine.
+    """Backward-compatible standalone evaluator using direct current-candle rules.
 
     Keep the pre-v2 public helper's ATR stop and configured risk/reward contract
-    for existing integrations. Production alerts are built by evaluate_setup
-    only after a persisted ARMED RSI trigger and use swing-based TP1/TP2 levels.
+    for existing integrations. The production scanner uses evaluate_setup and
+    the swing-based TP1/TP2 levels.
     """
     signal = evaluate_setup(df5, df15)
     if signal is None:
@@ -393,11 +414,10 @@ def evaluate_signal(df5: pd.DataFrame, df15: pd.DataFrame | None = None) -> dict
 
 
 def evaluate_state_inputs(df5: pd.DataFrame, df15: pd.DataFrame | None = None, armed_sides: set[str] | None = None) -> dict | None:
-    """Evaluate setup, invalidation and RSI-cross inputs using closed 5m bars.
+    """Legacy/shadow lifecycle inputs; the live scanner does not call this.
 
-    15m trend is deliberately excluded from setup and invalidation gates. It is
-    passed through to signal diagnostics elsewhere, never allowed to delay or
-    cancel an otherwise valid 5m setup.
+    The live signal path uses evaluate_setup on each completed 5m candle and
+    does not require ARMED state or an RSI crossing event.
     """
     if not has_contiguous_tail(df5, "5m", 60):
         return None
