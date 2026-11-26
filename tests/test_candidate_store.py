@@ -87,6 +87,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 3_000_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
         self.assertEqual(await store.enqueue_signal(signal, None, cooldown_candles=4), "QUEUED")
+        self.assertIn("INTERVAL '5 minutes'", conn.fetchrow_calls[0][0])
 
     async def test_delivery_persists_per_symbol_cooldown(self):
         conn = FakeConnection(fetchrows=[
@@ -99,15 +100,15 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INSERT INTO signal_cooldowns", sql)
 
     async def test_duplicate_signal_is_not_queued_twice(self):
-        conn = FakeConnection(fetchrows=[None, None, {"id": 72}])
+        conn = FakeConnection(fetchrows=[None, {"id": 72}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "ETH/USDT", "side": "SHORT", "candle": 2_100_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
         self.assertEqual(await store.enqueue_signal(signal, None, 3), "DUPLICATE")
         self.assertEqual(conn.execute.await_count, 2)  # symbol and strategy-direction advisory locks
 
-    async def test_legacy_cooldown_rows_do_not_block_a_new_valid_signal(self):
-        # A historical cooldown row is deliberately not read by live enqueue.
+    async def test_expired_symbol_cooldown_does_not_block_a_new_signal(self):
+        # No active delivery cooldown remains, so this symbol is eligible again.
         conn = FakeConnection(fetchrows=[None, None, {"id": 73}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "SOL/USDT", "side": "LONG", "candle": 3_300_000,
