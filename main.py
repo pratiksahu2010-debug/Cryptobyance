@@ -483,15 +483,22 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                             original_entry = float(signal["entry"])
                             price_delta = original_entry * adjustment_pct / 100.0
                             if math.isfinite(price_delta):
-                                for price_key in ("entry", "stop", "target", "target1", "target2"):
-                                    if signal.get(price_key) is not None:
-                                        signal[price_key] = float(signal[price_key]) + price_delta
+                                suggested_levels = {
+                                    price_key: float(signal[price_key]) + price_delta
+                                    for price_key in ("entry", "stop", "target", "target1", "target2")
+                                    if signal.get(price_key) is not None
+                                }
                                 signal["entry_timing"] = {
                                     "delay_minutes": int(policy["delay_bars"]) * 5,
                                     "adjustment_pct": adjustment_pct,
                                     "sample_count": int(policy.get("sample_count") or 0),
                                     "training_day": str(policy.get("training_day")),
                                     "effective_from": str(policy.get("effective_from")),
+                                    "suggested_entry": suggested_levels.get("entry", original_entry),
+                                    "suggested_stop": suggested_levels.get("stop", signal.get("stop")),
+                                    "suggested_target": suggested_levels.get("target", signal.get("target")),
+                                    "suggested_target1": suggested_levels.get("target1", signal.get("target1")),
+                                    "suggested_target2": suggested_levels.get("target2", signal.get("target2")),
                                 }
                 except Exception as timing_policy_error:
                     log.warning(
