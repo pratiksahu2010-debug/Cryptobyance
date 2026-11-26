@@ -52,8 +52,8 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("s.status='SENT'", statements)
         self.assertIn("ON CONFLICT(signal_id) DO NOTHING", statements)
 
-    async def test_signal_is_atomically_recorded_without_state_or_cooldown_gates(self):
-        conn = FakeConnection(fetchrows=[None, {"id": 71}])
+    async def test_signal_is_atomically_recorded_with_delivery_cooldown_only(self):
+        conn = FakeConnection(fetchrows=[None, None, {"id": 71}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 1_800_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
@@ -66,15 +66,42 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(conn.fetchrow_calls), 2)
         sql = "\n".join(call[0] for call in conn.fetchrow_calls)
         self.assertIn("signal_history", sql)
-        self.assertNotIn("signal_cooldowns", sql)
+        self.assertIn("signal_cooldowns", sql)
         executed = "\n".join(call.args[0] for call in conn.execute.await_args_list)
         self.assertIn("telegram_outbox", executed)
         self.assertNotIn("strategy_state_events", executed)
         self.assertNotIn("strategy_signal_states", executed)
         self.assertNotIn("signal_cooldowns", executed)
 
+    async def test_four_candle_cooldown_blocks_only_same_symbol_until_elapsed(self):
+        conn = FakeConnection(fetchrows=[None, {"last_candle_open_ms": 1_800_000}])
+        store = CandidateStore(FakePool(conn))
+        signal = {"symbol": "BTC/USDT", "side": "SHORT", "candle": 2_100_000,
+                  "entry": 100.0, "stop": 102.0, "target": 97.0}
+        self.assertEqual(await store.enqueue_signal(signal, None, cooldown_candles=4), "COOLDOWN")
+        self.assertFalse(any("INSERT INTO signal_history" in q for q, _ in conn.fetchrow_calls))
+
+    async def test_four_candle_cooldown_expires_after_twenty_minutes(self):
+        conn = FakeConnection(fetchrows=[
+            None, {"last_candle_open_ms": 1_800_000}, None, {"id": 82},
+        ])
+        store = CandidateStore(FakePool(conn))
+        signal = {"symbol": "BTC/USDT", "side": "LONG", "candle": 3_000_000,
+                  "entry": 100.0, "stop": 98.0, "target": 103.0}
+        self.assertEqual(await store.enqueue_signal(signal, None, cooldown_candles=4), "QUEUED")
+
+    async def test_delivery_persists_per_symbol_cooldown(self):
+        conn = FakeConnection(fetchrows=[
+            {"signal_id": 101},
+            {"symbol": "BTC/USDT", "direction": "LONG", "candle_open_ms": 1_800_000},
+        ])
+        store = CandidateStore(FakePool(conn))
+        await store.finish_outbox(12)
+        sql = "\n".join(call.args[0] for call in conn.execute.await_args_list)
+        self.assertIn("INSERT INTO signal_cooldowns", sql)
+
     async def test_duplicate_signal_is_not_queued_twice(self):
-        conn = FakeConnection(fetchrows=[{"id": 72}])
+        conn = FakeConnection(fetchrows=[None, None, {"id": 72}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "ETH/USDT", "side": "SHORT", "candle": 2_100_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
@@ -83,7 +110,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_cooldown_rows_do_not_block_a_new_valid_signal(self):
         # A historical cooldown row is deliberately not read by live enqueue.
-        conn = FakeConnection(fetchrows=[None, {"id": 73}])
+        conn = FakeConnection(fetchrows=[None, None, {"id": 73}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "SOL/USDT", "side": "LONG", "candle": 3_300_000,
                   "entry": 100.0, "stop": 98.0, "target": 103.0}
@@ -93,7 +120,7 @@ class CandidateStoreArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("signal_cooldowns", sql)
 
     async def test_opposite_direction_is_not_blocked_by_same_direction_cooldown(self):
-        conn = FakeConnection(fetchrows=[None, {"id": 81}])
+        conn = FakeConnection(fetchrows=[None, None, {"id": 81}])
         store = CandidateStore(FakePool(conn))
         signal = {"symbol": "SOL/USDT", "side": "SHORT", "candle": 3_300_000,
                   "entry": 100.0, "stop": 102.0, "target": 97.0}
