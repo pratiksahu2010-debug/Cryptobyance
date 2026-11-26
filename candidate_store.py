@@ -738,13 +738,13 @@ class CandidateStore:
                 # continue independently.
                 if int(cooldown_candles or 0) > 0:
                     cooldown = await conn.fetchrow(
-                        "SELECT last_candle_open_ms FROM signal_cooldowns WHERE symbol=$1",
-                        symbol,
+                        """SELECT symbol FROM signal_cooldowns
+                           WHERE symbol=$1
+                             AND updated_at > NOW() - ($2 * INTERVAL '5 minutes')""",
+                        symbol, int(cooldown_candles),
                     )
                     if cooldown is not None:
-                        elapsed_ms = candle_ms - int(cooldown["last_candle_open_ms"])
-                        if elapsed_ms < int(cooldown_candles) * 5 * 60_000:
-                            return "COOLDOWN"
+                        return "COOLDOWN"
 
                 existing = await conn.fetchrow(
                     "SELECT id FROM signal_history WHERE idempotency_key=$1", key
@@ -868,7 +868,7 @@ class CandidateStore:
                     outbox_id)
                 if row:
                     signal_row = await conn.fetchrow(
-                        "SELECT symbol,direction,candle_open_ms FROM signal_history WHERE id=$1 FOR UPDATE",
+                        "SELECT symbol,direction,candle_open_ms FROM signal_history WHERE id=$1",
                         row["signal_id"],
                     )
                     if signal_row is not None:
