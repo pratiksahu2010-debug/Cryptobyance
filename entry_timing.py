@@ -8,8 +8,7 @@ the live strategy. A policy is only a next-session recommendation.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from statistics import mean, median
 from typing import Any, Iterable
 
@@ -45,8 +44,14 @@ def _simulate(signal: dict, candles: dict[int, dict], offset: int) -> tuple[floa
     reward_distance = abs(original_target - original_entry)
     if stop_distance <= 0 or reward_distance <= 0:
         return None
+    if direction == "LONG" and not (original_stop < original_entry < original_target):
+        return None
+    if direction == "SHORT" and not (original_target < original_entry < original_stop):
+        return None
 
-    entry_ts = signal_ts + offset * CANDLE_MS
+    # Signal candle opens at t=0 and closes at t=5m. A 5m wait therefore
+    # enters at the open of t=10m, i.e. one full candle after the close.
+    entry_ts = signal_ts + (offset + 1) * CANDLE_MS
     if offset == 0:
         entry = original_entry
         first_bar_ts = signal_ts + CANDLE_MS
@@ -145,7 +150,7 @@ def train_entry_timing(
                 "mean_improvement_r": round(improvement, 4),
                 "improvement_lower_bound_r": round(lower_bound, 4),
                 "median_entry_adjustment_pct": round(median(adjustment for _, _, adjustment in paired), 5),
-                "status": "PASS" if lower_bound >= MIN_EXPECTANCY_LCB_R else "NO_CONFIDENT_IMPROVEMENT",
+                "status": "PASS" if lower_bound >= MIN_EXPECTANCY_LCB_R and mean(new for _, new, _ in paired) > 0 else "NO_CONFIDENT_IMPROVEMENT",
             }
             comparisons[offset] = candidate
             if candidate["status"] == "PASS" and (
