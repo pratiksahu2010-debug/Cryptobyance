@@ -448,7 +448,7 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
                     ind, df5, signal,
                     candle_open_ms=closed_ts,
                     config_version=CONFIG_VERSION,
-                    cooldown_candles=0,
+                    cooldown_candles=COOLDOWN_CANDLES,
                     state_metadata={},
                 )
             except Exception as snapshot_error:
@@ -461,10 +461,10 @@ async def scan_symbol(feed, notifier, semaphore, display_symbol: str, pair: str,
             final_df5 = validate_ohlcv(rows, '5m', _effective_candle_clock(now_ms), max_age_ms=90_000)
             if int(final_df5.iloc[-1].timestamp) != closed_ts:
                 raise ValueError('latest 5m candle changed before signal enqueue; defer to next cycle')
-            # Atomic idempotency remains enabled, but live signal cooldown
-            # and strategy-state lifecycle gates are deliberately disabled.
+            # Per-candle idempotency plus a four-candle per-symbol cooldown
+            # that begins only after Telegram confirms delivery.
             queued = await candidate_store.enqueue_signal(
-                signal, None, 0,
+                signal, None, COOLDOWN_CANDLES,
                 strategy_key=STRATEGY_KEY,
             )
             last_seen_candle[display_symbol] = closed_ts
